@@ -1,0 +1,12 @@
+/* The slider control (Slider.tsx), as on the Inspector and Design language boards. */
+.slider { display: grid; grid-template-columns: minmax(0, 1fr) 60px; align-items: center; gap: 8px; min-width: 0; }
+.slider-track { position: relative; display: block; height: 16px; cursor: pointer; touch-action: none; }
+.slider-track::before { content: ''; position: absolute; left: 0; right: 0; top: 7px; height: 2px; border-radius: 1px; background: #34343a; }
+.slider-fill { position: absolute; top: 7px; height: 2px; border-radius: 1px; background: #a3a3ab; }
+.slider-knob { position: absolute; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: #ededef; box-shadow: 0 0 0 2px #151517; }
+.slider-track:focus-visible { outline: 0; }
+.slider-track:focus-visible .slider-knob { box-shadow: 0 0 0 2px #151517, 0 0 0 3px #6f86ff; }
+.slider-value {
+  height: 22px; box-sizing: border-box; padding: 0 6px; border: 1px solid #2a2a2e; border-radius: 3px; background: #1c1c1f;
+  font-family: var(--font-mono); font-size: 11px; line-height: 20px; color: #ededef; text-align: right; white-space: nowrap; overflow: hidden;
+}

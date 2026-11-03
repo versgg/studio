@@ -1,0 +1,33 @@
+/* Design tokens from the "Design language" board on the canvas. */
+:root {
+  --app: #0e0e10;
+  --panel: #151517;
+  --field: #1c1c1f;
+  --raised: #24242a;
+  --line: #26262a;
+  --line-2: #34343a;
+
+  --text: #ededef;
+  --text-2: #a3a3ab;
+  --text-3: #8a8a93;
+  --text-4: #6e6e77;
+
+  --primary: #3b57f0;
+  --primary-text: #a9b6ff;
+  --focus: #6f86ff;
+  --playhead: #ff6b4a;
+  --ok: #3fb27f;
+  --envelope: #b7ff01;
+
+  --track-titles: #e8c050;
+  --track-captions: #9996fc;
+  --track-voice: #66a3ff;
+  --track-music: #34b494;
+  --track-effects: #da8ccc;
+
+  --radius-control: 3px;
+  --radius-clip: 4px;
+
+  --font-ui: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+}

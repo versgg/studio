@@ -1,0 +1,50 @@
+/* The library's Audio tab and the voice dialogs (AudioPanel.tsx). Rows, settings and
+   buttons come from library.css and controls.css. */
+
+/* Sections keep the tab's 12 px rhythm. */
+.audio-card { display: flex; flex-direction: column; gap: 12px; }
+
+/* Recording: the dashed button turns into the take, with a level meter. */
+.record-button.on { border-color: #ff6b4a; border-style: solid; }
+.meter { flex: 0 0 64px; height: 4px; border-radius: 1px; background: #26262a; overflow: hidden; }
+.meter span { display: block; height: 100%; background: #34b494; transition: width 0.05s linear; }
+.meter span.clip { background: #ff6b4a; }
+
+/* Text fields in the board's field style */
+.lib-input, .lib-textarea {
+  min-width: 0; box-sizing: border-box; border: 1px solid #2a2a2e; border-radius: 3px; background: #1c1c1f; color: #ededef;
+  font: inherit; font-size: 12px; outline: 0; user-select: text;
+}
+.lib-input { flex: 1; height: 26px; padding: 0 8px; }
+.lib-textarea { width: 100%; min-height: 72px; padding: 6px 8px; font-size: 13px; line-height: 18px; resize: vertical; }
+.lib-input:focus, .lib-textarea:focus { border-color: #6f86ff; }
+.lib-input::placeholder, .lib-textarea::placeholder { color: #6e6e77; }
+.lib-setting:has(.lib-textarea) { align-items: start; }
+.lib-setting:has(.lib-textarea) > span:first-child { padding-top: 5px; }
+.key-row, .voice-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.voice-row .dsel { flex: 1; }
+.voice-row .lib-row-play:disabled { opacity: 0.4; cursor: default; }
+.lib-small-button { height: 26px; padding: 0 10px; border: 1px solid #34343a; border-radius: 3px; background: transparent; color: #ededef; font: inherit; font-size: 12px; cursor: pointer; }
+.lib-small-button:hover:not(:disabled) { background: #24242a; }
+.lib-small-button:disabled { opacity: 0.4; cursor: default; }
+.lib-note.mono { font-family: var(--font-mono); font-size: 11px; }
+.lib-note.error { color: #f08080; }
+.lib-links { display: flex; gap: 14px; }
+
+/* Checkboxes in the clone dialog */
+.check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--text-2); cursor: pointer; line-height: 16px; }
+.check input { margin: 1px 0 0; accent-color: var(--text); }
+
+/* Voice picker */
+.voice-picker { gap: 10px; }
+.voice-groups { max-height: 56vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+.voice-group h4 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: none; }
+.voice-item { display: flex; align-items: center; gap: 4px; border-radius: var(--radius-control); }
+.voice-item:hover { background: #1c1c20; }
+.voice-item.on { background: var(--raised); }
+.voice-item .icon-toggle { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; display: grid; place-items: center; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-3); }
+.voice-item .icon-toggle:hover { background: var(--raised); color: var(--text); }
+.voice-pick { flex: 1; min-width: 0; padding: 6px 6px; display: flex; flex-direction: column; gap: 1px; border: 0; background: transparent; text-align: left; }
+.voice-name { font-size: 12px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.voice-meta { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.choice-list.scroll { max-height: 180px; overflow: auto; padding: 4px 0; }

@@ -1,0 +1,75 @@
+# Builds and tests Studio on Windows and Linux. Started by hand (Actions tab › ci › Run workflow).
+# Nothing here needs real footage: the e2e and UI checks make their own test clips.
+name: ci
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: System packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libasound2-dev ffmpeg xvfb
+
+      - name: FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
+
+      - run: npm ci
+
+      - name: Doctor
+        run: node scripts/doctor.mjs
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Build engine, addon and app
+        run: npm run build
+
+      - name: Typecheck
+        run: npm run typecheck -w @studio/desktop
+
+      - name: Smoke (socket, frame ring, addon)
+        run: node scripts/smoke.mjs 540 960 30
+
+      - name: Engine end-to-end (import, edit, play, export)
+        run: node scripts/e2e.mjs
+
+      # CI runners have no GPU encoder or sound card: exports use x264, playback a silent clock.
+      - name: UI check (Linux, virtual display)
+        if: runner.os == 'Linux'
+        env:
+          # Ubuntu 24.04 blocks Chromium's sandbox for unpackaged Electron.
+          ELECTRON_DISABLE_SANDBOX: '1'
+        run: xvfb-run -a node scripts/ui-check.mjs
+
+      - name: UI check (Windows)
+        if: runner.os == 'Windows'
+        run: node scripts/ui-check.mjs
+
+      - name: Keep the UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-check-${{ matrix.os }}
+          path: out/ui-check
+          if-no-files-found: ignore

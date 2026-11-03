@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/engine-core", "crates/media", "crates/engine", "crates/bridge", "crates/mcp"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "UNLICENSED"
+
+[workspace.dependencies]
+studio-engine-core = { path = "crates/engine-core" }
+studio-media = { path = "crates/media" }
+memmap2 = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "net", "sync", "time", "signal"] }
+
+[profile.release]
+debug = 1

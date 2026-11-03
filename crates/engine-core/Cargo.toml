@@ -1,0 +1,10 @@
+[package]
+name = "studio-engine-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+memmap2.workspace = true
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,19 @@
+[package]
+name = "studio-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+# Node-API symbols only exist inside Node/Electron, so the addon is tested from JS.
+test = false
+doctest = false
+
+[dependencies]
+studio-engine-core.workspace = true
+napi = { version = "2", features = ["napi6"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"

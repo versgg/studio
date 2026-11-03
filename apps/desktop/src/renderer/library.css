@@ -1,0 +1,193 @@
+/* The Library panel (Library.tsx, LibraryBlocks.tsx, LibraryTabs.tsx), as on the Library board. */
+.panel.library { display: flex; flex-direction: column; overflow: hidden; background: #151517; color: #ededef; font-size: 13px; line-height: 18px; }
+
+/* The category bar */
+.categories { height: 56px; flex: 0 0 56px; box-sizing: border-box; display: flex; align-items: stretch; padding: 0 6px; border-bottom: 1px solid #26262a; overflow-x: auto; scrollbar-width: none; }
+/* Spread over the bar, down to 4 px either side of the label when nine don't fit at 8. */
+.categories button {
+  position: relative; flex: 1 0 auto; padding: 0 4px; border: 0; background: transparent;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  font: inherit; font-size: 11px; line-height: 14px; cursor: pointer; color: #8a8a93;
+}
+.categories button:hover { color: #a3a3ab; }
+.categories button.active { color: #ededef; }
+.categories button.active::after { content: ''; position: absolute; left: 4px; right: 4px; bottom: -1px; height: 2px; background: #ededef; }
+
+/* The scrolling body of every tab */
+.lib-scroll {
+  flex: 1; min-height: 0; overflow: auto; box-sizing: border-box; padding: 12px;
+  display: flex; flex-direction: column; gap: 12px; scrollbar-width: thin; scrollbar-color: #2e2e34 transparent;
+}
+
+/* Headings and notes */
+.lib-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 2px 0 -4px; min-width: 0; }
+.lib-head h3 { margin: 0; min-width: 0; font-size: 12px; line-height: 18px; font-weight: 500; color: #a3a3ab; }
+.lib-head-right { flex: 0 0 auto; font-size: 12px; color: #8a8a93; }
+.lib-note { margin: 0; font-size: 12px; color: #8a8a93; }
+.lib-note strong { color: #ededef; font-weight: 500; }
+
+/* Search */
+.lib-search { flex: 0 0 auto; height: 30px; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-radius: 3px; background: #1c1c1f; border: 1px solid #26262a; color: #7e7e87; }
+.lib-search:focus-within { border-color: #6f86ff; }
+.lib-search input { flex: 1; min-width: 0; height: 100%; padding: 0; background: transparent; border: 0; outline: 0; color: #ededef; font: inherit; font-size: 12px; user-select: text; }
+.lib-search input::placeholder { color: #7e7e87; }
+.lib-search input::-webkit-search-cancel-button { display: none; }
+
+/* The dashed "add" button */
+.lib-add {
+  width: 100%; min-height: 56px; box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 8px 14px; flex: 0 0 auto;
+  border: 1px dashed #3a3a40; border-radius: 3px; background: transparent; color: #ededef; text-align: left; font: inherit; cursor: pointer;
+}
+.lib-add:hover:not(:disabled) { border-color: #4a4a52; background: #18181b; }
+.lib-add:disabled { opacity: 0.4; cursor: default; }
+.lib-add-icon { flex: 0 0 28px; height: 28px; border-radius: 3px; display: grid; place-items: center; color: #111114; }
+.lib-add-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lib-add-title { font-weight: 500; }
+.lib-add-sub { font-size: 12px; color: #8a8a93; }
+
+/* Action buttons */
+.lib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.lib-actions button {
+  height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 10px; border-radius: 3px;
+  font: inherit; font-size: 12px; cursor: pointer; border: 1px solid #34343a; background: transparent; color: #ededef;
+}
+.lib-actions button:hover:not(:disabled) { background: #24242a; }
+.lib-actions button.primary { border: 0; background: #3b57f0; color: #ffffff; }
+.lib-actions button.primary:hover:not(:disabled) { background: #4a64f2; }
+.lib-actions button:disabled { opacity: 0.4; cursor: default; }
+
+/* List rows */
+.lib-rows { display: flex; flex-direction: column; gap: 2px; }
+.lib-row { min-height: 44px; box-sizing: border-box; display: flex; align-items: center; gap: 10px; padding: 4px 6px; border-radius: 3px; background: transparent; }
+.lib-row.clickable { cursor: pointer; }
+.lib-row.clickable:hover { background: #1c1c1f; }
+.lib-row.active, .lib-row.active:hover { background: #24242a; }
+.lib-row-play { flex: 0 0 24px; width: 24px; height: 24px; padding: 0; border: 1px solid #34343a; border-radius: 3px; background: transparent; color: #ededef; display: grid; place-items: center; cursor: pointer; }
+.lib-row-play:hover { background: #24242a; }
+.lib-row-dot { flex: 0 0 4px; height: 24px; border-radius: 1px; }
+.lib-row-icon { flex: 0 0 24px; height: 24px; border-radius: 3px; background: #1c1c1f; display: grid; place-items: center; }
+.lib-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lib-row-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-row-sub { font-size: 11px; line-height: 14px; color: #8a8a93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-row-bars { flex: 0 0 64px; height: 20px; display: flex; align-items: center; gap: 1px; }
+.lib-row-bars span { flex: 1; border-radius: 1px; background: #4a4a52; }
+.lib-row-dur { font-family: var(--font-mono); font-size: 11px; color: #8a8a93; white-space: nowrap; }
+.lib-row-add { flex: 0 0 24px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #a3a3ab; display: grid; place-items: center; cursor: pointer; }
+.lib-row-add:hover { background: #24242a; color: #ededef; }
+.lib-row-action { height: 24px; padding: 0 8px; border: 1px solid #34343a; border-radius: 3px; background: transparent; color: #ededef; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.lib-row-action:hover { background: #24242a; }
+
+/* Tile grids */
+.lib-tiles { display: grid; gap: 10px 8px; }
+.lib-tiles.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.lib-tiles.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.lib-tiles.cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ltile { min-width: 0; padding: 0; border: 0; background: transparent; display: flex; flex-direction: column; gap: 4px; text-align: left; color: #a3a3ab; font: inherit; cursor: pointer; }
+.ltile-thumb { position: relative; display: block; overflow: hidden; border-radius: 3px; background: #1c1c1f; box-shadow: 0 0 0 1.5px transparent; }
+.ltile.on .ltile-thumb { box-shadow: 0 0 0 1.5px #ffffff; }
+.ltile:hover .ltile-thumb { box-shadow: 0 0 0 1.5px #4a4a52; }
+.ltile.on:hover .ltile-thumb { box-shadow: 0 0 0 1.5px #ffffff; }
+.ltile-name { font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ltile-thumb > img, .ltile-thumb > .frame { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ltile-thumb .layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.ltile-thumb svg.art { display: block; }
+.ltile-thumb .sample { position: absolute; inset: 0; box-sizing: border-box; padding: 6px; display: grid; place-items: center; text-align: center; }
+.ltile-thumb .cap { position: absolute; left: 4px; right: 4px; bottom: 14px; text-align: center; line-height: 1.2; }
+.ltile-thumb .upload { position: absolute; inset: 0; box-sizing: border-box; border: 1px dashed #3a3a40; border-radius: 3px; display: grid; place-items: center; color: #8a8a93; }
+/* A neutral stand-in when the project has no frame to show yet. */
+.ltile-thumb .blank { background: linear-gradient(160deg, #3a3a40, #1c1c1f 70%); }
+.ltile-thumb .blank.b { background: linear-gradient(200deg, #4a4a52, #26262a 70%); }
+
+/* A heading's text button ("Edit") */
+.lib-link { padding: 0; border: 0; background: transparent; color: #8a8a93; font: inherit; font-size: 12px; cursor: pointer; }
+.lib-link:hover { color: #ededef; }
+
+/* Settings rows */
+.lib-settings { display: flex; flex-direction: column; gap: 6px; }
+.lib-setting { display: grid; grid-template-columns: 112px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 28px; }
+.lib-setting > span:first-child { font-size: 12px; color: #a3a3ab; }
+
+/* Brand swatches */
+.lib-swatches { display: flex; align-items: center; gap: 6px; }
+.lib-swatches > span { width: 24px; height: 24px; box-sizing: border-box; border-radius: 3px; border: 1px solid #34343a; }
+.lib-swatches > button { width: 24px; height: 24px; padding: 0; border: 1px dashed #3a3a40; border-radius: 3px; background: transparent; color: #8a8a93; display: grid; place-items: center; cursor: pointer; }
+.lib-swatches > button:hover { color: #ededef; }
+
+/* Caption lines */
+.lib-lines { margin: 0; padding: 0; list-style: none; }
+.lib-lines li { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: center; min-height: 28px; padding: 0 6px; border-radius: 3px; cursor: pointer; }
+.lib-lines li:hover { background: #1c1c1f; }
+.lib-lines li.now, .lib-lines li.now:hover { background: #24242a; }
+.lib-lines time { font-family: var(--font-mono); font-size: 11px; color: #8a8a93; }
+.lib-lines span { font-size: 12px; color: #c4c4ca; }
+.lib-lines li.now span { color: #ffffff; }
+
+/* History: the step-through bar and the steps */
+.lib-stepper { display: flex; align-items: center; gap: 6px; padding: 8px; border-radius: 3px; background: #1c1c1f; border: 1px solid #26262a; }
+.lib-stepper > button.nav { width: 26px; height: 26px; padding: 0; border: 1px solid #34343a; border-radius: 3px; background: transparent; color: #ededef; display: grid; place-items: center; cursor: pointer; }
+.lib-stepper > button.nav:hover { background: #24242a; }
+.lib-stepper-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lib-stepper-text > span:first-child { font-size: 12px; font-weight: 500; }
+.lib-stepper-text > span:last-child { font-size: 11px; line-height: 14px; color: #a3a3ab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lib-stepper > button.keep { height: 26px; padding: 0 10px; border: 0; border-radius: 3px; background: #3b57f0; color: #ffffff; font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
+.lib-stepper > button.keep:hover { background: #4a64f2; }
+.lib-steps { margin: 0; padding: 0; list-style: none; }
+.lib-steps li { display: grid; grid-template-columns: 16px 38px minmax(0, 1fr) auto; align-items: start; gap: 8px; padding: 7px 6px; border-bottom: 1px solid #1e1e21; border-radius: 3px; }
+.lib-steps li.now { background: #1f1f24; }
+.lib-steps li.undone { opacity: 0.5; }
+.lib-steps li > svg { margin-top: 2px; }
+.lib-steps time { font-family: var(--font-mono); font-size: 11px; color: #8a8a93; line-height: 18px; }
+.lib-steps-text { display: flex; flex-direction: column; }
+.lib-steps-text > span:first-child { font-size: 12px; color: #d8d8dc; }
+.lib-steps-text > span:last-child { font-size: 11px; line-height: 14px; }
+.lib-steps li > button { height: 22px; padding: 0 6px; border: 0; border-radius: 3px; background: transparent; color: #8a8a93; font: inherit; font-size: 11px; cursor: pointer; }
+.lib-steps li > button:hover { background: #24242a; color: #ededef; }
+
+/* The Media tab */
+.bin { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.bin.dropping::after { content: ''; position: absolute; inset: 4px; border: 1px dashed #6f86ff; border-radius: 4px; pointer-events: none; }
+
+/* Loading: what's being scanned, then how many thumbnails are ready. */
+.bin-status { flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: #a3a3ab; }
+.bin-status strong { color: #ededef; font-weight: 500; }
+.bin-progress { position: relative; display: block; height: 2px; background: #34343a; overflow: hidden; }
+.bin-progress > span { display: block; height: 100%; background: #ededef; transition: width 0.25s linear; }
+.bin-progress.indeterminate::after { content: ''; position: absolute; top: 0; bottom: 0; width: 30%; background: #ededef; animation: lib-busy 1.1s linear infinite; }
+@keyframes lib-busy { from { left: -40%; } to { left: 100%; } }
+
+/* Where you are: crumbs in the heading, folder actions on the right. */
+.crumbs { display: inline; }
+.crumbs button { padding: 0; border: 0; background: transparent; color: #a3a3ab; font: inherit; cursor: pointer; }
+.crumbs button:hover { color: #ededef; }
+.crumbs .crumb-sep { margin: 0 5px; color: #6e6e77; }
+.crumb-count { color: #a3a3ab; }
+.crumb-actions { display: flex; gap: 10px; }
+.crumb-actions button { padding: 0; border: 0; background: transparent; color: #8a8a93; font: inherit; font-size: 12px; cursor: pointer; }
+.crumb-actions button:hover { color: #ededef; }
+
+/* Media tiles */
+.bin-grid { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 10px 8px; align-content: start; }
+.tile { min-width: 0; display: flex; flex-direction: column; gap: 4px; color: #a3a3ab; cursor: grab; }
+.tile-thumb { position: relative; display: grid; place-items: center; height: 128px; overflow: hidden; border-radius: 3px; background: #1c1c1f; box-shadow: 0 0 0 1.5px transparent; color: #8a8a93; }
+.tile-thumb.kind-audio { background: #1c1c1f; color: #34b494; }
+.tile-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile:hover .tile-thumb { box-shadow: 0 0 0 1.5px #4a4a52; }
+.tile.selected .tile-thumb, .tile.selected:hover .tile-thumb { box-shadow: 0 0 0 1.5px #ffffff; }
+.tile-check { position: absolute; left: 4px; top: 4px; width: 14px; height: 14px; border-radius: 2px; background: rgba(14, 14, 16, 0.8); color: #ededef; display: grid; place-items: center; }
+.tile-dur { position: absolute; right: 4px; bottom: 4px; padding: 0 4px; border-radius: 2px; background: rgba(14, 14, 16, 0.8); color: #ededef; font-family: var(--font-mono); font-size: 10px; line-height: 16px; }
+.tile-missing { position: absolute; left: 4px; bottom: 4px; padding: 0 4px; border-radius: 2px; background: rgba(14, 14, 16, 0.85); font-size: 10px; line-height: 16px; color: #f08080; }
+.tile.missing .tile-thumb img { opacity: 0.3; }
+.tile-busy { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.tile-busy::after { content: ''; position: absolute; top: 0; bottom: 0; width: 40%; background: #a3a3ab; animation: lib-busy 1.1s linear infinite; }
+/* The preview's place in a library clip. */
+.tile-mark { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: #ff6b4a; pointer-events: none; }
+.tile-add {
+  position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; padding: 0; display: none; place-items: center;
+  border: 0; border-radius: 2px; background: rgba(14, 14, 16, 0.8); color: #ededef; cursor: pointer;
+}
+.tile:hover .tile-add { display: grid; }
+.tile-add:hover { background: #3b57f0; }
+.tile-name { font-size: 11px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-place { color: #6e6e77; }
+.bin-box { position: absolute; z-index: 5; border: 1px solid #6f86ff; background: rgba(111, 134, 255, 0.1); pointer-events: none; }
+.lib-stepper button:disabled { opacity: 0.35; cursor: default; }

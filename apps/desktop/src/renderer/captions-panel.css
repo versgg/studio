@@ -1,0 +1,58 @@
+/* The Inspector's Captions tab: a header that stays put (language, on video, .srt, find and
+   replace, words per caption), then the lines, the one being said highlighted word by word. */
+.cap-head { position: sticky; top: -4px; z-index: 2; margin: -4px -12px 0; padding: 10px 12px 8px; background: #151517; border-bottom: 1px solid #26262a; display: flex; flex-direction: column; gap: 8px; }
+.cap-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cap-title { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; color: #ededef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap-count { margin-left: 8px; font-weight: 400; color: #8a8a93; }
+.cap-tool { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border: 1px solid #2a2a2e; border-radius: 3px; background: transparent; color: #a3a3ab; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.cap-tool:hover { border-color: #3a3a40; color: #ededef; }
+.cap-tool.on { color: #ededef; background: #1c1c1f; }
+.cap-find { display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 4px 0 8px; border: 1px solid #2a2a2e; border-radius: 3px; background: #1c1c1f; color: #8a8a93; }
+.cap-find:focus-within { border-color: #4a4a52; }
+.cap-find input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: transparent; color: #ededef; font: inherit; font-size: 12px; outline: 0; }
+.cap-find input::placeholder { color: #6e6e77; }
+.cap-find .cap-tool { height: 20px; border-color: transparent; }
+.cap-find .cap-tool.on { border-color: #34343a; }
+.cap-replace { padding-left: 27px; }
+.cap-replace .button { height: 20px; padding: 0 8px; font-size: 11px; }
+.cap-hits { flex: 0 0 auto; font-size: 11px; color: #8a8a93; font-variant-numeric: tabular-nums; }
+.cap-icon { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #8a8a93; display: grid; place-items: center; cursor: pointer; }
+.cap-icon:hover:not(:disabled) { background: #26262a; color: #ededef; }
+.cap-icon:disabled { opacity: 0.4; cursor: default; }
+.cap-split { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: #a3a3ab; }
+.cap-split > :last-child { flex: 0 1 220px; min-width: 0; }
+
+.cap-lines { margin: 6px 0 0; padding: 0; list-style: none; }
+.cap-lines li { position: relative; display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; align-items: start; column-gap: 8px; min-height: 34px; padding: 5px 4px 4px 0; box-sizing: border-box; border-radius: 3px; }
+.cap-lines li:hover { background: #1a1a1d; }
+.cap-lines li.now { background: #222227; }
+.cap-lines li.now::before { content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: #ededef; }
+.cap-when { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 3px 0 0 8px; border: 0; background: transparent; font-family: var(--font-mono); line-height: 12px; text-align: left; cursor: pointer; }
+.cap-when time { font-size: 11px; color: #8a8a93; }
+.cap-when span { font-size: 10px; color: #5c5c64; }
+.cap-when:hover time, .cap-lines li.now .cap-when time { color: #c4c4ca; }
+.cap-text { min-width: 0; font-size: 13px; line-height: 18px; color: #c4c4ca; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.cap-lines li.now .cap-text { color: #ffffff; }
+.cap-word { background: transparent; color: #9996fc; }
+.cap-found { border-radius: 2px; background: #3a3a1c; color: #f2e9a6; }
+.cap-acts { display: flex; gap: 2px; margin-top: -1px; opacity: 0; }
+.cap-lines li:hover .cap-acts, .cap-acts:focus-within { opacity: 1; }
+.cap-lines li.editing .cap-acts { opacity: 0; pointer-events: none; }
+.cap-edit { min-width: 0; height: 26px; box-sizing: border-box; padding: 0 6px; border: 1px solid #6f86ff; border-radius: 3px; background: #1c1c1f; color: #ededef; font: inherit; font-size: 13px; outline: 0; }
+.cap-hint { margin: 10px 0 0; font-size: 11px; line-height: 15px; color: #6e6e77; }
+
+/* The Text tab's preset styles */
+.preset-styles { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 6px; margin: 8px 0 4px; }
+.preset-styles button { height: 40px; padding: 0; border: 1px solid #2a2a2e; border-radius: 4px; background: #3a3a40; display: grid; place-items: center; overflow: hidden; cursor: pointer; }
+.preset-styles button:hover { border-color: #4a4a52; }
+.preset-styles button.on { border-color: #ededef; }
+.preset-styles button > span { white-space: nowrap; line-height: 1; }
+.preset-mine-title { margin: 10px 0 0; font-size: 11px; color: #8a8a93; }
+.preset-mine { position: relative; display: grid; }
+.preset-styles .preset-remove { position: absolute; top: -4px; right: -4px; width: 14px; height: 14px; border-radius: 50%; border-color: #4a4a52; background: #2a2a2e; color: #c4c4ca; opacity: 0; }
+.preset-mine:hover .preset-remove, .preset-remove:focus-visible { opacity: 1; }
+.preset-styles .preset-remove:hover { color: #ffffff; }
+
+/* The "apply to all" tick at the top of the Text tab */
+.insp-all { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 12px; color: #c4c4ca; cursor: pointer; }
+.insp-all input { margin: 0; accent-color: #6f86ff; }

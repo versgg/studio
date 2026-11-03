@@ -1,0 +1,50 @@
+/* The Inspector's Stems tab (StemsTab.tsx): one row per stem, as on the server's own page. */
+.stems-head { display: flex; align-items: center; gap: 8px; }
+.stems-head .insp-sec { flex: 1; }
+.stems-meta { font-size: 11px; color: #8a8a93; white-space: nowrap; }
+
+.stems-bar { margin: 2px 0 6px; padding: 8px 8px 0; border-radius: 3px; background: #1c1c1f; }
+.stems-picked { display: block; font-size: 12px; line-height: 16px; color: #c4c4ca; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inspector .stems-bar .insp-buttons { margin: 8px 0 0; padding-bottom: 8px; }
+.stems-list { display: flex; flex-direction: column; margin: 2px 0 6px; }
+.stem-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 22px 22px; grid-template-rows: 24px 28px; align-items: center; column-gap: 4px; row-gap: 2px; padding: 4px 0 8px; border-bottom: 1px solid #1e1e21; }
+.stem-pick { display: flex; align-items: center; gap: 8px; min-width: 0; height: 24px; padding: 0; border: 0; background: transparent; font: inherit; font-size: 12px; text-align: left; color: #a3a3ab; cursor: pointer; }
+.stem-pick:hover { color: #ededef; }
+.stem-row.picked .stem-pick { color: #ededef; }
+.stem-box { flex: 0 0 14px; width: 14px; height: 14px; box-sizing: border-box; border: 1px solid #4a4a52; border-radius: 3px; display: grid; place-items: center; }
+.stem-pick:hover .stem-box { border-color: #6e6e77; }
+.stem-pick[aria-checked='true'] .stem-box { border-color: #ededef; background: #ededef; }
+.stem-pick[aria-checked='true'] .stem-box::after { content: ''; width: 7px; height: 4px; border: solid #151517; border-width: 0 0 1.5px 1.5px; transform: translateY(-1px) rotate(-45deg); }
+.stem-pick:focus-visible { outline: 1px solid #6f86ff; outline-offset: 2px; border-radius: 3px; }
+.stem-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stem-level { padding: 0 4px; font-family: var(--font-mono); font-size: 11px; color: #6e6e77; white-space: nowrap; }
+.stem-btn { width: 22px; height: 22px; padding: 0; border: 1px solid #2a2a2e; border-radius: 3px; background: transparent; color: #a3a3ab; display: grid; place-items: center; cursor: pointer; }
+.stem-btn:hover { background: #24242a; color: #ededef; }
+.stem-btn.on { border-color: #4a4a52; background: #2e2e34; color: #ededef; }
+.stem-wave { grid-column: 1 / -1; display: block; width: 100%; height: 28px; border-radius: 3px; background: #1c1c1f; }
+.stem-wave path { fill: #55555d; }
+.stem-row.picked .stem-wave path, .stem-row.playing .stem-wave path { fill: #a3a3ab; }
+.stem-wave line { stroke: #ffffff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.stem-row.silent .stem-pick, .stem-row.silent .stem-wave { opacity: 0.5; }
+
+.stems-silent { padding: 8px 0 2px; border: 0; background: transparent; font: inherit; font-size: 12px; line-height: 16px; text-align: left; color: #8a8a93; cursor: pointer; }
+.stems-silent:hover { color: #ededef; }
+
+.stems-busy .stems-stage { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stems-error { margin: 4px 0 8px; padding: 6px 8px; border-radius: 3px; background: #241a1b; font-size: 12px; line-height: 16px; color: #f08080; }
+.stems-off { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 2px 0 8px; padding: 6px 8px; border-radius: 3px; background: #1c1c1f; font-size: 12px; line-height: 16px; color: #c4c4ca; }
+.stems-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin-top: 10px; font-size: 11px; line-height: 14px; color: #8a8a93; }
+.stems-link { padding: 0; border: 0; background: transparent; font: inherit; color: #a3a3ab; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.stems-link:hover { color: #ededef; }
+.inspector .insp-buttons .stems-go, .inspector .insp-buttons .stems-only { border-color: #3b57f0; background: #3b57f0; color: #ffffff; font-weight: 500; }
+.inspector .insp-buttons .stems-go:hover:not(:disabled), .inspector .insp-buttons .stems-only:hover:not(:disabled) { background: #4a64f2; }
+
+/* The song the server's read named (Shazam), above the stems. */
+.stems-song { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 10px; margin: 8px 0 4px; }
+.stems-cover { width: 48px; height: 48px; border-radius: 3px; object-fit: cover; background: #1c1c1f; border: 1px solid #26262a; box-sizing: border-box; }
+.stems-song-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.stems-song-text strong { font-size: 13px; font-weight: 600; color: #ededef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stems-song-text span { font-size: 12px; color: #c4c4ca; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stems-song-text small { font-size: 11px; color: #8a8a93; }
+.stems-song-text small:empty { display: none; }
+.stems-song-note { color: #c9a54a; }

@@ -1,0 +1,30 @@
+/* The Inspector's Dub tab (DubTab.tsx): set up, then pick what to dub and change translations. */
+.dub-head { margin: 10px 0 4px; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; color: #8a8a93; }
+.dub-list { display: flex; flex-direction: column; margin: 0 0 8px; }
+.dub-item { display: grid; grid-template-columns: 22px auto 44px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; column-gap: 6px; row-gap: 4px; padding: 6px 0 8px; border-bottom: 1px solid #1e1e21; }
+.dub-item.line { grid-template-columns: 22px 44px minmax(0, 1fr); }
+.dub-pick { width: 22px; height: 22px; padding: 0; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; }
+.dub-pick:disabled { cursor: default; }
+.dub-box { width: 14px; height: 14px; box-sizing: border-box; border: 1px solid #4a4a52; border-radius: 3px; display: grid; place-items: center; }
+.dub-pick:hover:not(:disabled) .dub-box { border-color: #6e6e77; }
+.dub-pick[aria-checked='true'] .dub-box { border-color: #ededef; background: #ededef; }
+.dub-pick[aria-checked='true'] .dub-box::after { content: ''; width: 7px; height: 4px; border: solid #151517; border-width: 0 0 1.5px 1.5px; transform: translateY(-1px) rotate(-45deg); }
+.dub-pick:focus-visible { outline: 1px solid #6f86ff; outline-offset: 2px; border-radius: 3px; }
+.dub-crop { max-width: 88px; max-height: 32px; border-radius: 3px; background: #1c1c1f; object-fit: contain; }
+.dub-when { font-family: var(--font-mono); font-size: 11px; color: #6e6e77; }
+.dub-orig { min-width: 0; font-size: 12px; line-height: 16px; color: #8a8a93; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dub-item.on .dub-orig { color: #a3a3ab; }
+.dub-edit, .dub-note { grid-column: 2 / -1; }
+.dub-item.line .dub-edit { grid-column: 2 / -1; }
+.dub-edit { box-sizing: border-box; width: 100%; resize: vertical; padding: 5px 7px; border: 1px solid #2a2a2e; border-radius: 3px; background: #1c1c1f; font: inherit; font-size: 12px; line-height: 16px; color: #ededef; }
+.dub-edit:focus { outline: none; border-color: #4a4a52; }
+.dub-edit:disabled { color: #6e6e77; background: transparent; }
+.dub-note { font-size: 11px; color: #6e6e77; }
+.dub-item.scene { opacity: 0.6; }
+.dub-key { margin: 6px 0 8px; }
+.dub-label { display: block; margin-bottom: 4px; font-size: 11px; color: #8a8a93; }
+.dub-key-row { display: flex; gap: 6px; }
+.dub-key-row .text-input { flex: 1; min-width: 0; }
+.dub-hint { margin: 4px 0 0; font-size: 11px; line-height: 14px; color: #6e6e77; }
+.dub-error, .dub-error-box { margin: 4px 0 8px; padding: 6px 8px; border-radius: 3px; background: #241a1b; font-size: 12px; line-height: 16px; color: #f08080; }
+.dub-error-box .insp-buttons { margin: 6px 0 0; }

@@ -1,0 +1,21 @@
+[package]
+name = "studio-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "studio-engine"
+path = "src/main.rs"
+
+[dependencies]
+studio-engine-core.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+cpal = "0.18"
+studio-media.workspace = true
+serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Media", "Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

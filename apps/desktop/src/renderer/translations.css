@@ -1,0 +1,15 @@
+/* The Library's Translations tab (TranslationsTab.tsx); the review's rows are the Dub tab's (dub.css). */
+.tr-langs { margin: 2px 0 2px; }
+.tr-buttons { display: flex; gap: 6px; margin: 2px 0; }
+.tr-buttons .button { height: 28px; padding: 0 12px; }
+.tr-rows { display: flex; flex-direction: column; }
+.tr-row { display: grid; grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto; align-items: baseline; column-gap: 8px; padding: 7px 0; border-bottom: 1px solid #1e1e21; font-size: 12px; }
+.tr-row-name { color: #ededef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tr-row-stage { min-width: 0; color: #8a8a93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tr-row.failed .tr-row-stage { color: #f08080; }
+.tr-bar { grid-column: 1 / -1; height: 2px; margin-top: 6px; background: #26262a; border-radius: 1px; overflow: hidden; }
+.tr-bar > span { display: block; height: 100%; background: #8a8a93; transition: width 0.3s; }
+.tr-tabs { margin: 2px 0 0; }
+.tr-item .tr-back { grid-column: 2 / -1; font-size: 11px; line-height: 14px; color: #6e6e77; }
+.tr-own { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 3px; background: #1c1c1f; font-size: 12px; line-height: 16px; color: #a3a3ab; }
+.tr-own .lib-link { align-self: flex-start; }

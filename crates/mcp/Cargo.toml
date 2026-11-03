@@ -1,0 +1,20 @@
+[package]
+name = "studio-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP server (stdio) that lets Claude build and edit Studio projects through the engine"
+
+[[bin]]
+name = "studio-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The official Rust MCP SDK: server role and the stdio transport only.
+rmcp = { version = "3.8", default-features = false, features = ["server", "transport-io"] }
+tokio = { workspace = true, features = ["process", "io-std", "fs"] }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+base64 = "0.23"
+dirs = "7"

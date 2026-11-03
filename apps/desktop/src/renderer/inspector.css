@@ -1,0 +1,125 @@
+/* The Inspector panel (Inspector.tsx, InspectorBlocks.tsx), as on the Inspector board. */
+.panel.inspector { display: flex; flex-direction: column; overflow: hidden; background: #151517; color: #ededef; font-size: 13px; line-height: 18px; }
+
+/* Tabs */
+.insp-tabs { height: 36px; flex: 0 0 36px; box-sizing: border-box; display: flex; padding: 0 6px; border-bottom: 1px solid #26262a; overflow-x: auto; scrollbar-width: none; }
+.insp-tabs button { position: relative; flex: 0 0 auto; padding: 0 8px; border: 0; background: transparent; font: inherit; font-size: 12px; cursor: pointer; color: #8a8a93; }
+.insp-tabs button:hover { color: #a3a3ab; }
+.insp-tabs button.on { color: #ededef; }
+.insp-tabs button.on::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; background: #ededef; }
+
+/* What's selected */
+.insp-head { flex: 0 0 auto; min-width: 0; padding: 10px 12px; border-bottom: 1px solid #26262a; display: flex; flex-direction: column; }
+.insp-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.insp-source { font-size: 11px; line-height: 14px; color: #8a8a93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.insp-body { flex: 1; min-height: 0; overflow: auto; box-sizing: border-box; padding: 4px 12px 16px; scrollbar-width: thin; scrollbar-color: #2e2e34 transparent; }
+
+/* Section heads */
+.insp-sec { height: 32px; margin-top: 6px; display: flex; align-items: center; gap: 8px; border-top: 1px solid #1e1e21; }
+.insp-sec.first { border-top: 0; }
+.insp-sec h3 { margin: 0; flex: 1; font-size: 12px; font-weight: 600; }
+.insp-reset { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #8a8a93; display: grid; place-items: center; cursor: pointer; }
+.insp-reset:hover { background: #24242a; color: #ededef; }
+
+/* Rows: label, control, value, keyframe */
+.insp-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) 60px 16px; align-items: center; gap: 8px; min-height: 28px; }
+.insp-row > label { font-size: 12px; color: #a3a3ab; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.insp-row > label.scrub { cursor: ew-resize; touch-action: none; }
+.insp-row > .slider { grid-column: 2 / 4; }
+.insp-out { height: 22px; box-sizing: border-box; padding: 0 6px; border: 1px solid transparent; border-radius: 3px; font-family: var(--font-mono); font-size: 11px; line-height: 20px; color: #ededef; text-align: right; white-space: nowrap; overflow: hidden; }
+.insp-key { width: 16px; height: 16px; padding: 0; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; color: #6e6e77; }
+.insp-key:hover { color: #a3a3ab; }
+.insp-key.on { color: #ffffff; }
+.insp-key-blank { width: 16px; height: 16px; }
+.insp-note { margin: 2px 0 6px; font-size: 12px; color: #8a8a93; }
+
+/* Inspector-sized segments (the Fill/Fit control is one: .seg). Equal widths when they fit; in a
+   narrow panel the group grows into the empty value column rather than cutting its labels. */
+.inspector .insp-row > .pills-iseg { width: max-content; min-width: 100%; box-sizing: border-box; }
+.inspector .pills-iseg button { flex: 1 1 0; min-width: max-content; height: 20px; padding: 0 4px; font-size: 11px; overflow: visible; }
+
+/* Position */
+.insp-pair { display: flex; gap: 6px; min-width: 0; }
+.insp-num {
+  flex: 1; min-width: 0; height: 22px; box-sizing: border-box; padding: 0 6px; border: 1px solid #2a2a2e; border-radius: 3px; background: #1c1c1f;
+  display: flex; align-items: center; justify-content: space-between; font-family: var(--font-mono); font-size: 11px; cursor: ew-resize; touch-action: none;
+}
+.insp-num > span { color: #8a8a93; }
+.insp-num:hover { border-color: #3a3a40; }
+
+/* Icon buttons */
+.insp-icons { display: flex; gap: 2px; width: max-content; }
+.insp-icons button { flex: 0 0 28px; width: 28px; height: 24px; padding: 0; border-radius: 3px; display: grid; place-items: center; cursor: pointer; border: 1px solid #2a2a2e; background: transparent; color: #a3a3ab; }
+.insp-icons button:hover { color: #ededef; }
+.insp-icons button.on { border-color: #4a4a52; background: #2e2e34; color: #ededef; }
+
+/* Presets */
+.insp-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 8px 0; }
+.insp-presets button { padding: 0; border: 0; background: transparent; display: flex; flex-direction: column; gap: 3px; font: inherit; cursor: pointer; color: #a3a3ab; }
+.insp-presets button > span:first-child { display: block; height: 44px; border-radius: 3px; background: #1c1c1f; box-shadow: 0 0 0 1.5px transparent; }
+.insp-presets button:hover > span:first-child { box-shadow: 0 0 0 1.5px #4a4a52; }
+.insp-presets button.on > span:first-child { box-shadow: 0 0 0 1.5px #ffffff; }
+.insp-presets svg { display: block; }
+.insp-presets button > span:last-child { font-size: 11px; line-height: 14px; text-align: center; }
+
+/* Curves */
+.insp-curve { position: relative; margin: 8px 0; }
+.insp-curve svg { display: block; border-radius: 3px; background: #0e0e10; }
+.insp-curve-pt { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; box-sizing: border-box; border: 1.5px solid; border-radius: 50%; background: #0e0e10; cursor: grab; touch-action: none; }
+.insp-curve-pt.off { opacity: 0.3; }
+
+/* HSL colour ranges */
+.insp-hsl { display: flex; gap: 6px; margin: 8px 0 4px; }
+.insp-hsl button { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%; cursor: pointer; box-shadow: 0 0 0 2px #151517, 0 0 0 3.5px transparent; }
+.insp-hsl button.on { box-shadow: 0 0 0 2px #151517, 0 0 0 3.5px #ffffff; }
+
+/* Colour wheels */
+.insp-wheels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; margin: 8px 0; }
+.insp-wheel { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.insp-wheel-disc { position: relative; display: block; width: 96px; height: 96px; border-radius: 50%; cursor: crosshair; touch-action: none; background: conic-gradient(from 0deg, #9e5a5a, #9e925a, #659e5a, #5a9e92, #5a659e, #925a9e, #9e5a5a); }
+.insp-wheel-disc .inner { position: absolute; inset: 3px; border-radius: 50%; background: #1c1c1f; }
+.insp-wheel-disc .v { position: absolute; left: 47.5px; top: 12px; bottom: 12px; width: 1px; background: #2e2e34; }
+.insp-wheel-disc .h { position: absolute; top: 47.5px; left: 12px; right: 12px; height: 1px; background: #2e2e34; }
+.insp-wheel-disc .dot { position: absolute; width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%; border: 1.5px solid #ffffff; pointer-events: none; }
+.insp-wheel-name { font-size: 12px; }
+.insp-wheel-vals { font-family: var(--font-mono); font-size: 10px; color: #8a8a93; white-space: pre; }
+
+/* Keyframe list */
+.insp-keys { margin: 4px 0; padding: 0; list-style: none; }
+.insp-keys li { display: grid; grid-template-columns: 14px 56px minmax(0, 1fr) 96px; align-items: center; gap: 8px; min-height: 30px; border-bottom: 1px solid #1e1e21; }
+.insp-keys .time { font-family: var(--font-mono); font-size: 11px; color: #a3a3ab; }
+.insp-keys .text { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.insp-keys .dsel { font-size: 11px; }
+
+/* Buttons under a section */
+.inspector .insp-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 2px; }
+.inspector .insp-buttons .button { height: 26px; padding: 0 10px; border-radius: 3px; font: inherit; font-size: 12px; cursor: pointer; border: 1px solid #34343a; background: transparent; color: #ededef; }
+.inspector .insp-buttons .button:hover:not(:disabled) { background: #24242a; }
+.inspector .insp-buttons .button:disabled { opacity: 0.4; cursor: default; }
+
+/* A text clip's text */
+.insp-text {
+  display: block; width: 100%; margin: 8px 0 4px; min-height: 52px; box-sizing: border-box; padding: 6px 8px; border: 1px solid #2a2a2e; border-radius: 3px;
+  background: #1c1c1f; color: #ededef; font: inherit; font-size: 13px; line-height: 18px; resize: vertical; outline: 0; user-select: text;
+}
+.insp-text:focus { border-color: #6f86ff; }
+
+/* Read-only facts (the project view) */
+.insp-info { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 28px; }
+.insp-info > span:first-child { font-size: 12px; color: #a3a3ab; }
+.insp-info > span:last-child { font-family: var(--font-mono); font-size: 11px; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Colour swatches (text, outline, background): the brand kit first, then a picker */
+.insp-swatches { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; grid-column: 2 / 3; }
+.insp-swatches button { width: 18px; height: 18px; padding: 0; border: 1px solid #34343a; border-radius: 3px; cursor: pointer; box-shadow: 0 0 0 1.5px transparent; }
+.insp-swatches button.on { box-shadow: 0 0 0 1.5px #151517, 0 0 0 3px #ffffff; }
+.insp-swatches button.more { display: grid; place-items: center; border-style: dashed; background: transparent; color: #8a8a93; }
+.insp-swatches button.more:hover { color: #ededef; }
+.insp-swatches input[type='color'] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+/* Naming a saved look */
+.insp-name-row { margin-top: 10px; }
+.insp-input { width: 100%; height: 26px; box-sizing: border-box; padding: 0 8px; border: 1px solid #2a2a2e; border-radius: 3px; background: #1c1c1f; color: #ededef; font: inherit; font-size: 12px; outline: 0; }
+.insp-input:focus { border-color: #6f86ff; }
+.insp-busy { position: relative; display: flex; align-items: center; gap: 8px; margin: 2px 0 6px; padding: 6px 8px 8px; border-radius: 3px; background: #1C1C1F; font-size: 12px; color: #C4C4CA; overflow: hidden; }

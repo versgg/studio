@@ -1,0 +1,16 @@
+/* ElevenLabs key help: the link to make a key and the permissions it needs. */
+.ekh { display: flex; flex-direction: column; gap: 6px; font-size: 12px; line-height: 16px; }
+.ekh-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ekh-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: #A9B6FF; font-size: 12px; cursor: pointer; }
+.ekh-link:hover { color: #D3DAFF; }
+.ekh-toggle { padding: 0; border: 0; background: transparent; color: #8A8A93; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.ekh-toggle:hover { color: #EDEDEF; }
+.ekh-box { padding: 8px 10px; border-radius: 3px; background: #1C1C1F; border: 1px solid #26262A; color: #C4C4CA; }
+.ekh-box p { margin: 0 0 6px; }
+.ekh-box strong { color: #EDEDEF; font-weight: 500; }
+.ekh-box table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
+.ekh-box th, .ekh-box td { padding: 3px 8px 3px 0; text-align: left; vertical-align: top; border-bottom: 1px solid #26262A; }
+.ekh-box tr:last-child th, .ekh-box tr:last-child td { border-bottom: 0; }
+.ekh-box th { font-weight: 500; color: #EDEDEF; white-space: nowrap; }
+.ekh-box td.lvl { font-family: var(--font-mono); font-size: 11px; color: #A3A3AB; white-space: nowrap; }
+.ekh-sub { color: #8A8A93; }

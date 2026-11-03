@@ -1,0 +1,33 @@
+/* Import from CapCut (CapcutDialog.tsx): CapCut's projects as covers, then progress, then what came over. */
+.pd.cc-dialog { width: 520px; }
+.pd.cc-wide { width: 920px; height: calc(100vh - 80px); max-height: 760px; }
+.cc-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #26262A; }
+.cc-search { flex: 0 0 200px; }
+.cc-body { flex: 1; min-height: 0; }
+.cc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 16px 12px; }
+.cc-card { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 0; border: 0; background: transparent; color: #EDEDEF; text-align: left; font: inherit; }
+.cc-thumb { position: relative; display: block; aspect-ratio: 3 / 4; margin-bottom: 6px; border-radius: 4px; overflow: hidden; background: #1C1C1F; }
+.cc-card:hover:not(:disabled) .cc-thumb, .cc-card:focus-visible .cc-thumb { box-shadow: 0 0 0 1.5px #6F86FF; }
+.cc-card:focus-visible { outline: 0; }
+.cc-card:disabled { cursor: default; }
+.cc-card:disabled .cc-cover { opacity: 0.35; }
+.cc-cover { width: 100%; height: 100%; display: grid; place-items: center; color: #6A6A73; }
+.cc-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cc-cover img.wide { object-fit: contain; }
+.cc-cover.small { flex: 0 0 72px; width: 72px; height: 96px; border-radius: 3px; overflow: hidden; background: #1C1C1F; }
+.cc-dur { position: absolute; right: 6px; bottom: 6px; padding: 1px 5px; border-radius: 2px; font-family: var(--font-mono); font-size: 11px; background: rgba(14, 14, 16, 0.78); color: #EDEDEF; }
+.cc-tag { position: absolute; left: 6px; top: 6px; padding: 1px 5px; border-radius: 2px; font-size: 11px; background: rgba(14, 14, 16, 0.78); color: #C4C4CA; }
+.cc-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-sub { font-size: 11px; color: #8A8A93; white-space: nowrap; }
+.cc-head { display: flex; gap: 14px; align-items: flex-start; }
+.cc-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+.cc-head-text strong { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-stage { font-size: 12px; color: #C4C4CA; }
+.cc-bar-track { height: 4px; border-radius: 2px; background: #26262A; overflow: hidden; }
+.cc-bar-track > div { height: 100%; background: #3B57F0; transition: width 0.2s; }
+.cc-pct { font-family: var(--font-mono); font-size: 11px; color: #8A8A93; }
+.cc-section h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: #A3A3AB; }
+.cc-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #C4C4CA; }
+.cc-list.mono { font-family: var(--font-mono); font-size: 11px; }
+.cc-list.mono li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }

@@ -1,0 +1,21 @@
+{
+  "name": "studio",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "native": "node scripts/build-native.mjs",
+    "dev": "npm run native && npm run dev -w @studio/desktop",
+    "build": "npm run native && npm run build -w @studio/desktop",
+    "start": "npm run start -w @studio/desktop",
+    "bench": "npm run build && npm run bench -w @studio/desktop",
+    "test": "cargo test --workspace && npm run typecheck -w @studio/desktop && node --test scripts/vmake-estimate.test.mjs scripts/stems.test.mjs",
+    "smoke": "npm run native && node scripts/smoke.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "ui-check": "npm run build && node scripts/ui-check.mjs",
+    "drop-check": "bash scripts/drop-check/run.sh"
+  }
+}

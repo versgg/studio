@@ -1,0 +1,15 @@
+/target
+node_modules/
+apps/desktop/dist/
+apps/desktop/dist-renderer/
+apps/desktop/native/*.node
+*.ring
+*.log
+out/
+
+# Notes kept on the author's computer only.
+CLAUDE.md
+CLAUDE.local.md
+docs/BROWSER.md
+perf/
+.claude/

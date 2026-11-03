@@ -1,0 +1,13 @@
+[package]
+name = "studio-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+studio-engine-core.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

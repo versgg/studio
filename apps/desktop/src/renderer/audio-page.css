@@ -1,0 +1,190 @@
+/* The Audio page (AudioPage.tsx), drawn to Audio.dc.html: sizes and colours as on the canvas. */
+
+.ap { flex: 1; min-height: 0; height: 100%; display: flex; background: #0E0E10; color: #EDEDEF; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; line-height: 18px; overflow: hidden; }
+.ap button { font: inherit; cursor: pointer; }
+.ap button:disabled { cursor: default; }
+.ap button:focus-visible, .ap input:focus-visible, .ap [tabindex]:focus-visible { outline: 1px solid #6F86FF; outline-offset: 1px; }
+.ap-scroll { scrollbar-width: thin; scrollbar-color: #2E2E34 transparent; }
+.ap-ib:hover:not(:disabled) { background: #24242A !important; color: #EDEDEF !important; }
+.ap-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.ap-mono { font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+.ap-flex { flex: 1; }
+
+.ap-main { flex: 1 1 760px; min-width: 0; display: flex; flex-direction: column; }
+
+/* Toolbar */
+.ap-toolbar { height: 40px; flex: 0 0 40px; box-sizing: border-box; padding: 0 8px; display: flex; align-items: center; gap: 2px; background: #151517; border-bottom: 1px solid #26262A; white-space: nowrap; overflow: hidden; }
+.ap-tool { width: 28px; height: 28px; flex: 0 0 28px; padding: 0; border: 0; border-radius: 3px; display: grid; place-items: center; }
+.ap-tsep { width: 1px; height: 16px; flex: 0 0 1px; margin: 0 6px; background: #2E2E34; }
+.ap-tsep.wide { margin: 0 8px; }
+.ap-sel-label { margin-left: 14px; font-size: 12px; color: #8A8A93; }
+.ap-sel-value { margin-left: 6px; }
+.ap-view-label { font-size: 12px; color: #8A8A93; margin-right: 6px; }
+.ap-seg { display: flex; padding: 2px; border-radius: 3px; background: #1C1C1F; border: 1px solid #26262A; }
+.ap-seg button { height: 22px; padding: 0 10px; border: 0; border-radius: 2px; font-size: 12px; line-height: 22px; background: transparent; color: #8A8A93; }
+.ap-seg button.on { background: #2E2E34; color: #EDEDEF; }
+.ap-rms { margin-left: 10px; height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 6px; border: 0; border-radius: 3px; background: transparent; color: #A3A3AB; font-size: 12px; }
+.ap-switch { position: relative; display: block; width: 24px; height: 14px; flex: 0 0 24px; border-radius: 7px; }
+.ap-switch > span { position: absolute; top: 2px; width: 10px; height: 10px; border-radius: 50%; background: #FFFFFF; }
+
+/* Ruler */
+.ap-ruler-row { height: 40px; flex: 0 0 40px; display: flex; background: #151517; border-bottom: 1px solid #26262A; }
+.ap-corner { flex: 0 0 220px; width: 220px; min-width: 0; box-sizing: border-box; border-right: 1px solid #26262A; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: #8A8A93; }
+.ap-addtrack { height: 24px; display: flex; align-items: center; gap: 4px; padding: 0 6px; border: 0; border-radius: 3px; background: transparent; color: #A3A3AB; font-size: 12px; }
+.ap-ruler { flex: 1; min-width: 0; position: relative; overflow: hidden; margin-right: 12px; cursor: text; touch-action: none; }
+.ap-loop { position: absolute; top: 3px; height: 9px; border-radius: 2px; }
+.ap-tick { position: absolute; bottom: 0; border-left: 1px solid #34343A; pointer-events: none; }
+.ap-rlabel { position: absolute; top: 16px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; line-height: 12px; color: #8A8A93; pointer-events: none; white-space: nowrap; }
+.ap-rhead { position: absolute; top: 14px; width: 11px; height: 14px; margin-left: -5.5px; background: #FF6B4A; border-radius: 2px 2px 5px 5px; pointer-events: none; }
+
+/* Tracks */
+.ap-tracks { flex: 1; min-height: 0; overflow: auto; display: flex; background: #121214; }
+.ap-heads { flex: 0 0 220px; width: 220px; min-width: 0; overflow: hidden; box-sizing: border-box; padding: 8px 0 0 8px; background: #151517; border-right: 1px solid #26262A; }
+.ap-lanes { flex: 1; min-width: 0; position: relative; box-sizing: border-box; padding-top: 8px; margin-right: 12px; overflow: hidden; }
+.ap-lane { position: relative; margin-bottom: 6px; cursor: text; touch-action: none; }
+
+.ap-head { margin-bottom: 6px; box-sizing: border-box; padding: 8px 8px 8px 10px; border-radius: 4px; display: flex; gap: 8px; }
+.ap-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+.ap-head-row { height: 20px; display: flex; align-items: center; gap: 6px; }
+.ap-head-color { flex: 0 0 8px; height: 8px; border-radius: 2px; }
+.ap-head-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-ms { width: 20px; height: 20px; flex: 0 0 20px; padding: 0; border: 0; border-radius: 3px; font-size: 10px; font-weight: 600; line-height: 20px; }
+.ap-more { width: 20px; height: 20px; flex: 0 0 20px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #8A8A93; display: grid; place-items: center; }
+.ap-mix { gap: 8px; }
+.ap-pan { position: relative; flex: 0 0 18px; height: 18px; box-sizing: border-box; border-radius: 50%; border: 1.5px solid #4A4A52; cursor: ns-resize; touch-action: none; }
+.ap-pan > span { position: absolute; left: 7px; top: 1px; width: 1.5px; height: 6px; background: #EDEDEF; transform-origin: 0.75px 6.5px; }
+.ap-fader { position: relative; flex: 1; height: 16px; display: block; }
+.ap-fader-track { position: absolute; left: 0; right: 0; top: 7px; height: 2px; border-radius: 1px; background: #34343A; }
+.ap-fader-fill { position: absolute; left: 0; top: 7px; height: 2px; border-radius: 1px; background: #A3A3AB; }
+.ap-fader-knob { position: absolute; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: #EDEDEF; }
+.ap-fader input, .ap-slider input { position: absolute; inset: 0; width: 100%; height: 16px; margin: 0; opacity: 0; cursor: pointer; }
+.ap-db { flex: 0 0 46px; font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #A3A3AB; text-align: right; white-space: nowrap; }
+.ap-fxbtn { height: 24px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px; border: 1px solid #34343A; border-radius: 3px; background: transparent; color: #EDEDEF; font-size: 12px; }
+.ap-fxbtn > span { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #8A8A93; }
+.ap-meters { flex: 0 0 18px; display: flex; gap: 2px; align-items: flex-end; padding: 2px 0; }
+.ap-meters > span { position: relative; flex: 1; height: 100%; border-radius: 1px; background: #1C1C1F; overflow: hidden; }
+.ap-meters > span > span { position: absolute; left: 0; right: 0; bottom: 0; background: linear-gradient(to top, #50DF46 0%, #50DF46 70%, #FFE100 92%); }
+
+.ap-clip { position: absolute; top: 0; bottom: 0; box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; border-radius: 4px; border: 1px solid #000000; }
+.ap-clip.selected { box-shadow: 0 0 0 1.5px #FFFFFF; }
+.ap-clip-head { flex: 0 0 auto; box-sizing: border-box; padding: 0 4px; display: flex; align-items: center; gap: 6px; color: #111114; font-size: 11px; font-weight: 500; cursor: default; }
+.ap-clip-head > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-clip-more { width: 14px; height: 14px; flex: 0 0 14px; padding: 0; border: 0; background: transparent; display: grid; place-items: center; }
+.ap-wave { position: relative; flex: 1; min-height: 0; }
+.ap-wave svg { position: absolute; inset: 0; display: block; }
+.ap-envpt { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; box-sizing: border-box; border-radius: 50%; background: #B7FF01; border: 1.5px solid #0A241E; cursor: grab; z-index: 1; }
+.ap-spec { position: relative; flex: 1; min-height: 0; border-top: 1px solid rgba(0, 0, 0, 0.5); background: #000000; overflow: hidden; }
+.ap-spec img { position: absolute; top: 0; height: 100%; object-fit: fill; display: block; pointer-events: none; }
+.ap-clip-fill { flex: 1; }
+.ap-timesel { position: absolute; top: 0; bottom: 0; background: rgba(171, 231, 255, 0.3); border-left: 1px solid #ABE7FF; border-right: 1px solid #ABE7FF; pointer-events: none; z-index: 3; }
+.ap-label { position: absolute; top: 6px; bottom: 6px; box-sizing: border-box; padding: 0 8px; display: flex; align-items: center; gap: 6px; border-radius: 3px; background: #24242A; color: #D8D8DC; font-size: 11px; white-space: nowrap; overflow: hidden; cursor: pointer; }
+.ap-label.point { max-width: 160px; border-left: 1.5px solid #E8C050; border-radius: 0 3px 3px 0; }
+.ap-label-dot { flex: 0 0 6px; height: 6px; border-radius: 50%; }
+.ap-label-input { min-width: 0; flex: 1; height: 18px; padding: 0 4px; border: 1px solid #6F86FF; border-radius: 2px; background: #1C1C1F; color: #EDEDEF; font: inherit; }
+.ap-playhead { position: absolute; top: 0; bottom: 0; z-index: 6; width: 1.5px; margin-left: -0.75px; background: #FF6B4A; cursor: ew-resize; }
+/* The line can be grabbed a few pixels either side, as on the Edit timeline. */
+.ap-hover { position: absolute; top: 0; bottom: 0; z-index: 5; width: 1px; margin-left: -0.5px; background: rgba(237, 237, 239, 0.45); pointer-events: none; }
+.ap-hover.ruler { top: auto; height: 100%; background: rgba(237, 237, 239, 0.6); }
+.ap-cursor { position: absolute; top: 0; bottom: 0; z-index: 5; width: 1px; margin-left: -0.5px; background: #EDEDEF; pointer-events: none; }
+.ap-lanes { cursor: text; }
+.ap-playhead::before { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; width: 9.5px; }
+
+/* Loudness and Fix and tidy */
+.ap-bottom { height: 300px; flex: 0 0 300px; box-sizing: border-box; display: flex; background: #151517; border-top: 1px solid #26262A; }
+.ap-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; white-space: nowrap; }
+.ap-sec-head h2 { margin: 0; font-size: 12px; font-weight: 600; }
+.ap-sec-head > span { font-size: 12px; color: #8A8A93; overflow: hidden; text-overflow: ellipsis; }
+.ap-loud { flex: 0 1 380px; min-width: 0; box-sizing: border-box; padding: 14px 16px; border-right: 1px solid #26262A; display: flex; flex-direction: column; gap: 12px; }
+.ap-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ap-stats > div { display: flex; flex-direction: column; }
+.ap-stats > div > span:first-child { font-family: 'IBM Plex Mono', monospace; font-size: 20px; line-height: 26px; }
+.ap-stats > div > span:last-child { font-size: 11px; color: #8A8A93; }
+.ap-graph { position: relative; flex: 1; min-height: 0; border-radius: 3px; background: #0E0E10; border: 1px solid #26262A; }
+.ap-graph svg { position: absolute; inset: 0; display: block; }
+.ap-graph > span { position: absolute; right: 6px; top: 18%; font-size: 10px; color: #A9B6FF; }
+.ap-normalise { height: 28px; flex: 0 0 28px; padding: 0 12px; border: 1px solid #34343A; border-radius: 3px; background: transparent; color: #EDEDEF; font-size: 12px; }
+.ap-normalise:disabled { color: #8A8A93; }
+.ap-fix { flex: 1 1 360px; min-width: 0; box-sizing: border-box; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.ap-fix-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.ap-fix-tile { height: 50px; box-sizing: border-box; padding: 0 10px; display: flex; align-items: center; gap: 10px; border: 1px solid #26262A; border-radius: 3px; background: transparent; color: #EDEDEF; text-align: left; }
+.ap-fix-tile:hover { background: #1C1C1F; border-color: #3A3A40; }
+.ap-fix-tile > svg { flex: 0 0 16px; }
+.ap-fix-text { min-width: 0; display: flex; flex-direction: column; }
+.ap-fix-text > span:first-child { font-size: 12px; line-height: 16px; }
+.ap-fix-text > span:last-child { font-size: 11px; line-height: 14px; color: #8A8A93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Effects */
+.ap-aside { flex: 0 1 320px; min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; background: #151517; border-left: 1px solid #26262A; }
+.ap-aside-head { height: 40px; flex: 0 0 40px; box-sizing: border-box; padding: 0 8px 0 14px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #26262A; }
+.ap-aside-head h2 { margin: 0; flex: 1; font-size: 12px; font-weight: 600; }
+.ap-picker { max-width: 200px; height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid #2A2A2E; border-radius: 3px; background: #1C1C1F; color: #EDEDEF; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-picker > span { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 2px; }
+.ap-aside-body { flex: 1; min-height: 0; overflow: auto; padding: 0 14px 16px; }
+.ap-note { margin: 10px 0 2px; font-size: 12px; color: #8A8A93; }
+.ap-fx { padding: 8px 0 10px; border-bottom: 1px solid #1E1E21; }
+.ap-fx-head { height: 28px; display: flex; align-items: center; gap: 8px; }
+.ap-fx-head h3 { margin: 0; flex: 1; font-size: 12px; font-weight: 600; }
+.ap-fx-switch { padding: 0; border: 0; background: transparent; display: grid; place-items: center; }
+.ap-fx-sum { font-size: 11px; color: #8A8A93; }
+.ap-fx-more { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #8A8A93; display: grid; place-items: center; }
+.ap-curve { display: block; margin: 4px 0 6px; border-radius: 3px; background: #0E0E10; }
+.ap-fx-row { display: grid; grid-template-columns: 76px minmax(0, 1fr) 62px; align-items: center; gap: 8px; height: 26px; }
+.ap-fx-row label { font-size: 12px; color: #A3A3AB; }
+.ap-slider { position: relative; display: block; height: 16px; }
+.ap-slider-track { position: absolute; left: 0; right: 0; top: 7px; height: 2px; border-radius: 1px; background: #34343A; }
+.ap-slider-fill { position: absolute; left: 0; top: 7px; height: 2px; border-radius: 1px; background: #A3A3AB; }
+.ap-slider-knob { position: absolute; top: 3px; width: 10px; height: 10px; border-radius: 50%; background: #EDEDEF; box-shadow: 0 0 0 2px #151517; }
+.ap-fx-row output { height: 22px; box-sizing: border-box; padding: 0 6px; border: 1px solid #2A2A2E; border-radius: 3px; background: #1C1C1F; font-family: 'IBM Plex Mono', monospace; font-size: 11px; line-height: 20px; text-align: right; white-space: nowrap; }
+.ap-addfx { margin-top: 10px; width: 100%; height: 28px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 1px dashed #3A3A40; border-radius: 3px; background: transparent; color: #A3A3AB; font-size: 12px; }
+.ap-master-h { margin: 20px 0 4px; font-size: 12px; font-weight: 600; }
+.ap-master-p { margin: 0 0 4px; font-size: 12px; color: #8A8A93; }
+.ap-master-row { height: 32px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #1E1E21; }
+.ap-master-name { flex: 1; font-size: 12px; }
+.ap-master-val { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #A3A3AB; }
+
+/* Draw samples: the real samples where the clip shows, redrawn with the pencil */
+.ap-pencil { position: absolute; top: 0; bottom: 0; z-index: 2; cursor: crosshair; touch-action: none; background: rgba(14, 14, 16, 0.18); }
+.ap-pencil svg { position: absolute; inset: 0; display: block; }
+.ap-pencil > span { position: absolute; left: 8px; top: 6px; font-size: 11px; color: #111114; pointer-events: none; }
+.ap-pencil.far { cursor: zoom-in; background: transparent; }
+.ap-pencil.far > span { color: rgba(17, 17, 20, 0.7); }
+
+/* Spectral delete: boxes taken out of the spectrogram */
+.ap-spec.painting { cursor: crosshair; touch-action: none; }
+.ap-specbox { position: absolute; box-sizing: border-box; border: 1px solid #ABE7FF; background: rgba(14, 14, 16, 0.6); cursor: pointer; }
+.ap-specbox.drawing { background: rgba(171, 231, 255, 0.18); pointer-events: none; }
+.ap-fix-tile.on { box-shadow: inset 0 0 0 1px #ededef; }
+
+/* The wave for the part of a clip that shows: levels, then the samples as a line, then dots on stems */
+.ap-wavecanvas { position: absolute; top: 0; height: 100%; display: block; }
+.ap-wavecanvas.pencil { cursor: crosshair; touch-action: none; }
+.ap-wavecanvas.zoomhint { cursor: zoom-in; }
+.ap-wave svg { pointer-events: none; }
+.ap-wavehint { position: absolute; top: 4px; padding-left: 8px; box-sizing: border-box; font-size: 11px; color: rgba(17, 17, 20, 0.75); pointer-events: none; white-space: nowrap; overflow: hidden; }
+
+/* Remove silences: the pauses that would go, and the panel */
+.ap-silence { position: absolute; top: 0; bottom: 0; z-index: 3; pointer-events: none; background: repeating-linear-gradient(135deg, rgba(240, 128, 128, 0.42) 0 3px, rgba(240, 128, 128, 0.16) 3px 7px); box-shadow: inset 1px 0 #F08080, inset -1px 0 #F08080; }
+.ap-silence-panel .ap-sil-rows { display: flex; flex-direction: column; gap: 6px; }
+.ap-sil-sum { margin: 2px 0 0; font-family: var(--font-mono); font-size: 12px; color: #EDEDEF; }
+.ap-sil-err { color: #F08080; font-family: inherit; }
+.ap-sil-busy { color: #8A8A93; }
+.ap-sil-note { margin: 0; font-size: 12px; color: #8A8A93; }
+.ap-sil-actions { display: flex; gap: 6px; margin-top: auto; }
+.ap-sil-btn { height: 28px; padding: 0 12px; border: 1px solid #34343A; border-radius: 3px; background: transparent; color: #EDEDEF; font: inherit; font-size: 12px; cursor: pointer; }
+.ap-sil-btn:hover:not(:disabled) { background: #24242A; }
+.ap-sil-btn.primary { border-color: #3B57F0; background: #3B57F0; color: #FFFFFF; }
+.ap-sil-btn.primary:hover:not(:disabled) { background: #4A64F4; }
+.ap-sil-btn:disabled { opacity: 0.4; cursor: default; }
+.ap-silence-panel .ap-fx-row { grid-template-columns: 100px minmax(0, 1fr) 62px; }
+.ap-silence-panel .ap-fx-row label { white-space: nowrap; }
+
+/* A slow job's button while it runs (voiceover, captions…): the time so far and a moving bar. */
+.lib-actions button.busy, button.busy { position: relative; overflow: hidden; cursor: progress; opacity: 1; }
+.busy-spin { width: 12px; height: 12px; flex: 0 0 12px; box-sizing: border-box; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: busy-spin 0.8s linear infinite; }
+.busy-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.busy-bar > span { position: absolute; left: 0; top: 0; bottom: 0; background: #FFFFFF; transition: width 0.3s linear; }
+.busy-bar.waiting > span { width: 30%; animation: busy-slide 1.4s ease-in-out infinite; }
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+@keyframes busy-slide { 0% { left: -30%; } 100% { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .busy-spin, .busy-bar.waiting > span { animation: none; } }
+.busy-note { display: flex; align-items: center; gap: 6px; }
