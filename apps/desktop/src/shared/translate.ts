@@ -16,6 +16,8 @@ export type TrItem = {
   endUs: number
   /** A spoken sentence's voice: the dub's clone or a voiceover's voice, with how it was spoken. */
   voice?: { voiceId: string; model: string; speed: number; name: string }
+  /** A `v:<clipId>` sound cut into pieces (the pauses taken out): the clips after the first, which go with it when it's spoken again. */
+  pieces?: string[]
 }
 
 /** Claude's translation of one item, with what it says back in the project's language (to check meaning). */

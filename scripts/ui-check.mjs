@@ -34,6 +34,8 @@ if (clips.length < 3) {
 }
 const voice = join(work, 'voiceover.wav')
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-y', voice])
+// A voiceover to cut into pieces (its script and voice are written beside it by the check).
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=330:duration=9', '-y', join(work, 'cut-voiceover.wav')])
 
 // A spoken voiceover for the captions step, with its script beside it as a voiceover made in
 // the Audio tab keeps (Windows' own speech voice; espeak-ng elsewhere). That step runs a real

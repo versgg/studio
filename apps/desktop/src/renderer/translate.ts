@@ -11,7 +11,7 @@ import { trLangName, trRunning, type TrItem, type TrJob, type TrVoice } from '..
 import { captionTracks, cuesOf, setCaptionLines, wordsPerCaptionOf } from './captions'
 import { loadFont } from './textFonts'
 import { fontOf, layoutText, renderTextClip, textPlaceOf, type TextLook } from './textRender'
-import { findClip, getState, mediaById, openProjectAt, subscribeStore as subscribe, toast, type Snapshot } from './store'
+import { findClip, getState, mediaById, openProjectAt, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
 
 // The jobs of the open project: those translating it, and its own when it's a copy.
 
@@ -73,6 +73,15 @@ export async function collect(snap: Snapshot) {
   }
   const voiceovers = new Map<string, Voiceover>()
   const unread = new Set<string>()
+  // A sound cut into pieces (the pauses taken out) is said once: its pieces in time order, each on
+  // from the one before in the file, are one line from the first to the last (a piece that goes
+  // back in the file plays its words again, so it starts a line of its own).
+  const runs = new Map<string, Clip[]>()
+  for (const c of [...sounds].sort((a, b) => a.startUs - b.startUs)) {
+    const run = [...runs.values()].find((r) => r[0].mediaId === c.mediaId && c.inUs >= r[r.length - 1].inUs + r[r.length - 1].durationUs * (r[r.length - 1].speed ?? 1) - 100_000)
+    if (run) run.push(c)
+    else runs.set(c.id, [c])
+  }
   for (const c of sounds) {
     const m = mediaById(snap, c.mediaId)
     const s = ctx.sounds[m?.path ?? '']
@@ -92,13 +101,17 @@ export async function collect(snap: Snapshot) {
     }
     if (m && !s && maybeVoice(m)) unread.add(m.path)
     if (!s?.text || !letters.test(s.text)) continue
+    const run = runs.get(c.id)
+    if (!run) continue
+    const last = run[run.length - 1]
     items.push({
       id: `v:${c.id}`,
       kind: 'line',
       text: s.text,
       ...(s.original ? { original: s.original } : {}),
       startUs: c.startUs,
-      endUs: c.startUs + c.durationUs,
+      endUs: last.startUs + last.durationUs,
+      ...(run.length > 1 ? { pieces: run.slice(1).map((x) => x.id) } : {}),
       ...(s.voiceId ? { voice: { voiceId: s.voiceId, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, name: s.name ?? 'The voice' } } : {}),
     })
   }
@@ -248,7 +261,7 @@ async function applyTranslation(job: TrJob) {
         if (!findClip(before, cid)) continue
         const all = r.items.filter((i) => i.kind === 'line' && clipOf(i.id) === cid)
         const again = all.filter((i) => lines.some((l) => l.id === i.id))
-        if (again.length >= all.length) whole.push(cid)
+        if (again.length >= all.length) whole.push(cid, ...all.flatMap((i) => i.pieces ?? []).filter((x) => findClip(before, x)))
         else await cutOut(cid, again.map((i) => [i.startUs, i.endUs]))
       }
       if (whole.length) await engine.call('timeline.delete', { clipIds: whole })

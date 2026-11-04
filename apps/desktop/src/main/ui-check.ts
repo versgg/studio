@@ -2898,17 +2898,20 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
   )
   await shot('25-export-text')
   await step('Export window: closes again after saving the text', `__t.key('Escape'); await __t.until(() => !__t.q('.export-dialog'), 2000, 'the window to close'); return 'closed'`)
-  // A voiceover with its script, cut into pieces (the pauses taken out): each sentence once, where
-  // it's said (it was the whole script in every piece), and at its captions' words when there are some.
-  const cutVo = path.join(path.dirname(exportDir), 'cut-voiceover.mp3')
-  fs.writeFileSync(cutVo.replace(/\.mp3$/, '.script.txt'), 'Soft leather from the first step. Zips on both sides, so they slip on. Order yours today.\n')
+  // A voiceover with its script, cut into pieces (the pauses taken out): with captions, the .txt and
+  // .srt are the captions line by line as they're set (1 word each, 3 each); without, each sentence
+  // of the script once, where it's said (it was the whole script in every piece).
+  const cutVo = path.join(path.dirname(exportDir), 'cut-voiceover.wav')
+  const cutScript = 'Soft leather from the first step. Zips on both sides, so they slip on. Order yours today.'
+  fs.writeFileSync(cutVo.replace(/\.wav$/, '.script.txt'), `${cutScript}\n`)
+  fs.writeFileSync(cutVo.replace(/\.wav$/, '.voice.json'), JSON.stringify({ voiceId: 'fake-voice', name: 'Test Voice', modelId: 'eleven_v4', speed: 1, languageCode: 'en' }))
   await step(
-    'Export window: a voiceover cut into pieces has each sentence of its script once in the .txt and .srt, timed by its captions',
+    'Export window: the .txt and .srt follow the captions line by line (1 word, 3 words); a voiceover cut into pieces without captions has each sentence once',
     `const t = window.__studioDev.textExport
      const S = ['Soft leather from the first step.', 'Zips on both sides, so they slip on.', 'Order yours today.']
      const piece = (id, startUs, inUs, durationUs) => ({ id, mediaId: 'cut-vo', startUs, inUs, durationUs, volume: 1, speed: 1 })
      const snapOf = (more) => ({ dir: ${JSON.stringify(path.dirname(exportDir))}, project: { width: 1080, height: 1920,
-       media: [{ id: 'cut-vo', path: ${JSON.stringify(cutVo)}, name: 'cut-voiceover.mp3', kind: 'audio', durationUs: 9000000 }],
+       media: [{ id: 'cut-vo', path: ${JSON.stringify(cutVo)}, name: 'cut-voiceover.wav', kind: 'audio', durationUs: 9000000 }],
        tracks: [{ id: 'vo', kind: 'audio', clips: [piece('p1', 0, 0, 2800000), piece('p2', 2800000, 3200000, 3000000), piece('p3', 5800000, 6600000, 2400000)] }, ...more] } })
      const plain = await t.textOf(snapOf([]))
      const said = plain.said.map((c) => c.text)
@@ -2917,16 +2920,25 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      if (txt !== S.join('\\n') + '\\n') throw new Error('txt: ' + txt)
      const srt = t.srtFile(plain, 'said')
      if (srt.split('-->').length !== 4 || srt.split('Order yours').length !== 2) throw new Error('srt: ' + srt)
-     // Captions heard from it: each sentence from its first word to its last.
-     const at = [[200000, 2500000], [3000000, 5500000], [6000000, 7800000]]
-     const words = S.flatMap((s, n) => {
-       const ws = s.split(' '), [a, b] = at[n], d = (b - a) / ws.length
-       return ws.map((w, i) => ({ id: 'w' + n + '-' + i, mediaId: '', startUs: a + i * d, inUs: 0, durationUs: d, volume: 1, caption: true, text: { content: w.toLowerCase(), words: [{ w: w.toLowerCase(), s: 0, e: d }] } }))
-     })
-     const timed = await t.textOf(snapOf([{ id: 'cap', kind: 'video', role: 'captions', clips: words }]))
-     const got = timed.said.map((c) => [c.startUs, c.endUs])
-     if (timed.said.map((c) => c.text).join('|') !== S.join('|') || got.some(([a, b], n) => Math.abs(a - at[n][0]) > 1000 || Math.abs(b - at[n][1]) > 1000)) throw new Error('timed: ' + JSON.stringify(timed.said))
-     return { said, times: got.map(([a, b]) => (a / 1e6).toFixed(1) + '–' + (b / 1e6).toFixed(1)) }`,
+     // Captions of it, as the user set them (their own words: "Zippers"), n words a line, 0.4 s a word.
+     const words = S.join(' ').replace('Zips', 'Zippers').split(' ')
+     const lines = (n) => {
+       const out = []
+       for (let i = 0; i < words.length; i += n) out.push({ id: 'l' + n + '-' + i, mediaId: '', startUs: 200000 + i * 400000, inUs: 0, durationUs: Math.min(n, words.length - i) * 400000, volume: 1, caption: true, text: { content: words.slice(i, i + n).join(' ') } })
+       return out
+     }
+     const seen = {}
+     for (const n of [1, 3]) {
+       const caps = lines(n)
+       const r = await t.textOf(snapOf([{ id: 'cap' + n, kind: 'video', role: 'captions', clips: caps }]))
+       const want = caps.map((c) => [c.startUs, c.startUs + c.durationUs, c.text.content])
+       if (JSON.stringify(r.said.map((c) => [c.startUs, c.endUs, c.text])) !== JSON.stringify(want)) throw new Error(n + ' a line: ' + JSON.stringify(r.said.slice(0, 4)))
+       const txt = t.textFile(r, 'said'), srt = t.srtFile(r, 'said')
+       if (txt !== want.map((w) => w[2]).join('\\n') + '\\n') throw new Error(n + ' a line, txt: ' + txt.slice(0, 120))
+       if (srt.split('-->').length !== caps.length + 1) throw new Error(n + ' a line, srt: ' + srt.slice(0, 200))
+       seen[n + ' a line'] = { cues: caps.length, first: txt.split('\\n').slice(0, 2) }
+     }
+     return { said, ...seen }`,
   )
 
   // Translations, on the stand-ins (STUDIO_CLAUDE_FAKE=1 and STUDIO_ELEVEN_FAKE=1: never the real
@@ -2962,6 +2974,29 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        return { found, kept, picked, sentences: items.map((i) => i.text) }`,
     )
     await shot('23-translations-voice')
+    await step(
+      'Translations: a voiceover with its script, cut into pieces, is one line: its script said once, from the first piece to the last',
+      `const engine = window.studio.engine
+       const s0 = await __t.snap()
+       const imp = await engine.call('media.import', { paths: [${JSON.stringify(cutVo)}] })
+       const mediaId = imp.imported?.[0]
+       if (!mediaId) throw new Error('not imported: ' + JSON.stringify(imp))
+       const atUs = s0.durationUs
+       await engine.call('timeline.insert', { mediaId, atUs })
+       const ofIt = async () => (await __t.snap()).project.tracks.flatMap((t) => t.clips).filter((c) => c.mediaId === mediaId).sort((a, b) => a.startUs - b.startUs)
+       const first = (await ofIt())[0]
+       await engine.call('timeline.split', { atUs: atUs + 2000000, clipIds: [first.id] })
+       await engine.call('timeline.split', { atUs: atUs + 4500000, clipIds: [(await ofIt())[1].id] })
+       const pieces = await ofIt()
+       if (pieces.length !== 3) throw new Error(pieces.length + ' pieces')
+       const ids = pieces.map((c) => c.id)
+       const lines = (await window.__studio.collectTranslation()).items.filter((i) => i.kind === 'line' && ids.includes(i.id.slice(2)))
+       const last = pieces[2]
+       if (lines.length !== 1) throw new Error(lines.length + ' lines: ' + JSON.stringify(lines))
+       const l = lines[0]
+       if (l.id !== 'v:' + ids[0] || l.text !== ${JSON.stringify(cutScript)} || JSON.stringify(l.pieces) !== JSON.stringify(ids.slice(1)) || l.startUs !== pieces[0].startUs || l.endUs !== last.startUs + last.durationUs || l.voice?.voiceId !== 'fake-voice') throw new Error('the line: ' + JSON.stringify(l))
+       return { pieces: ids.length, line: { id: l.id, pieces: l.pieces.length, seconds: ((l.endUs - l.startUs) / 1e6).toFixed(1) } }`,
+    )
     await step(
       'Translations: the tab finds the text and starts one project per language',
       `${cat('Translations')}
@@ -3001,7 +3036,9 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const sounds = s.project.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips).map((c) => s.project.media.find((m) => m.id === c.mediaId)?.path ?? '')
        const said = sounds.filter((p) => /translation.line-v_/.test(p))
        if (said.length < 2) throw new Error(said.length + ' new sentences: ' + sounds.join(' | '))
-       if (sounds.some((p) => /voiceover.wav$/.test(p))) throw new Error('the old voiceover is still there')
+       if (sounds.some((p) => /(^|[\\\\/])voiceover.wav$/.test(p))) throw new Error('the old voiceover is still there')
+       // The voiceover cut into pieces: every piece out, its script spoken once.
+       if (sounds.some((p) => /cut-voiceover.wav$/.test(p))) throw new Error('a piece of the cut voiceover is still there: ' + sounds.join(' | '))
        return { project: s.project.name, texts, said: said.length }`,
     )
     await shot('23b-translations-copy')
