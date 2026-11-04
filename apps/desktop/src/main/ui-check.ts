@@ -2898,6 +2898,36 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
   )
   await shot('25-export-text')
   await step('Export window: closes again after saving the text', `__t.key('Escape'); await __t.until(() => !__t.q('.export-dialog'), 2000, 'the window to close'); return 'closed'`)
+  // A voiceover with its script, cut into pieces (the pauses taken out): each sentence once, where
+  // it's said (it was the whole script in every piece), and at its captions' words when there are some.
+  const cutVo = path.join(path.dirname(exportDir), 'cut-voiceover.mp3')
+  fs.writeFileSync(cutVo.replace(/\.mp3$/, '.script.txt'), 'Soft leather from the first step. Zips on both sides, so they slip on. Order yours today.\n')
+  await step(
+    'Export window: a voiceover cut into pieces has each sentence of its script once in the .txt and .srt, timed by its captions',
+    `const t = window.__studioDev.textExport
+     const S = ['Soft leather from the first step.', 'Zips on both sides, so they slip on.', 'Order yours today.']
+     const piece = (id, startUs, inUs, durationUs) => ({ id, mediaId: 'cut-vo', startUs, inUs, durationUs, volume: 1, speed: 1 })
+     const snapOf = (more) => ({ dir: ${JSON.stringify(path.dirname(exportDir))}, project: { width: 1080, height: 1920,
+       media: [{ id: 'cut-vo', path: ${JSON.stringify(cutVo)}, name: 'cut-voiceover.mp3', kind: 'audio', durationUs: 9000000 }],
+       tracks: [{ id: 'vo', kind: 'audio', clips: [piece('p1', 0, 0, 2800000), piece('p2', 2800000, 3200000, 3000000), piece('p3', 5800000, 6600000, 2400000)] }, ...more] } })
+     const plain = await t.textOf(snapOf([]))
+     const said = plain.said.map((c) => c.text)
+     if (said.join('|') !== S.join('|')) throw new Error('said: ' + JSON.stringify(said))
+     const txt = t.textFile(plain, 'said')
+     if (txt !== S.join('\\n') + '\\n') throw new Error('txt: ' + txt)
+     const srt = t.srtFile(plain, 'said')
+     if (srt.split('-->').length !== 4 || srt.split('Order yours').length !== 2) throw new Error('srt: ' + srt)
+     // Captions heard from it: each sentence from its first word to its last.
+     const at = [[200000, 2500000], [3000000, 5500000], [6000000, 7800000]]
+     const words = S.flatMap((s, n) => {
+       const ws = s.split(' '), [a, b] = at[n], d = (b - a) / ws.length
+       return ws.map((w, i) => ({ id: 'w' + n + '-' + i, mediaId: '', startUs: a + i * d, inUs: 0, durationUs: d, volume: 1, caption: true, text: { content: w.toLowerCase(), words: [{ w: w.toLowerCase(), s: 0, e: d }] } }))
+     })
+     const timed = await t.textOf(snapOf([{ id: 'cap', kind: 'video', role: 'captions', clips: words }]))
+     const got = timed.said.map((c) => [c.startUs, c.endUs])
+     if (timed.said.map((c) => c.text).join('|') !== S.join('|') || got.some(([a, b], n) => Math.abs(a - at[n][0]) > 1000 || Math.abs(b - at[n][1]) > 1000)) throw new Error('timed: ' + JSON.stringify(timed.said))
+     return { said, times: got.map(([a, b]) => (a / 1e6).toFixed(1) + '–' + (b / 1e6).toFixed(1)) }`,
+  )
 
   // Translations, on the stand-ins (STUDIO_CLAUDE_FAKE=1 and STUDIO_ELEVEN_FAKE=1: never the real
   // Claude or ElevenLabs): two languages from the tab, the review, and the Norwegian copy with

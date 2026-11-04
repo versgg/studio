@@ -7,10 +7,12 @@
 //   - Said: the sentences a voice Studio made speaks (a dub's, a translation's, a voiceover with
 //     its script) where their clips are, and what a dub heard in a clip whose own sound plays when
 //     it's in the edit's language (a TikTok sound in English under a Swedish ad isn't what she
-//     says); with none of those, the captions.
+//     says); with none of those, the captions. Each sentence once, where it's heard, however many
+//     pieces its sound is cut into: a script has no times of its own, so its sentences are shared
+//     out over the file by length, then set to where the captions heard their words when they did.
 // With both, each part is headed "-- On-screen text" / "-- What she says", as the user writes them.
 
-import { captionTracks } from './captions'
+import { captionTracks, wordsOfTrack, type CaptionInfo } from './captions'
 import { mediaById, type Clip, type Snapshot } from './store'
 
 export type TextCue = { startUs: number; endUs: number; text: string }
@@ -27,6 +29,93 @@ function onTimeline(c: Clip, fromUs: number, toUs: number): [number, number] | n
   const a = c.inUs, b = c.inUs + c.durationUs * speed
   const lo = Math.max(a, fromUs), hi = Math.min(b, toUs)
   return hi - lo > 100_000 ? [c.startUs + (lo - a) / speed, c.startUs + (hi - a) / speed] : null
+}
+
+/**
+ * Where a stretch of a file is heard in the edit, through the clips that play it: a piece that
+ * carries on from the one before (further into the file, close after it) joins it, so a sentence
+ * a cut runs through is there once; a stretch played twice is there twice.
+ */
+export function heardAt(clips: Clip[], fromUs: number, toUs: number): [number, number][] {
+  const parts = clips.flatMap((c) => {
+    const span = onTimeline(c, fromUs, toUs)
+    return span ? [{ span, at: Math.max(c.inUs, fromUs) }] : []
+  })
+  parts.sort((a, b) => a.span[0] - b.span[0])
+  const out: typeof parts = []
+  for (const p of parts) {
+    const last = out[out.length - 1]
+    if (last && p.at >= last.at && p.span[0] - last.span[1] < 1_000_000) {
+      last.span[1] = Math.max(last.span[1], p.span[1])
+      last.at = p.at
+    } else out.push({ span: [...p.span], at: p.at })
+  }
+  return out.map((p) => p.span)
+}
+
+/** A script's sentences: at its line breaks, and after . ! ? … where the next one starts with a capital or a number. */
+export function scriptSentences(text: string): string[] {
+  return text
+    .split(/\n+/)
+    .flatMap((l) => l.replace(/\s+/g, ' ').trim().split(/(?<=[.!?…]["”»]?) (?=[\p{Lu}\p{N}"“«])/u))
+    .filter((s) => letters.test(s))
+}
+
+/** Sentences shared out over a file of `lengthUs` by their length (a space counts as a letter), in its own time. */
+function shareOut(sentences: string[], lengthUs: number) {
+  const total = sentences.reduce((n, s) => n + s.length + 1, 0)
+  let at = 0
+  return sentences.map((text) => {
+    const start = (at * lengthUs) / total
+    at += text.length + 1
+    return { text, start, end: (at * lengthUs) / total }
+  })
+}
+
+const token = (w: string) => w.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, '')
+
+/** The longest run of `a` found in order in `b`: the pairs of indexes that match. */
+function inOrder(a: string[], b: string[]): [number, number][] {
+  const w = b.length + 1
+  const t = new Uint16Array((a.length + 1) * w)
+  for (let i = a.length - 1; i >= 0; i--)
+    for (let j = b.length - 1; j >= 0; j--) t[i * w + j] = a[i] === b[j] ? t[(i + 1) * w + j + 1] + 1 : Math.max(t[(i + 1) * w + j], t[i * w + j + 1])
+  const pairs: [number, number][] = []
+  for (let i = 0, j = 0; i < a.length && j < b.length; )
+    if (a[i] === b[j]) pairs.push([i++, j++])
+    else if (t[(i + 1) * w + j] >= t[i * w + j + 1]) i++
+    else j++
+  return pairs
+}
+
+/**
+ * Sentences timed only by their length, set to where a captions track heard their words: each from
+ * the first of its words the captions have to the last. The track with most of them, and only when
+ * it has most of them (captions in another language, or of another voice, leave the times be).
+ */
+function timeByCaptions(cues: (TextCue & { shared?: boolean })[], tracks: CaptionInfo[]) {
+  const shared = cues.filter((c) => c.shared).sort((a, b) => a.startUs - b.startUs)
+  const mine = shared.flatMap((c, n) => c.text.split(/\s+/).map(token).filter(Boolean).map((w) => ({ w, n })))
+  let best: { pairs: [number, number][]; words: { start: number; end: number }[] } | null = null
+  for (const t of tracks) {
+    const words = (wordsOfTrack(t) ?? []).map((x) => ({ ...x, w: token(x.text) })).filter((x) => x.w).sort((a, b) => a.start - b.start)
+    if (!words.length || mine.length * words.length > 4_000_000) continue
+    const pairs = inOrder(mine.map((m) => m.w), words.map((x) => x.w))
+    if (!best || pairs.length > best.pairs.length) best = { pairs, words }
+  }
+  if (!best || best.pairs.length < mine.length * 0.6) return
+  const span = new Map<number, [number, number]>()
+  for (const [i, j] of best.pairs) {
+    const n = mine[i].n, x = best.words[j], s = span.get(n)
+    span.set(n, s ? [Math.min(s[0], x.start), Math.max(s[1], x.end)] : [x.start, x.end])
+  }
+  for (const [n, [startUs, endUs]] of span) Object.assign(shared[n], { startUs, endUs })
+  // A sentence the captions didn't hear keeps its time, between the ones around it.
+  shared.forEach((c, n) => {
+    if (span.has(n)) return
+    const startUs = Math.max(c.startUs, shared[n - 1]?.endUs ?? 0), endUs = Math.min(c.endUs, shared[n + 1]?.startUs ?? Infinity)
+    if (endUs > startUs) Object.assign(c, { startUs, endUs })
+  })
 }
 
 export async function textOf(snap: Snapshot): Promise<EditText> {
@@ -64,22 +153,28 @@ export async function textOf(snap: Snapshot): Promise<EditText> {
     else screen.push({ ...i })
   }
 
-  // Said.
-  let said: TextCue[] = []
+  // Said: each sound file once, however many clips it's cut into.
+  let said: (TextCue & { shared?: boolean })[] = []
   let saidLang = ''
-  for (const c of audible) {
-    const s = ctx.sounds[path(c)]
-    if (s?.text && letters.test(s.text)) said.push({ startUs: c.startUs, endUs: c.startUs + c.durationUs, text: s.text })
+  const files = new Map<string, Clip[]>()
+  for (const c of audible) files.set(path(c), [...(files.get(path(c)) ?? []), c])
+  for (const [file, clips] of files) {
+    const s = ctx.sounds[file]
+    if (!s?.text || !letters.test(s.text)) continue
+    // Its sentences in its own time: as heard (a voiceover Studio didn't make), else the script's shared out over it.
+    const length = Math.max(mediaById(snap, clips[0].mediaId)?.durationUs ?? 0, ...clips.map((c) => c.inUs + c.durationUs * (c.speed ?? 1)))
+    const lines = s.read?.sentences.length ? s.read.sentences.map((x) => ({ text: x.text, start: x.start * 1e6, end: x.end * 1e6 })) : shareOut(scriptSentences(s.text), length)
+    for (const l of lines) for (const [startUs, endUs] of heardAt(clips, l.start, l.end)) said.push({ startUs, endUs, text: l.text, shared: !s.read?.sentences.length })
   }
-  for (const h of ctx.heard.filter((x) => !ctx.lang || x.language === ctx.lang))
-    for (const c of audible.filter((x) => lower(path(x)) === lower(h.source)))
-      for (const l of h.lines) {
-        const span = onTimeline(c, l.start * 1e6, l.end * 1e6)
-        if (span) {
-          said.push({ startUs: span[0], endUs: span[1], text: l.text })
-          saidLang = h.language
-        }
+  if (said.some((c) => c.shared)) timeByCaptions(said, captionTracks(snap))
+  for (const h of ctx.heard.filter((x) => !ctx.lang || x.language === ctx.lang)) {
+    const clips = audible.filter((x) => lower(path(x)) === lower(h.source))
+    for (const l of h.lines)
+      for (const [startUs, endUs] of heardAt(clips, l.start * 1e6, l.end * 1e6)) {
+        said.push({ startUs, endUs, text: l.text })
+        saidLang = h.language
       }
+  }
   let fromCaptions = false
   if (!said.length) {
     const rows = captionTracks(snap).filter((t) => t.lines.length)
@@ -88,7 +183,8 @@ export async function textOf(snap: Snapshot): Promise<EditText> {
     fromCaptions = said.length > 0
   }
   said.sort((a, b) => a.startUs - b.startUs)
-  return { screen: screen.map(({ startUs, endUs, text }) => ({ startUs, endUs, text })), said, saidLang, fromCaptions }
+  const cue = ({ startUs, endUs, text }: TextCue) => ({ startUs, endUs, text })
+  return { screen: screen.map(cue), said: said.map(cue), saidLang, fromCaptions }
 }
 
 const JOINERS = ['+', '&', ',', '/']
