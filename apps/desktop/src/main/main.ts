@@ -232,9 +232,9 @@ ipcMain.handle('window:isMaximized', (e) => !!senderWindow(e)?.isMaximized())
 ipcMain.on('shell:openFolder', (_e, p: string) => {
   if (fs.statSync(p, { throwIfNoEntry: false })?.isDirectory()) shell.openPath(p)
 })
-// An exported video, in the computer's own player (video files only).
+// An exported file, in the computer's own player (video and sound files only).
 ipcMain.on('shell:openVideo', (_e, p: string) => {
-  if (typeof p === 'string' && /\.(mp4|mov|m4v|webm)$/i.test(p) && fs.statSync(p, { throwIfNoEntry: false })?.isFile()) shell.openPath(p)
+  if (typeof p === 'string' && /\.(mp4|mov|m4v|webm|mp3|wav)$/i.test(p) && fs.statSync(p, { throwIfNoEntry: false })?.isFile()) shell.openPath(p)
 })
 
 // Electron reports each process's CPU use since the previous call, so take a baseline

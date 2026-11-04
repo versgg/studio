@@ -42,7 +42,7 @@ The agent checks your machine, installs what's missing (asking before it does), 
 
 - **Editing:** a library with linked folders, a magnetic main track, any number of video, text and sound tracks, split, ripple trim, delete left/right, snapping, box select, compound clips, freeze frames, speed and reverse, keyframes, crop, masks, colour and LUTs, and full undo history.
 - **Text and captions:** text clips with presets, outlines, shadows and backgrounds; captions from speech, editable line by line and exported as `.srt`.
-- **Export:** several formats in one go (9:16, 4:5, 1:1, 16:9), on the graphics card where there is one.
+- **Export:** several formats in one go (9:16, 4:5, 1:1, 16:9), on the graphics card where there is one, and the sound alone as MP3 or WAV.
 - **Audio page:** an Audacity-style view for cutting sound down to the sample, removing silence and mixing.
 - **Safe zones:** a Reels-style overlay that shows what the app's buttons and captions cover.
 - **Import from CapCut:** opens CapCut projects with their cuts, texts, captions and animations.

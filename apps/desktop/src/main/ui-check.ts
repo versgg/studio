@@ -353,6 +353,45 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      await __t.until(() => !__t.q('.export-dialog'), 2000, 'the window to close')
      return 'settings'`,
   )
+  // The sound alone: MP3 and WAV are files of their own, with or without the video formats.
+  await step(
+    'Export › Sound only: MP3 and WAV ticked alone fade Quality and list .mp3 and .wav',
+    `localStorage.setItem('studio.export.v2', JSON.stringify({ formats: ['mp3', 'wav'], quality: 'fast', folder: ${JSON.stringify(exportDir)}, after: 'Do nothing' }))
+     __t.key('Escape'); await __t.sleep(100)
+     __t.key('e', { ctrlKey: true })
+     const btn = await __t.until(() => __t.q('.export-dialog .exp-primary'), 3000, 'the export dialog')
+     const ticked = __t.qa('.exp-sound[aria-checked="true"]').map((b) => b.querySelector('.exp-format-name').textContent.split(' ')[0])
+     if (ticked.join() !== 'MP3,WAV') throw new Error('ticked: ' + ticked.join())
+     if (__t.qa('.exp-format:not(.exp-sound)[aria-checked="true"]').length) throw new Error('a video format is ticked')
+     if (!__t.q('.exp-group.exp-dim')) throw new Error('Quality is not faded with only sound ticked')
+     const files = __t.qa('.exp-file-name').map((f) => f.textContent)
+     if (files.length !== 2 || !/-audio-v\\d+\\.mp3$/.test(files[0]) || !/-audio-v\\d+\\.wav$/.test(files[1])) throw new Error('files: ' + files.join(', '))
+     if (__t.q('.exp-frame-label')?.textContent !== 'Sound only') throw new Error('label: ' + __t.q('.exp-frame-label')?.textContent)
+     if (!/Export 2 files/.test(btn.textContent)) throw new Error('button says ' + btn.textContent)
+     return { files, summary: __t.q('.exp-summary').textContent }`,
+  )
+  await shot('4b-export-sound')
+  await step(
+    'Export › Sound only: the MP3 and WAV are made, and ticking a video format brings Quality back',
+    `__t.q('.export-dialog .exp-primary').click()
+     await __t.until(() => __t.q('#exp-h')?.textContent === 'Done' || __t.q('.job.state-failed'), 120000, 'the sound files')
+     if (__t.q('.job.state-failed')) throw new Error(__t.q('.job .error')?.textContent || 'export failed')
+     const made = __t.qa('.exp-jobs .job').map((j) => j.querySelector('.job-name').textContent + ' · ' + j.querySelector('.job-format').textContent)
+     if (made.length !== 2 || !/\\.mp3 · MP3 · 320 kbps$/.test(made[0]) || !/\\.wav · WAV · 24-bit, 48 kHz$/.test(made[1])) throw new Error('made: ' + made.join(' | '))
+     for (const j of __t.qa('.exp-jobs .job-name')) if (!(await window.studio.files.exists(j.title))) throw new Error('no ' + j.title)
+     ;[...__t.qa('.exp-foot button')].find((b) => b.textContent === 'Close').click()
+     await __t.until(() => !__t.q('.export-dialog'), 2000, 'the window to close')
+     __t.key('e', { ctrlKey: true })
+     await __t.until(() => __t.q('.export-dialog .exp-primary'), 3000, 'the settings')
+     __t.qa('.exp-format:not(.exp-sound)')[0].click()
+     await __t.until(() => !__t.q('.exp-group.exp-dim'), 1000, 'Quality to come back')
+     const button = __t.q('.export-dialog .exp-primary').textContent
+     if (button !== 'Export 3 files') throw new Error('button says ' + button)
+     __t.key('Escape')
+     await __t.until(() => !__t.q('.export-dialog'), 2000, 'the window to close')
+     localStorage.setItem('studio.export.v2', JSON.stringify({ formats: ['9:16'], quality: 'fast', folder: ${JSON.stringify(exportDir)}, after: 'Do nothing' }))
+     return { made, button }`,
+  )
 
   await step(
     'play advances the playhead (muted), then pauses',

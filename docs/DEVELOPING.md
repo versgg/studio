@@ -23,7 +23,7 @@
 | `npm start` | Runs the built app |
 | `npm test` | `cargo test --workspace`, the TypeScript type check and the unit tests |
 | `node scripts/smoke.mjs [w] [h] [fps]` | Engine, socket, frame ring and addon, without Electron |
-| `npm run e2e` | Engine end-to-end: import, edits, seek, play, split, undo, export 9:16 and 4:5 |
+| `npm run e2e` | Engine end-to-end: import, edits, seek, play, split, undo, export 9:16 and 4:5, and the sound alone as MP3 and WAV |
 | `npm run ui-check` | Builds, then drives the real app off-screen: library, timeline, keys, Inspector, export, play and every panel. Screenshots and `results.json` go to `out/ui-check/` |
 | `npm run drop-check` | Linux with GNOME: real file drags dropped on every part of the window, in a GNOME Shell with no screen |
 | `npm run doctor` | Checks the machine (Node, Rust, FFmpeg and its encoders, ALSA on Linux) and says how to fix what's missing |

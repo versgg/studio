@@ -39,6 +39,13 @@ const QUALITY = [
   ['balanced', 'Balanced', 'Graphics card, higher bitrate. Ads.'],
   ['best', 'Best', 'Software encoder. Slower, cleanest.'],
 ] as const
+/** The sound alone, each a file of its own: id, name, spec, what it's for, MB per second. */
+const SOUNDS = [
+  ['mp3', 'MP3', '320 kbps', 'Plays anywhere', 320 / 8 / 1000],
+  ['wav', 'WAV', '24-bit, 48 kHz', 'Uncompressed, for editing', (48000 * 3 * 2) / 1e6],
+] as const
+const ORDER: string[] = [...FORMATS.map(([f]) => f), ...SOUNDS.map(([s]) => s)]
+const soundOf = (f: string) => SOUNDS.find(([s]) => s === f)
 const MBPS: Record<string, number> = { fast: 10, balanced: 12, best: 16 }
 const BITRATES = [8, 10, 12, 16, 20, 25]
 const AUDIO_KBPS = 320
@@ -105,7 +112,7 @@ function captionsClear(snap: Snapshot | null): { lines: number; outside: number;
 }
 
 /** The checks on the left: what the export will meet, from the project as it is. */
-function checks(snap: Snapshot | null, durationUs: Us, nvenc: boolean, quality: string) {
+function checks(snap: Snapshot | null, durationUs: Us, nvenc: boolean, quality: string, video: boolean) {
   const p = snap?.project
   const used = p?.tracks.flatMap((t) => t.clips) ?? []
   const media = used.map((c) => mediaById(snap, c.mediaId))
@@ -130,7 +137,7 @@ function checks(snap: Snapshot | null, durationUs: Us, nvenc: boolean, quality: 
       ? { ok: true, text: 'Loudness as mixed', sub: 'Levelling is off on the Audio page' }
       : { ok: true, text: `Loudness levelled to ${lufs.toFixed(0).replace('-', '−')} LUFS`, sub: 'Measured during the export, peaks under −1 dBTP' },
     { ok: durationUs > 0, text: `Length ${len(durationUs)}`, sub: durationUs > 0 ? 'From the first frame to the last clip' : 'The timeline is empty' },
-    quality === 'best' || nvenc ? { ok: true, text: quality === 'best' ? 'Software encoder' : 'Graphics card encoder found', sub: quality === 'best' ? 'x264, slow preset' : 'NVENC H.264' } : { ok: false, text: 'No graphics card encoder', sub: 'Fast and Balanced use the software encoder' },
+    ...(video ? [quality === 'best' || nvenc ? { ok: true, text: quality === 'best' ? 'Software encoder' : 'Graphics card encoder found', sub: quality === 'best' ? 'x264, slow preset' : 'NVENC H.264' } : { ok: false, text: 'No graphics card encoder', sub: 'Fast and Balanced use the software encoder' }] : []),
   ]
   return out
 }
@@ -181,9 +188,21 @@ export function ExportDialog() {
   }, [only, snap])
   const mbps = bitrates[quality] ?? MBPS[quality]
   const chosen = FORMATS.filter(([f]) => formats.includes(f))
+  const canMp3 = caps?.mp3 !== false
+  const sounds = SOUNDS.filter(([s]) => formats.includes(s) && (s !== 'mp3' || canMp3))
+  // Every file this export makes: the video formats, then the sound alone.
+  const outputs = [...chosen.map(([f]) => f), ...sounds.map(([s]) => s)]
   const projectName = `${project?.name ?? 'Export'}${only?.length ? ' selection' : ''}`
-  const stems = chosen.map(([f]) => [f, fileStem(pattern, projectName, f, version)] as const)
+  // {format} is "audio" for the sound files: Promo-audio-v1.mp3.
+  const stemOf = (f: string, v: number) => fileStem(pattern, projectName, soundOf(f) ? 'audio' : f, v)
+  const extOf = (f: string) => (soundOf(f) ? f : 'mp4')
+  const stems = outputs.map((f) => [f, stemOf(f, version)] as const)
   const sizeMb = (span.dur / 1e6) * ((mbps + AUDIO_KBPS / 1000) / 8)
+  const sizeOf = (f: string) => {
+    const s = soundOf(f)
+    return s ? (span.dur / 1e6) * s[4] : sizeMb
+  }
+  const totalMb = outputs.reduce((n, f) => n + sizeOf(f), 0)
   const empty = !span.dur
   const hasCaptions = !!project?.tracks.some((t) => t.role === 'captions' && t.clips.length)
 
@@ -193,7 +212,7 @@ export function ExportDialog() {
     let live = true
     ;(async () => {
       for (let v = 1; v < 200; v++) {
-        const names = chosen.map(([f]) => `${folder}${sep(folder)}${fileStem(pattern, projectName, f, v)}.mp4`)
+        const names = outputs.map((f) => `${folder}${sep(folder)}${stemOf(f, v)}.${extOf(f)}`)
         const exists = await window.studio.app.existing(names)
         if (!exists.some(Boolean)) {
           if (live) setVersion(v)
@@ -206,10 +225,10 @@ export function ExportDialog() {
     }
   }, [folder, pattern, formats.join(), projectName, jobs.length])
   useEffect(() => {
-    if (!formats.includes(pv) && formats.length) setPv(formats[0])
+    if (!formats.includes(pv) && chosen.length) setPv(chosen[0][0])
   }, [formats, pv])
 
-  const toggle = (f: string) => setFormats((x) => (x.includes(f) ? x.filter((y) => y !== f) : FORMATS.map(([y]) => y).filter((y) => y === f || x.includes(y))))
+  const toggle = (f: string) => setFormats((x) => (x.includes(f) ? x.filter((y) => y !== f) : ORDER.filter((y) => y === f || x.includes(y))))
   // Closed while it's exporting, the files carry on, and Export brings this view back.
   const close = () => setState({ dialog: null, exportClips: null, ...(working ? {} : { exportBatch: null }) })
   const settings = (): Prefs => ({ formats, quality, folder, pattern, bitrate: bitrates, fps, captions, after })
@@ -255,7 +274,7 @@ export function ExportDialog() {
     setBusy(true)
     remember()
     const ids = await startExport(
-      formats,
+      outputs,
       quality,
       folder,
       projectName,
@@ -274,10 +293,10 @@ export function ExportDialog() {
     }
     setBusy(false)
     if (ids && closeAfter) setState({ exportBatch: ids })
-    if (ok && !closeAfter) toast(`${formats.length === 1 ? 'One file' : `${formats.length} files`} added to the export queue`)
+    if (ok && !closeAfter) toast(`${outputs.length === 1 ? 'One file' : `${outputs.length} files`} added to the export queue`)
   }
 
-  const checkList = checks(snap, span.dur, !!caps?.nvenc, quality)
+  const checkList = checks(snap, span.dur, !!caps?.nvenc, quality, chosen.length > 0)
   const gpu = !!caps?.nvenc && quality !== 'best'
   const ratio = project ? project.width / project.height : 9 / 16
   const boxW = ratio >= 1 ? 220 : 180
@@ -310,8 +329,8 @@ export function ExportDialog() {
           <section className="exp-col exp-preview" aria-label="Preview and checks">
             <div className="exp-frame" style={{ width: boxW, height: boxH }}>
               <FirstFrame snap={snap} atUs={span.start} />
-              {pv !== current && <span className="exp-crop" aria-hidden="true" style={{ left: (boxW - crop.w) / 2, top: (boxH - crop.h) / 2, width: crop.w, height: crop.h }} />}
-              <span className="exp-frame-label">{pv === current ? pv : `${pv} crop`}</span>
+              {chosen.length > 0 && pv !== current && <span className="exp-crop" aria-hidden="true" style={{ left: (boxW - crop.w) / 2, top: (boxH - crop.h) / 2, width: crop.w, height: crop.h }} />}
+              <span className="exp-frame-label">{!chosen.length ? 'Sound only' : pv === current ? pv : `${pv} crop`}</span>
             </div>
             {chosen.length > 1 && (
               <div className="seg-pill" role="group" aria-label="Preview format">
@@ -350,9 +369,7 @@ export function ExportDialog() {
                 return (
                   <button key={f} type="button" role="checkbox" aria-checked={on} className={`exp-format${on ? ' on' : ''}`} onClick={() => toggle(f)}>
                     <span className="exp-box" aria-hidden="true">
-                      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#FFFFFF" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M3 8.5l3 3 7-7" />
-                      </svg>
+                      <Tick />
                     </span>
                     <span className="exp-glyph" aria-hidden="true">
                       <span style={{ width: gw, height: gh }} />
@@ -371,7 +388,35 @@ export function ExportDialog() {
               })}
             </div>
             <div className="exp-group">
-              <h2>Quality</h2>
+              <div className="exp-title-row">
+                <h2>Sound only</h2>
+                <span className="exp-sub-12">The same mix, levelled as the video</span>
+              </div>
+              <div className="exp-sounds">
+                {SOUNDS.map(([s, name, spec, use]) => {
+                  const off = s === 'mp3' && !canMp3
+                  const on = !off && formats.includes(s)
+                  return (
+                    <button key={s} type="button" role="checkbox" aria-checked={on} disabled={off} className={`exp-format exp-sound${on ? ' on' : ''}`} onClick={() => toggle(s)} title={off ? 'This FFmpeg has no MP3 encoder (libmp3lame)' : undefined}>
+                      <span className="exp-box" aria-hidden="true">
+                        <Tick />
+                      </span>
+                      <span className="exp-format-text">
+                        <span className="exp-format-name">
+                          {name} <span>· {spec}</span>
+                        </span>
+                        <span className="exp-sub">{off ? 'No MP3 encoder in this FFmpeg' : use}</span>
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div className={`exp-group${chosen.length ? '' : ' exp-dim'}`}>
+              <div className="exp-title-row">
+                <h2>Quality</h2>
+                {!chosen.length && <span className="exp-sub-12">For video files</span>}
+              </div>
               <div className="exp-qualities" role="group" aria-label="Quality">
                 {QUALITY.map(([q, name, sub]) => (
                   <button key={q} type="button" className={q === quality ? 'on' : ''} aria-pressed={q === quality} onClick={() => setQuality(q)}>
@@ -456,10 +501,12 @@ export function ExportDialog() {
               {stems.map(([f, stem]) => (
                 <div key={f} className="exp-file">
                   <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#A3A3AB" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M2 4h9v8H2z M11 7l3-2v6l-3-2" />
+                    <path d={soundOf(f) ? 'M2 6.5v3 M5 4v8 M8 2v12 M11 5v6 M14 7v2' : 'M2 4h9v8H2z M11 7l3-2v6l-3-2'} />
                   </svg>
-                  <span className="exp-file-name">{stem}.mp4</span>
-                  <span className="exp-file-size">about {Math.max(1, Math.round(sizeMb))} MB</span>
+                  <span className="exp-file-name">
+                    {stem}.{extOf(f)}
+                  </span>
+                  <span className="exp-file-size">about {Math.max(1, Math.round(sizeOf(f)))} MB</span>
                 </div>
               ))}
             </div>
@@ -546,13 +593,13 @@ export function ExportDialog() {
 
         <div className="exp-foot">
           <span className="exp-summary">
-            {empty ? 'The timeline is empty.' : `${chosen.length} ${chosen.length === 1 ? 'file' : 'files'} · about ${Math.max(1, Math.round(sizeMb * chosen.length))} MB in total`}
+            {empty ? 'The timeline is empty.' : `${outputs.length} ${outputs.length === 1 ? 'file' : 'files'} · about ${Math.max(1, Math.round(totalMb))} MB in total`}
           </span>
-          <button type="button" className="exp-secondary" onClick={() => go(false)} disabled={busy || empty || !chosen.length || !folder}>
+          <button type="button" className="exp-secondary" onClick={() => go(false)} disabled={busy || empty || !outputs.length || !folder}>
             Add to queue
           </button>
-          <button type="button" className="exp-primary button primary" onClick={() => go(true)} disabled={busy || empty || !chosen.length || !folder}>
-            {chosen.length ? `Export ${chosen.length} ${chosen.length === 1 ? 'file' : 'files'}` : 'Pick a format'}
+          <button type="button" className="exp-primary button primary" onClick={() => go(true)} disabled={busy || empty || !outputs.length || !folder}>
+            {outputs.length ? `Export ${outputs.length} ${outputs.length === 1 ? 'file' : 'files'}` : 'Pick a format'}
           </button>
         </div>
           </>
@@ -622,7 +669,7 @@ function ExportProgress({ jobs, snap, atUs, folder, frame, onClose }: { jobs: Ex
                     <span className="job-name" title={j.path}>
                       {basename(j.path)}
                     </span>
-                    <span className="job-format">{FORMAT_OF[`${j.width}x${j.height}`] ?? ''} · {j.width}×{j.height}</span>
+                    <span className="job-format">{j.sound ? `${soundOf(j.sound)?.[1] ?? j.sound.toUpperCase()} · ${soundOf(j.sound)?.[2] ?? ''}` : `${FORMAT_OF[`${j.width}x${j.height}`] ?? ''} · ${j.width}×${j.height}`}</span>
                     <span className="job-status">
                       {j.state === 'queued' && 'Waiting'}
                       {j.state === 'running' && `${Math.floor(j.fraction * 100)} %${jl != null ? ` · about ${clockOf(jl)} left` : ''}`}
@@ -678,6 +725,12 @@ function ExportProgress({ jobs, snap, atUs, folder, frame, onClose }: { jobs: Ex
     </>
   )
 }
+
+const Tick = () => (
+  <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="#FFFFFF" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 8.5l3 3 7-7" />
+  </svg>
+)
 
 const Chevron = () => (
   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="#8A8A93" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

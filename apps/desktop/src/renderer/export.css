@@ -53,6 +53,11 @@
 .exp-format-name { font-weight: 500; }
 .exp-format-name span { font-weight: 400; color: #8A8A93; }
 .exp-res { font-family: var(--font-mono); font-size: 11px; color: #A3A3AB; }
+.exp-format:disabled { opacity: 0.45; }
+.exp-sounds { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.exp-format.exp-sound { grid-template-columns: 16px minmax(0, 1fr); }
+/* Quality and the rest only shape video files: faded while only sound is ticked. */
+.exp-dim { opacity: 0.45; pointer-events: none; }
 
 .exp-qualities { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .exp-qualities button {

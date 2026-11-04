@@ -53,6 +53,7 @@ if (version) {
   const has = (e) => new RegExp(`\\s${e}\\s`).test(encoders)
   need(has('libx264'), 'x264 encoder (Best quality, and the fallback)', 'libx264', 'this FFmpeg build has no libx264; use a full build')
   need(has('aac'), 'AAC encoder', 'aac', 'this FFmpeg build has no AAC encoder')
+  want(has('libmp3lame'), 'MP3 encoder (Export › Sound only)', 'libmp3lame', 'this FFmpeg build has no libmp3lame; MP3 export is off (WAV still works)')
   const gpu = ['h264_nvenc', 'h264_vaapi', 'h264_qsv', 'h264_amf'].filter(has)
   want(gpu.length > 0, 'Graphics-card encoders', gpu.join(', '), 'none found; exports fall back to x264 (slower)')
   if (gpu.includes('h264_nvenc')) {

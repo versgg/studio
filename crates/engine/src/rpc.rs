@@ -1005,7 +1005,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
             "uptimeMs": engine.started.elapsed().as_millis() as u64,
         })),
         "engine.capabilities" => Ok(match &engine.services {
-            Ok(m) => json!({ "ffmpeg": m.ff.version, "nvenc": m.ff.has("h264_nvenc"), "encoders": m.ff.encoders.iter().filter(|e| e.contains("264") || e.contains("265") || e.contains("av1") || e.contains("hevc")).collect::<Vec<_>>(), "audioDevice": m.playback.audio.device, "projectsDir": engine.projects_dir.to_string_lossy() }),
+            Ok(m) => json!({ "ffmpeg": m.ff.version, "nvenc": m.ff.has("h264_nvenc"), "mp3": m.ff.has("libmp3lame"), "encoders": m.ff.encoders.iter().filter(|e| e.contains("264") || e.contains("265") || e.contains("av1") || e.contains("hevc")).collect::<Vec<_>>(), "audioDevice": m.playback.audio.device, "projectsDir": engine.projects_dir.to_string_lossy() }),
             Err(e) => json!({ "ffmpeg": null, "error": e, "projectsDir": engine.projects_dir.to_string_lossy() }),
         }),
 

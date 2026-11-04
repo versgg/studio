@@ -1,6 +1,7 @@
 //! Export queue. Same graph as preview at full size, encoded with NVENC (or x264), then
 //! the project's master stage (by default levelled to −14 LUFS with true peaks under
-//! −1 dBTP). One job per format; progress streams to the UI.
+//! −1 dBTP). One job per format; progress streams to the UI. The formats "mp3" and "wav"
+//! are the sound alone: the same mix through the same master stage, with no picture.
 
 use crate::events::Events;
 use serde_json::{Value, json};
@@ -26,10 +27,41 @@ pub struct ExportOptions {
     pub fps: Option<u32>,
 }
 
+/// The sound alone, as a file of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sound {
+    Mp3,
+    Wav,
+}
+
+impl Sound {
+    pub fn parse(format: &str) -> Option<Self> {
+        match format.to_ascii_lowercase().as_str() {
+            "mp3" => Some(Self::Mp3),
+            "wav" => Some(Self::Wav),
+            _ => None,
+        }
+    }
+    fn ext(self) -> &'static str {
+        match self {
+            Self::Mp3 => "mp3",
+            Self::Wav => "wav",
+        }
+    }
+    /// FFmpeg's codec arguments, and the file as the export window names it.
+    fn codec(self) -> ([&'static str; 4], &'static str) {
+        match self {
+            Self::Mp3 => (["-c:a", "libmp3lame", "-b:a", "320k"], "MP3 320 kbps"),
+            Self::Wav => (["-c:a", "pcm_s24le", "-rf64", "auto"], "WAV 24-bit"),
+        }
+    }
+}
+
 struct Job {
     id: String,
     width: u32,
     height: u32,
+    sound: Option<Sound>,
     path: PathBuf,
     child: Arc<Mutex<Option<Child>>>,
     cancelled: Arc<AtomicBool>,
@@ -42,9 +74,9 @@ pub struct Exports {
     active: Arc<Mutex<HashMap<String, (Arc<Mutex<Option<Child>>>, Arc<AtomicBool>)>>>,
 }
 
-/// `<folder>/<base>-WxH.mp4` (with no size, `<folder>/<base>.mp4`), then "-2", "-3" and on
-/// while that's taken.
-fn unique_path(folder: &Path, base: &str, size: Option<(u32, u32)>) -> PathBuf {
+/// `<folder>/<base>-WxH.<ext>` (with no size, `<folder>/<base>.<ext>`), then "-2", "-3" and
+/// on while that's taken.
+fn unique_path(folder: &Path, base: &str, size: Option<(u32, u32)>, ext: &str) -> PathBuf {
     let clean: String = base.chars().map(|c| if r#"<>:"/\|?*"#.contains(c) { '-' } else { c }).collect();
     let stem = match size {
         Some((w, h)) => format!("{clean}-{w}x{h}"),
@@ -52,7 +84,7 @@ fn unique_path(folder: &Path, base: &str, size: Option<(u32, u32)>) -> PathBuf {
     };
     let mut n = 1;
     loop {
-        let name = if n == 1 { format!("{stem}.mp4") } else { format!("{stem}-{n}.mp4") };
+        let name = if n == 1 { format!("{stem}.{ext}") } else { format!("{stem}-{n}.{ext}") };
         let p = folder.join(name);
         if !p.exists() {
             return p;
@@ -73,21 +105,38 @@ impl Exports {
         std::fs::create_dir_all(folder).map_err(|e| format!("Can't create {}: {e}", folder.display()))?;
         let mut jobs = vec![];
         for f in formats {
-            let (width, height) = format_size(f).ok_or_else(|| format!("Unknown format {f}"))?;
+            let sound = Sound::parse(f);
+            let (width, height) = match sound {
+                Some(_) => (0, 0),
+                None => format_size(f).ok_or_else(|| format!("Unknown format {f}"))?,
+            };
+            if sound == Some(Sound::Mp3) && !self.ff.has("libmp3lame") {
+                return Err("This FFmpeg has no MP3 encoder (libmp3lame). Export WAV, or install a full FFmpeg build.".into());
+            }
+            let ext = sound.map_or("mp4", Sound::ext);
             let id = format!("e{}", self.next.fetch_add(1, Ordering::Relaxed));
             let path = match options.names.get(f).map(|n| n.trim()).filter(|n| !n.is_empty()) {
-                Some(stem) => unique_path(folder, stem, None),
-                None => unique_path(folder, base, Some((width, height))),
+                Some(stem) => unique_path(folder, stem, None, ext),
+                None => unique_path(folder, base, sound.is_none().then_some((width, height)), ext),
             };
             // Reserve the name so two jobs in one batch never share it.
             let _ = std::fs::File::create(&path);
             let child = Arc::new(Mutex::new(None));
             let cancelled = Arc::new(AtomicBool::new(false));
             self.active.lock().unwrap().insert(id.clone(), (child.clone(), cancelled.clone()));
-            jobs.push(Job { id, width, height, path, child, cancelled });
+            jobs.push(Job { id, width, height, sound, path, child, cancelled });
         }
         let (_, encoder) = encoder_args_at(&self.ff, quality, options.bitrate_mbps);
-        let listed: Vec<Value> = jobs.iter().map(|j| json!({ "jobId": j.id, "width": j.width, "height": j.height, "path": j.path.to_string_lossy(), "encoder": encoder })).collect();
+        let listed: Vec<Value> = jobs
+            .iter()
+            .map(|j| {
+                let mut v = json!({ "jobId": j.id, "width": j.width, "height": j.height, "path": j.path.to_string_lossy(), "encoder": j.sound.map_or(encoder.as_str(), |s| s.codec().1) });
+                if let Some(s) = j.sound {
+                    v["sound"] = json!(s.ext());
+                }
+                v
+            })
+            .collect();
         let (ff, events, active) = (self.ff.clone(), self.events.clone(), self.active.clone());
         std::thread::Builder::new()
             .name("export".into())
@@ -122,10 +171,12 @@ fn run_job(ff: &Ffmpeg, events: &Events, project: &Project, quality: Quality, op
     p.height = job.height;
     let t0 = Instant::now();
     let (enc, encoder) = encoder_args_at(ff, quality, options.bitrate_mbps);
+    let encoder = job.sound.map_or(encoder, |s| s.codec().1.to_string());
     let fps = options.fps.unwrap_or(p.fps).clamp(1, 240);
     events.emit("export.started", json!({ "jobId": job.id, "encoder": encoder }));
-    // Stabilised clips: export reads the originals, so it waits for their transforms.
-    for s in graph::stab_jobs(&p, false) {
+    // Stabilised clips: export reads the originals, so it waits for their transforms (the
+    // sound alone has no picture to wait for).
+    for s in graph::stab_jobs(&p, false).into_iter().filter(|_| job.sound.is_none()) {
         if job.cancelled.load(Ordering::Acquire) {
             break;
         }
@@ -144,13 +195,30 @@ fn run_job(ff: &Ffmpeg, events: &Events, project: &Project, quality: Quality, op
         tl.export_tail = graph::master_filter_measured(&p.master, measured);
     }
     let total = tl.total_us.max(1);
-    let mut args = graph::build(&tl, Some(&VideoOut { width: job.width, height: job.height, fps, pix_fmt: "yuv420p" }), true, true);
-    args.extend(["-map".into(), "[vout]".into(), "-map".into(), "[aout]".into()]);
-    args.extend(enc);
     // Never longer than the timeline, whatever the graph does (a mix that never ended used to
     // leave an export at 100 % for good).
     let length = format!("{:.6}", total as f64 / 1e6);
-    for a in ["-pix_fmt", "yuv420p", "-r", &fps.to_string(), "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-t", &length, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", "-y"] {
+    let mut args = match job.sound {
+        Some(sound) => {
+            let mut args = graph::build(&tl, None, true, true);
+            args.extend(["-map".into(), "[aout]".into()]);
+            args.extend(sound.codec().0.map(String::from));
+            for a in ["-ar", "48000", "-t", &length] {
+                args.push(a.to_string());
+            }
+            args
+        }
+        None => {
+            let mut args = graph::build(&tl, Some(&VideoOut { width: job.width, height: job.height, fps, pix_fmt: "yuv420p" }), true, true);
+            args.extend(["-map".into(), "[vout]".into(), "-map".into(), "[aout]".into()]);
+            args.extend(enc);
+            for a in ["-pix_fmt", "yuv420p", "-r", &fps.to_string(), "-c:a", "aac", "-b:a", "320k", "-ar", "48000", "-t", &length, "-movflags", "+faststart"] {
+                args.push(a.to_string());
+            }
+            args
+        }
+    };
+    for a in ["-progress", "pipe:1", "-nostats", "-y"] {
         args.push(a.to_string());
     }
     args.push(job.path.to_string_lossy().into_owned());
@@ -287,4 +355,27 @@ pub fn to_audio(ff: &Ffmpeg, input: &Path, out: &Path) -> anyhow::Result<()> {
         anyhow::bail!("couldn't save the recording: {}", String::from_utf8_lossy(&r.stderr).lines().last().unwrap_or("unknown error"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sound_formats_are_files_of_their_own_named_without_a_size() {
+        assert_eq!(Sound::parse("mp3"), Some(Sound::Mp3));
+        assert_eq!(Sound::parse("WAV"), Some(Sound::Wav));
+        assert_eq!(Sound::parse("9:16"), None);
+        let dir = std::env::temp_dir().join(format!("studio-export-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mp3 = unique_path(&dir, "Promo", None, Sound::Mp3.ext());
+        assert_eq!(mp3.file_name().unwrap(), "Promo.mp3");
+        std::fs::File::create(&mp3).unwrap();
+        // The same name as another kind of file is free; the same file again gets "-2".
+        assert_eq!(unique_path(&dir, "Promo", None, Sound::Wav.ext()).file_name().unwrap(), "Promo.wav");
+        assert_eq!(unique_path(&dir, "Promo", None, "mp3").file_name().unwrap(), "Promo-2.mp3");
+        assert_eq!(unique_path(&dir, "Promo", Some((1080, 1920)), "mp4").file_name().unwrap(), "Promo-1080x1920.mp4");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

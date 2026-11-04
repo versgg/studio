@@ -48,6 +48,8 @@ fn loose(desc: &str) -> Value {
 }
 
 pub const ASPECTS: [&str; 4] = ["9:16", "4:5", "1:1", "16:9"];
+/// Export formats: the video shapes, and the sound alone.
+pub const EXPORT_FORMATS: [&str; 6] = ["9:16", "4:5", "1:1", "16:9", "mp3", "wav"];
 
 /// The clip effects named in contract v2 (the Effects tab's tiles). `effects_list` asks the
 /// engine for its own list; this is the fallback for an engine that can't say.
@@ -266,12 +268,12 @@ pub fn all() -> Vec<ToolDef> {
         t("labels_set", "Change label", Edit, "Renames or moves a label (or marker) on the labels track.", object(json!({ "labelId": string("Label id"), "text": string("New text"), "startUs": time("New start"), "endUs": time("New end") }), &["labelId"])),
         t("labels_delete", "Delete labels", Edit, "Deletes labels and markers from the labels track.", object(json!({ "labelIds": ids("Label ids") }), &["labelIds"])),
         // Export
-        t("export_start", "Export", Export, "Exports the project (or just some clips) to MP4, one file per format, through the master stage. By default the user is asked in Studio first (\"Ask before export\"), and it waits for the files.", object(json!({
-            "formats": { "type": "array", "items": { "type": "string", "enum": ASPECTS }, "description": "Formats (default: the project's)" },
+        t("export_start", "Export", Export, "Exports the project (or just some clips) to MP4, one file per format, through the master stage; \"mp3\" and \"wav\" are the sound alone (MP3 320 kbps, WAV 24-bit 48 kHz), with the same mix and master stage. By default the user is asked in Studio first (\"Ask before export\"), and it waits for the files.", object(json!({
+            "formats": { "type": "array", "items": { "type": "string", "enum": EXPORT_FORMATS }, "description": "Formats (default: the project's), and/or mp3 or wav for the sound alone" },
             "quality": one_of(&["fast", "balanced", "best"], "fast = NVENC quick, balanced (default), best = x264 slow"),
             "folder": string("Output folder (default: Videos/Studio Exports)"),
-            "baseName": string("File name start (default: the project name); files are <baseName>-<W>x<H>.mp4"),
-            "names": loose("Exact file names (without .mp4) per format, e.g. { \"9:16\": \"Ad-v3\" }"),
+            "baseName": string("File name start (default: the project name); files are <baseName>-<W>x<H>.mp4, and <baseName>.mp3 / .wav"),
+            "names": loose("Exact file names (without the extension) per format, e.g. { \"9:16\": \"Ad-v3\", \"mp3\": \"Ad-v3 sound\" }"),
             "clipIds": ids("Export only these clips (from the first one's start to the last one's end)"),
             "bitrateMbps": num("Target video bitrate instead of the quality's constant quality"),
             "fps": int("Frame rate (default: the project's)"),
@@ -594,8 +596,8 @@ pub fn export_plan(args: &Args, default_folder: &str, default_format: &str) -> R
         Some(list) if !list.is_empty() => list.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
         _ => vec![default_format.to_string()],
     };
-    if let Some(bad) = formats.iter().find(|f| !ASPECTS.contains(&f.as_str())) {
-        return Err(format!("Unknown format {bad}; use {}", ASPECTS.join(", ")));
+    if let Some(bad) = formats.iter().find(|f| !EXPORT_FORMATS.contains(&f.as_str())) {
+        return Err(format!("Unknown format {bad}; use {}", EXPORT_FORMATS.join(", ")));
     }
     if let Some(q) = p.get("quality").and_then(Value::as_str) {
         if !["fast", "balanced", "best"].contains(&q) {
@@ -816,6 +818,8 @@ mod tests {
         assert!(!plan.wait);
         assert!(export_plan(&args(json!({ "formats": ["3:2"] })), "D", "9:16").is_err());
         assert!(export_plan(&args(json!({ "quality": "ultra" })), "D", "9:16").is_err());
+        let plan = export_plan(&args(json!({ "formats": ["9:16", "mp3", "wav"] })), "D", "9:16").unwrap();
+        assert_eq!(plan.params["formats"], json!(["9:16", "mp3", "wav"]));
     }
 
     #[test]

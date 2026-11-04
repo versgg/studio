@@ -1,5 +1,5 @@
 // Engine end-to-end on real footage (no Electron): new project, import, derived files,
-// timeline edits, seek, play, split, undo, export 9:16 + 4:5, then check the files.
+// timeline edits, seek, play, split, undo, export 9:16 + 4:5 (and the sound as MP3 + WAV), then check the files.
 // Usage: node scripts/e2e.mjs [folder-with-clips]
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
@@ -273,6 +273,27 @@ try {
     check(v && a && Math.abs(dur - snap.durationUs / 1e6) < 0.25, `${d.path.split(/[\\/]/).pop()}: ${v?.width}×${v?.height} ${v?.codec_name}, ${a?.codec_name}, ${dur.toFixed(2)} s, ${(d.bytes / 1e6).toFixed(1)} MB in ${d.seconds.toFixed(1)} s (${d.encoder})`)
   }
   console.log(`export total ${((performance.now() - e0) / 1000).toFixed(1)} s for ${started.jobs.length} formats`)
+
+  // The sound alone: MP3 and WAV, each the whole timeline with no picture, levelled as the video.
+  {
+    const a0 = performance.now()
+    const r = await call('export.start', { formats: ['mp3', 'wav'], folder: out, baseName: 'E2E-sound' })
+    check(r.jobs.map((j) => `${j.sound} ${j.path.split(/[\\/]/).pop()}`).join(', ') === 'mp3 E2E-sound.mp3, wav E2E-sound.wav', `sound export names: ${r.jobs.map((j) => j.path.split(/[\\/]/).pop()).join(', ')}`)
+    for (let n = 0; n < 2; n++) {
+      const m = await waitFor((x) => ['export.done', 'export.failed'].includes(x.method), 120_000, 'the sound export')
+      if (m.method === 'export.failed') throw new Error(`sound export failed: ${m.params.error}`)
+      const probe = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', m.params.path]).toString())
+      const a = probe.streams.find((s) => s.codec_type === 'audio')
+      const dur = Number(probe.format.duration)
+      const want = m.params.path.endsWith('.mp3') ? 'mp3' : 'pcm_s24le'
+      const lufs = (() => {
+        const log = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', m.params.path, '-af', 'ebur128', '-f', 'null', '-'], { encoding: 'utf8' }).stderr
+        return Number(log.slice(log.lastIndexOf('Summary:')).match(/I:\s+(-?[\d.]+)/)?.[1])
+      })()
+      check(a?.codec_name === want && a.sample_rate === '48000' && !probe.streams.some((s) => s.codec_type === 'video') && Math.abs(dur - snap.durationUs / 1e6) < 0.25 && Math.abs(lufs + 14) < 1.5, `${m.params.path.split(/[\\/]/).pop()}: ${a?.codec_name} ${a?.sample_rate} Hz, ${dur.toFixed(2)} s, ${lufs} LUFS, ${(m.params.bytes / 1e6).toFixed(2)} MB (${m.params.encoder})`)
+    }
+    console.log(`sound export ${((performance.now() - a0) / 1000).toFixed(1)} s`)
+  }
 
   // A clip split in two reads its file twice: that export used to stall FFmpeg for good
   // (picture and sound shared one input). It must finish, with picture and sound.

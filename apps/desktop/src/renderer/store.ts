@@ -197,6 +197,8 @@ export interface Snapshot {
 export interface Capabilities {
   ffmpeg: string | null
   nvenc?: boolean
+  /** Whether FFmpeg can write MP3 (libmp3lame). */
+  mp3?: boolean
   encoders?: string[]
   audioDevice?: string | null
   projectsDir: string
@@ -205,8 +207,11 @@ export interface Capabilities {
 
 export interface ExportJob {
   jobId: string
+  /** 0 × 0 for the sound alone. */
   width: number
   height: number
+  /** "mp3" or "wav": the sound alone, no picture. */
+  sound?: string
   path: string
   encoder: string
   state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -1124,7 +1129,7 @@ export async function newProject(name: string, aspect: string) {
 const openWhenDone: { jobs: string[]; folder: string }[] = []
 
 export interface ExportOptions {
-  /** File names without .mp4, per format ("9:16" → "Promo-9x16-v3"). */
+  /** File names without the extension, per format ("9:16" → "Promo-9x16-v3", "mp3" → "Promo-audio-v3"). */
   names?: Record<string, string>
   bitrateMbps?: number
   fps?: number
@@ -1135,7 +1140,7 @@ export interface ExportOptions {
 /** Starts the exports; returns their job ids (null if the engine refused). */
 export async function startExport(formats: string[], quality: string, folder: string, baseName: string, clipIds?: string[] | null, o: ExportOptions = {}): Promise<string[] | null> {
   const { openFolder, ...rest } = o
-  const r = await call<{ jobs: { jobId: string; width: number; height: number; path: string; encoder: string }[] }>('export.start', { formats, quality, folder, baseName, ...rest, ...(clipIds?.length ? { clipIds } : {}) })
+  const r = await call<{ jobs: { jobId: string; width: number; height: number; sound?: string; path: string; encoder: string }[] }>('export.start', { formats, quality, folder, baseName, ...rest, ...(clipIds?.length ? { clipIds } : {}) })
   if (!r) return null
   const jobs: ExportJob[] = r.jobs.map((j) => ({ ...j, state: 'queued', fraction: 0, ...earlyExport.get(j.jobId) }))
   for (const j of r.jobs) earlyExport.delete(j.jobId)
