@@ -119,6 +119,12 @@ export interface ElevenAccount {
   resetsAt: number | null
 }
 
+/** One round of Voice Design: what the previews say, and three new voices (`audio` plays as it is). */
+export interface DesignRound {
+  text: string
+  previews: { id: string; audio: string; seconds: number }[]
+}
+
 export interface ElevenModel {
   id: string
   name: string
@@ -225,6 +231,9 @@ export interface StudioApi {
     elevenSpeak(o: { voice: Voice; text: string; modelId: string; stability: number; similarity: number; speed?: number; languageCode?: string; out: string }): Promise<{ out: string; voiceId: string } | ServiceError>
     elevenChangeVoice(o: { voiceId: string; input: string; out: string; removeNoise: boolean }): Promise<{ out: string } | ServiceError>
     elevenClone(o: { name: string; files: string[]; removeNoise: boolean }): Promise<{ voiceId: string } | ServiceError>
+    /** Voice Design: three voices from a description (credits for the preview text), then the one picked kept in the account. */
+    elevenDesign(o: { description: string; text?: string; model: string }): Promise<DesignRound | ServiceError>
+    elevenSaveDesigned(o: { name: string; description: string; previewId: string; heard?: string[] }): Promise<{ voiceId: string } | ServiceError>
     /**
      * Captions: the transcript server on stretches of files (source time), sent as one recording,
      * proofread against `script` when there is one. Progress arrives as `taskId`'s task:progress.

@@ -3,7 +3,7 @@ import { FORMATS } from './format'
 import { Icon } from './icons'
 import type { VmakeAccount } from '../shared/api'
 import { vmakeCheck, vmakeHasToken, vmakeKnown, vmakeTokenSet } from './vmakeAccount'
-import { CloneDialogBody, VoicePickerDialog } from './AudioPanel'
+import { CloneDialogBody, DesignDialogBody, VoicePickerDialog } from './AudioPanel'
 import { ExportDialog } from './ExportDialog'
 import { McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
 import { ShortcutsDialog } from './ShortcutsDialog'
@@ -58,6 +58,12 @@ export function Dialogs() {
     return (
       <Modal title="Clone a voice" onClose={close} wide>
         <CloneDialogBody close={close} />
+      </Modal>
+    )
+  if (dialog === 'design')
+    return (
+      <Modal title="Design a voice" onClose={close} wide>
+        <DesignDialogBody close={close} />
       </Modal>
     )
   return null

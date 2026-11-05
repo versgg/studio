@@ -185,6 +185,20 @@ export async function cloneVoice(name: string, mediaIds: string[], removeNoise: 
   toast(`"${name}" is ready in Your voice clones.`)
 }
 
+/** Voice Design, one round: three voices from a description (ElevenLabs credits for the preview text). */
+export const designVoices = (description: string, text: string, model: string) => window.studio.services.elevenDesign({ description, text: text.trim() || undefined, model })
+
+/** Keeps a designed voice in the account and makes it the voice for voiceovers; returns what went wrong, if anything. */
+export async function keepDesignedVoice(name: string, description: string, previewId: string, heard: string[]): Promise<string | null> {
+  const r = await window.studio.services.elevenSaveDesigned({ name, description, previewId, heard })
+  if (isError(r)) return r.error
+  await loadEleven()
+  const v = getState().eleven.voices?.find((x) => x.id === r.voiceId)
+  if (v) chooseVoice(v)
+  toast(`"${name}" is ready in Designed voices.`)
+  return null
+}
+
 // Recording
 
 export interface Recorder {

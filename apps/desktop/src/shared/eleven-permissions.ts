@@ -19,7 +19,8 @@ export interface ElevenPermission {
 export const ELEVEN_PERMISSIONS: ElevenPermission[] = [
   { name: 'Text to Speech', level: 'Access', ids: ['text_to_speech'], why: 'Voiceovers from a script' },
   { name: 'Speech to Speech', level: 'Access', ids: ['speech_to_speech'], why: 'The voice changer (your recording in another voice)' },
-  { name: 'Voices', level: 'Write', ids: ['voices_read', 'voices_write'], why: 'Listing your voices, adding Voice Library voices, cloning (Write includes Read)' },
+  { name: 'Voices', level: 'Write', ids: ['voices_read', 'voices_write'], why: 'Listing your voices, adding Voice Library voices, cloning, keeping a designed voice (Write includes Read)' },
+  { name: 'Voice Generation', level: 'Access', ids: ['voice_generation'], why: 'Design a voice from a description' },
   { name: 'Models', level: 'Read', ids: ['models_read'], why: 'The model list (v4 and the others)' },
   { name: 'User', level: 'Access', ids: ['user_read'], why: 'Your credit balance; Studio checks the key with it' },
   { name: 'History', level: 'Read', ids: ['speech_history_read'], why: 'Finding which of your voices spoke a voiceover, so a translation speaks it in the same voice' },

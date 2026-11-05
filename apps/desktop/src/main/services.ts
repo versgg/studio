@@ -24,6 +24,7 @@ import { Vmake, VmakeAuthError } from './vmake'
 import { known as vmakeKnown, learn as vmakeLearn } from './vmake-catalog'
 import * as vmakeJobs from './vmake-jobs'
 import { FAKE } from './vmake-jobs'
+import { FAKE as ELEVEN_FAKE } from './dub-voice'
 
 const NAMES: SecretName[] = ['vmake', 'elevenlabs']
 
@@ -44,6 +45,34 @@ async function eleven<T>(f: (el: ElevenLabs) => Promise<T>) {
 const scriptFile = (sound: string) => `${sound.replace(/\.[^.\\/]+$/, '')}.script.txt`
 /** What the voice actually says: ElevenLabs' audio tags ("[whispers]") and SSML breaks are not words. */
 const spoken = (text: string) => text.replace(/\[[^\]]*\]|<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').trim()
+
+/**
+ * The test stand-in for Voice Design (STUDIO_ELEVEN_FAKE=1): never calls ElevenLabs. Three
+ * "voices" are a second of tone each, a step apart, saying the text given or one of its own.
+ */
+function fakeDesign(o: { description: string; text?: string; model: string }) {
+  if (o.description.trim().length < 20) return { error: 'ElevenLabs: the description must be at least 20 characters' }
+  const wav = (hz: number) => {
+    const rate = 16_000
+    const pcm = Buffer.alloc(rate * 2)
+    for (let i = 0; i < rate; i++) pcm.writeInt16LE(Math.round(8000 * Math.sin((2 * Math.PI * hz * i) / rate)), i * 2)
+    const head = Buffer.alloc(44)
+    head.write('RIFF', 0)
+    head.writeUInt32LE(36 + pcm.length, 4)
+    head.write('WAVEfmt ', 8)
+    head.writeUInt32LE(16, 16)
+    head.writeUInt16LE(1, 20)
+    head.writeUInt16LE(1, 22)
+    head.writeUInt32LE(rate, 24)
+    head.writeUInt32LE(rate * 2, 28)
+    head.writeUInt16LE(2, 32)
+    head.writeUInt16LE(16, 34)
+    head.write('data', 36)
+    head.writeUInt32LE(pcm.length, 40)
+    return `data:audio/wav;base64,${Buffer.concat([head, pcm]).toString('base64')}`
+  }
+  return { text: o.text?.trim() || 'A line written for the description, as ElevenLabs does.', previews: [220, 330, 440].map((hz, i) => ({ id: `fake-preview-${i + 1}`, audio: wav(hz), seconds: 1 })) }
+}
 
 /** Files the page may write: recordings inside a project's `recordings` folder. */
 const RECORDING = /\.studio[\\/]recordings[\\/][^\\/]+\.(webm|wav|ogg)$/i
@@ -210,6 +239,11 @@ export function registerServices() {
     }),
   )
   ipcMain.handle('eleven:clone', (_e, o: { name: string; files: string[]; removeNoise: boolean }) => eleven(async (el) => ({ voiceId: await el.clone(o) })))
+  // Design a voice from a description: a round of three previews, then the one picked kept.
+  ipcMain.handle('eleven:design', (_e, o: { description: string; text?: string; model: string }) => (ELEVEN_FAKE ? fakeDesign(o) : eleven((el) => el.design(o))))
+  ipcMain.handle('eleven:saveDesigned', (_e, o: { name: string; description: string; previewId: string; heard?: string[] }) =>
+    ELEVEN_FAKE ? (/^fake-preview-\d$/.test(o.previewId) ? { voiceId: `fake-designed-${o.previewId.slice(-1)}` } : { error: 'Not one of the previews' }) : eleven(async (el) => ({ voiceId: await el.saveDesigned(o) })),
+  )
   // Captions: the stretches of sound a track is made of, each cut here to 16 kHz mono and
   // joined with a moment of silence between them, go to the transcript server as one recording
   // (one job however many clips, so the hourly limit lasts), with the script they were read

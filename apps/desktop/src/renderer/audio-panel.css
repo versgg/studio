@@ -48,3 +48,4 @@
 .voice-name { font-size: 12px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .voice-meta { font-size: 11px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .choice-list.scroll { max-height: 180px; overflow: auto; padding: 4px 0; }
+.design-previews { display: flex; flex-direction: column; gap: 2px; }

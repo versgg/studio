@@ -4,8 +4,8 @@
 // track). Plus the voice picker and the voice-clone dialogs.
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
-import type { Voice } from '../shared/api'
-import { chooseVoice, cloneVoice, forgetElevenKey, generateVoiceover, loadEleven, saveElevenKey, startRecording, useKeyCheck, VOICE_GROUPS, type Recorder } from './audio'
+import type { DesignRound, Voice } from '../shared/api'
+import { chooseVoice, cloneVoice, designVoices, forgetElevenKey, generateVoiceover, keepDesignedVoice, loadEleven, saveElevenKey, startRecording, useKeyCheck, VOICE_GROUPS, type Recorder } from './audio'
 import { Chips, Pills, Select, SelectButton, Stepper, Toggle } from './controls'
 import { DIcon, LIB_ICONS } from './design-icons'
 import { Icon } from './icons'
@@ -508,6 +508,11 @@ function VoiceoverSection() {
             Clone a voice from recordings…
           </button>
         )}
+        {eleven.account && (
+          <button type="button" className="lib-link" onClick={() => setState({ dialog: 'design' })}>
+            Design a voice…
+          </button>
+        )}
         <button type="button" className="lib-link" onClick={forgetElevenKey}>
           Use another API key
         </button>
@@ -672,6 +677,137 @@ export function CloneDialogBody({ close }: { close: () => void }) {
         <button type="button" className="button primary" disabled={!consent || !picked.length || seconds < 10} onClick={go}>
           Clone the voice
         </button>
+      </footer>
+    </>
+  )
+}
+
+const DESIGN_MODELS: [string, string][] = [
+  ['eleven_ttv_v3', 'Eleven v3'],
+  ['eleven_multilingual_ttv_v2', 'Multilingual v2'],
+]
+
+/**
+ * Voice Design: describe a voice, hear three takes on it, keep the one you like (it joins
+ * Designed voices and becomes the voice for voiceovers). Generating costs credits for the
+ * preview text's length; keeping one is free.
+ */
+export function DesignDialogBody({ close }: { close: () => void }) {
+  const [description, setDescription] = useUi('audio.design.description', '')
+  const [model, setModel] = useUi('audio.design.model', 'eleven_ttv_v3')
+  const [text, setText] = useState('')
+  const [round, setRound] = useState<DesignRound | null>(null)
+  const [picked, setPicked] = useState('')
+  const [heard, setHeard] = useState<string[]>([])
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState<'' | 'designing' | 'keeping'>('')
+  const [error, setError] = useState('')
+  useEffect(() => () => playPreview(null), [])
+  const desc = description.trim()
+  const own = text.trim()
+  const descNote = desc.length < 20 ? 'Describe the voice in at least 20 characters.' : desc.length > 1000 ? 'Keep the description under 1000 characters.' : ''
+  const textNote = own && own.length < 100 ? `Your own line needs at least 100 characters (${own.length} now).` : own.length > 1000 ? 'Keep the line under 1000 characters.' : ''
+  const generate = async () => {
+    playPreview(null)
+    setBusy('designing')
+    setError('')
+    const r = await designVoices(desc, own, model)
+    setBusy('')
+    if ('error' in r) return setError(r.error)
+    setRound(r)
+    setPicked(r.previews[0]?.id ?? '')
+    setHeard([])
+  }
+  const hear = (p: DesignRound['previews'][number]) => {
+    playPreview(p.audio)
+    setPicked(p.id)
+    setHeard((h) => (h.includes(p.id) ? h : [...h, p.id]))
+  }
+  const keep = async () => {
+    playPreview(null)
+    setBusy('keeping')
+    setError('')
+    const failed = await keepDesignedVoice(name.trim(), desc, picked, heard.filter((h) => h !== picked))
+    setBusy('')
+    if (failed) return setError(failed)
+    close()
+  }
+  return (
+    <>
+      <div className="modal-body design-voice">
+        <label className="field-block">
+          <span className="field-label">Describe the voice</span>
+          <textarea
+            className="lib-textarea"
+            rows={3}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="A warm Swedish woman in her thirties, calm and close to the mic, friendly and unhurried, like telling a friend about something she loves."
+            spellCheck={false}
+            aria-label="Describe the voice"
+          />
+          <span className="hint">
+            Age, gender, accent, tone, pace and how it’s recorded. {desc.length} / 1000
+          </span>
+        </label>
+        <label className="field-block">
+          <span className="field-label">What the previews say</span>
+          <textarea
+            className="lib-textarea"
+            rows={2}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Leave empty and ElevenLabs writes a line that fits the description, or paste 100–1000 characters of your script."
+            spellCheck={false}
+            aria-label="What the previews say"
+          />
+        </label>
+        <div className="field-block">
+          <span className="field-label">Model</span>
+          <Pills items={DESIGN_MODELS} value={model} onPick={setModel} label="Model" variant="seg" />
+        </div>
+        {round && (
+          <div className="field-block">
+            <span className="field-label">Pick one</span>
+            <div className="design-previews">
+              {round.previews.map((p, i) => (
+                <div key={p.id} className={`voice-item${picked === p.id ? ' on' : ''}`}>
+                  <button type="button" className="icon-toggle" title="Hear it" aria-label={`Hear voice ${i + 1}`} onClick={() => hear(p)}>
+                    <Icon name="play" size={12} filled />
+                  </button>
+                  <button type="button" className="voice-pick" aria-pressed={picked === p.id} onClick={() => setPicked(p.id)}>
+                    <span className="voice-name">Voice {i + 1}</span>
+                    <span className="voice-meta">
+                      {Math.round(p.seconds)} s{heard.includes(p.id) ? ' · heard' : ''}
+                    </span>
+                  </button>
+                </div>
+              ))}
+            </div>
+            {round.text && <p className="hint">They say: “{round.text}”</p>}
+          </div>
+        )}
+        {round && (
+          <label className="field-block">
+            <span className="field-label">Name</span>
+            <input className="text-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="What to call it in your voices" spellCheck={false} aria-label="Voice name" />
+          </label>
+        )}
+        {error && <p className="lib-note error">{error}</p>}
+      </div>
+      <footer>
+        <span className="footer-note">{busy === 'designing' ? 'Designing three voices…' : busy === 'keeping' ? 'Keeping it in your voices…' : descNote || textNote || (round ? 'Keeping a voice is free.' : 'Each Generate uses credits for the preview text’s length.')}</span>
+        <button type="button" className="button" onClick={close}>
+          Cancel
+        </button>
+        <button type="button" className={`button${round ? '' : ' primary'}`} disabled={!!busy || !!descNote || !!textNote} onClick={generate}>
+          {round ? 'Generate again' : 'Generate'}
+        </button>
+        {round && (
+          <button type="button" className="button primary" disabled={!!busy || !picked || !name.trim()} onClick={keep}>
+            Keep this voice
+          </button>
+        )}
       </footer>
     </>
   )

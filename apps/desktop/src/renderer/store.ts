@@ -242,7 +242,7 @@ export interface Toast {
   text: string
 }
 
-export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp'
+export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design'
 
 /** Where the library is looking: everything, loose imports, or a linked folder's id. */
 export type LibraryScope = 'all' | 'loose' | string

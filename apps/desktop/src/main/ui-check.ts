@@ -3094,6 +3094,48 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     )
   } else console.log('[ui-check] skip Translations: set STUDIO_CLAUDE_FAKE=1 and STUDIO_ELEVEN_FAKE=1 (the stand-ins; real Claude and ElevenLabs are never called from tests)')
 
+  // Design a voice, on the ElevenLabs stand-in (three tones for voices; never the real ElevenLabs).
+  if (process.env.STUDIO_ELEVEN_FAKE === '1') {
+    await step(
+      'Audio › Design a voice: a description makes three voices to hear and pick from; too short a description or own line is refused; the one kept is saved under its name',
+      `window.__studioDev.store.setState({ dialog: 'design' })
+       const area = await __t.until(() => __t.q('.modal textarea[aria-label="Describe the voice"]'), 3000, 'the Design a voice dialog')
+       const type = (el, v) => { Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })) }
+       const button = (t) => __t.qa('.modal footer button').find((b) => b.textContent.trim() === t)
+       const note = () => __t.q('.modal .footer-note').textContent
+       type(area, 'Too short')
+       await __t.sleep(80)
+       if (!button('Generate').disabled) throw new Error('Generate is on for a 9-letter description')
+       const short = note()
+       type(area, 'A warm Swedish woman in her thirties, calm and close to the mic.')
+       const line = __t.q('.modal textarea[aria-label="What the previews say"]')
+       type(line, 'Fifty characters of my own script, not enough.')
+       await __t.sleep(80)
+       if (!button('Generate').disabled) throw new Error('Generate is on for a 47-letter line')
+       const ownShort = note()
+       type(line, '')
+       await __t.until(() => !button('Generate').disabled, 2000, 'Generate to turn on')
+       button('Generate').click()
+       const rows = await __t.until(() => { const r = __t.qa('.modal .design-previews .voice-item'); return r.length === 3 && r }, 10000, 'three voices')
+       const said = __t.qa('.modal .hint').map((h) => h.textContent).find((t) => /They say/.test(t))
+       rows[1].querySelector('.icon-toggle').click()
+       await __t.until(() => { const r = __t.qa('.modal .design-previews .voice-item'); return r[1].classList.contains('on') && /heard/.test(r[1].textContent) && !r[0].classList.contains('on') }, 2000, 'the second picked, and marked heard')
+       if (!button('Keep this voice').disabled) throw new Error('Keep is on without a name')
+       type(__t.q('.modal input[aria-label="Voice name"]'), 'Calm Swedish')
+       await __t.until(() => !button('Keep this voice').disabled, 2000, 'Keep to turn on')
+       button('Keep this voice').click()
+       await __t.until(() => !__t.q('.modal textarea[aria-label="Describe the voice"]'), 5000, 'the dialog to close once the voice is kept')
+       const toast = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /Calm Swedish/.test(t)), 3000, 'the toast')
+       // The description is kept for next time.
+       window.__studioDev.store.setState({ dialog: 'design' })
+       const again = await __t.until(() => __t.q('.modal textarea[aria-label="Describe the voice"]'), 3000, 'the dialog again')
+       const kept = again.value
+       window.__studioDev.store.setState({ dialog: null })
+       if (!/warm Swedish woman/.test(kept)) throw new Error('the description was not kept: ' + kept)
+       return { short, ownShort, said, toast }`,
+    )
+  } else console.log('[ui-check] skip Design a voice: set STUDIO_ELEVEN_FAKE=1 (the stand-in; the real ElevenLabs is never called from tests)')
+
   // Import from CapCut, from a CapCut project made here (STUDIO_CAPCUT_DIR): the test clips with a
   // White Flash between them, a title with an outline, two caption lines, and a file that's gone.
   if (clips.length >= 2 && (!only || only.test('Import from CapCut'))) {

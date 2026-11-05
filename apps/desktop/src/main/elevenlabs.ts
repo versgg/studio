@@ -1,11 +1,12 @@
 // ElevenLabs on the user's own API key: voices, voiceovers (Eleven v4 by default), the voice
-// changer for recordings and instant voice clones. REST over https://api.elevenlabs.io with
+// changer for recordings, instant voice clones and voices designed from a description. REST over https://api.elevenlabs.io with
 // the `xi-api-key` header (checked against the live API reference, 2026-10-26; voice speed on
 // 2026-10-27). Captions come from the transcript server instead (transcript.ts).
 
 import fs from 'node:fs'
 import path from 'node:path'
 import { ELEVEN_KEYS_URL, elevenPermissionName } from '../shared/eleven-permissions'
+import type { DesignRound } from '../shared/api'
 
 const API = 'https://api.elevenlabs.io'
 /** The voice changer can't use v4; this is the multilingual speech-to-speech model. */
@@ -216,7 +217,27 @@ export class ElevenLabs {
     const r = await this.json('/v1/voices/add', { method: 'POST', body: form })
     return r.voice_id
   }
+
+  /**
+   * Voice Design (checked against the live API reference, 2026-11-05): three new voices from a
+   * description, each saying `text` (100–1000 characters) or, without it, a line ElevenLabs
+   * writes to fit. Costs credits for the preview text's length; nothing is kept until `saveDesigned`.
+   */
+  async design(o: { description: string; text?: string; model: string }): Promise<DesignRound> {
+    const own = o.text?.trim()
+    const body = { voice_description: o.description.trim(), model_id: o.model, ...(own ? { text: own } : { auto_generate_text: true }) }
+    const r = await (await this.req('/v1/text-to-voice/design?output_format=mp3_44100_128', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }, 180_000)).json()
+    return { text: r.text ?? own ?? '', previews: (r.previews ?? []).map((p: any) => ({ id: p.generated_voice_id, audio: `data:${p.media_type || 'audio/mpeg'};base64,${p.audio_base_64}`, seconds: p.duration_secs ?? 0 })) }
+  }
+
+  /** Keeps one of a round's voices in the account (Designed voices); `heard` are the others listened to, which ElevenLabs learns from. */
+  async saveDesigned(o: { name: string; description: string; previewId: string; heard?: string[] }): Promise<string> {
+    const body = { voice_name: o.name, voice_description: o.description.trim(), generated_voice_id: o.previewId, ...(o.heard?.length ? { played_not_selected_voice_ids: o.heard } : {}) }
+    const r = await this.json('/v1/text-to-voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    return r.voice_id
+  }
 }
+
 
 async function write(out: string, r: Response) {
   fs.mkdirSync(path.dirname(out), { recursive: true })
