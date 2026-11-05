@@ -146,6 +146,8 @@ export interface Transcript {
   changes: { part: number; heard: string; script: string; note: string; at: number }[]
   /** The proofread's one line; null without a script. */
   summary: string | null
+  /** Why a script was given but the words weren't checked against it (they're as heard); else null. */
+  unchecked: string | null
 }
 
 /** A sound in the Audio tab's library: a built-in sound effect or a file in the music folder. */

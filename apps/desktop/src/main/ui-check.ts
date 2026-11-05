@@ -2131,6 +2131,39 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     )
     await shot('18b-captions-inspector')
   } else console.log('[ui-check] skip Captions from the server: no spoken voiceover, or the transcript server not reachable')
+  // On the stand-in transcript server (offline runs), whose check against the script fails the
+  // way the real one does when its AI account is out of credits: the words still make captions.
+  if (process.env.STUDIO_UI_CHECK_TRANSCRIPT_STANDIN === '1') {
+    const scripted = path.join(path.dirname(exportDir), 'scripted-voiceover.wav')
+    fs.writeFileSync(scripted.replace(/\.wav$/, '.script.txt'), 'Order yours today at Quorvel.\n')
+    await step(
+      'Captions: when the server can’t check the words against the script (its AI out of credits), the captions still come, as heard, and the note says why',
+      `const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(scripted)}] })
+       const mediaId = r.imported[0]
+       await window.studio.engine.call('timeline.insertNewTrack', { mediaId, atUs: 0 })
+       const s = await __t.until(async () => { const x = await __t.snap(); return x.project.tracks.some((t) => t.clips.some((c) => c.mediaId === mediaId)) && x }, 5000, 'the voiceover track')
+       const track = s.project.tracks.find((t) => t.clips.some((c) => c.mediaId === mediaId))
+       ${cat('Captions')}
+       const from = await __t.until(() => __t.q('select[aria-label="Made from"]'), 3000, 'the Made from list')
+       from.value = track.id
+       from.dispatchEvent(new Event('change', { bubbles: true }))
+       await __t.until(() => { const b = __t.q('button[aria-label^="Script:"]'); return b && /voiceover/.test(b.textContent) }, 5000, 'the voiceover script in the Script setting')
+       const lang = __t.q('select[aria-label="Language"]')
+       lang.value = 'en'
+       lang.dispatchEvent(new Event('change', { bubbles: true }))
+       await __t.sleep(100)
+       const before = (await __t.snap()).project.tracks.filter((t) => t.role === 'captions').map((t) => t.id)
+       ;[...__t.qa('.lib-add')].find((b) => /Make captions/.test(b.textContent)).click()
+       const caps = await __t.until(async () => (await __t.snap()).project.tracks.find((t) => t.role === 'captions' && !before.includes(t.id) && t.clips.length), 30000, 'the captions track')
+       const all = [...caps.clips].sort((a, b) => a.startUs - b.startUs).map((c) => c.text.content).join(' ')
+       if (!/today at corvel/.test(all) || /Quorvel/.test(all)) throw new Error('not the words as heard: ' + all)
+       const note = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /Not checked against the script/.test(t)), 3000, 'the note that it was not checked')
+       if (!/no credits/.test(note)) throw new Error('the note: ' + note)
+       await window.studio.engine.call('captions.set', { trackId: caps.id, lines: [], style: {} })
+       await window.studio.engine.call('timeline.delete', { clipIds: track.clips.map((c) => c.id) })
+       return { captions: all, note }`,
+    )
+  } else console.log('[ui-check] skip Captions when the script check fails: only on the stand-in transcript server (STUDIO_UI_CHECK_ONLINE=0)')
 
   // Stems, on the stand-in (STUDIO_STEMS_FAKE=1: never the real server, so no AudioShake runs
   // and no hourly limit): the Stems tab on a sound clip, a separation's progress, the rows, ▶,

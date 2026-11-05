@@ -467,11 +467,13 @@ export async function generateCaptions(o: { sourceTrackId: string; language: str
     patchTask(task, { stage: 'Drawing the lines', fraction: 0.7 })
     const trackId = await placeCaptions(cues, { lang, style: o.style, centerY: o.centerY }, task)
     heard.set(trackId, words)
-    if (script) proofreads.set(trackId, { summary: r.summary ?? 'Checked against the script.', changes: r.changes.filter((c) => clips[c.part]).map((c) => ({ heard: c.heard, script: c.script, atUs: onTimeline(c.part, c.at) })) })
+    // The script check can fail on its own (the server's AI out of credits): the words stay as heard.
+    const unchecked = script && r.unchecked ? `Not checked against the script: ${r.unchecked}. The words are as heard.` : ''
+    if (script) proofreads.set(trackId, { summary: unchecked || (r.summary ?? 'Checked against the script.'), changes: r.changes.filter((c) => clips[c.part]).map((c) => ({ heard: c.heard, script: c.script, atUs: onTimeline(c.part, c.at) })) })
     else proofreads.delete(trackId)
     for (const l of proofListeners) l()
     endTask(task)
-    toast(`${cues.length} caption lines in ${langName(lang)}.${script && r.summary ? ` ${r.summary.replace(/\.$/, '')}.` : ''}`)
+    toast(`${cues.length} caption lines in ${langName(lang)}.${unchecked ? ` ${unchecked}` : script && r.summary ? ` ${r.summary.replace(/\.$/, '')}.` : ''}`)
     return trackId
   } catch (e) {
     const msg = (e as Error).message

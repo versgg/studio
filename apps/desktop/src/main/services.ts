@@ -257,6 +257,7 @@ export function registerServices() {
           return { part: k, heard: c.heard, script: c.script, note: c.note, at: Math.max(0, c.at - starts[k]) }
         }),
         summary: r.summary,
+        unchecked: r.unchecked,
       }
     } catch (err) {
       return failure(err)

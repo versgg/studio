@@ -4,6 +4,7 @@
 // Usage: node scripts/ui-check.mjs [folder-with-clips]
 import { execFileSync, spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import http from 'node:http'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import { dirname, join } from 'node:path'
@@ -55,6 +56,31 @@ if (speechOk) {
   }
 }
 
+// Offline, a stand-in transcript server on this computer: it hears the same few words in any
+// sound, and its check against the script fails the way the real one does when its AI account
+// is out of credits.
+let standIn = null
+if (process.env.STUDIO_UI_CHECK_ONLINE === '0' && !process.env.STUDIO_TRANSCRIPT_URL) {
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=520:duration=4', '-y', join(work, 'scripted-voiceover.wav')])
+  const heard = [['Order', 0.2], ['yours', 0.6], ['today', 1], ['at', 1.4], ['corvel.', 1.6]].map(([word, start]) => ({ word, start, end: start + 0.35 }))
+  standIn = http.createServer((req, res) => {
+    const send = (status, body) => {
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(body))
+    }
+    req.resume()
+    req.on('end', () => {
+      const m = /^\/api\/jobs(?:\/(\w+))?(\/proofread)?$/.exec(req.url ?? '')
+      if (!m) return send(404, { detail: 'Not found' })
+      if (req.method === 'POST' && !m[1]) return send(200, { id: 'standin' })
+      if (req.method === 'POST') return send(502, { detail: 'The proofreader could not finish: AI query: this account has no credits remaining' })
+      if (req.method === 'DELETE') return send(200, {})
+      send(200, { state: 'done', stage: 'done', progress: 1, queue: 0, words: heard, language: 'en', changes: [], summary: null, error: null })
+    })
+  })
+  await new Promise((r) => standIn.listen(0, '127.0.0.1', r))
+}
+
 // A small folder tree for the folder-map steps.
 const tree = join(work, 'Ads')
 for (const [sub, name, secs] of [['01 Produkt', 'a.mp4', 2], ['05 Stock/Jul', 'b.mp4', 2]]) {
@@ -84,6 +110,7 @@ const env = {
   STUDIO_PROJECTS_DIR: join(work, 'projects'),
   STUDIO_USER_DATA: join(work, 'user-data'),
   STUDIO_SILENT: '1',
+  ...(standIn ? { STUDIO_TRANSCRIPT_URL: `http://127.0.0.1:${standIn.address().port}/api`, STUDIO_UI_CHECK_TRANSCRIPT_STANDIN: '1' } : {}),
 }
 const runApp = (extra) =>
   new Promise((resolve) => {
@@ -95,6 +122,7 @@ const code = await runApp({})
 // Then the window chrome, in a real window parked off the desktop for a second or two (on
 // Wayland it shows, as windows can't be parked): left out when only some steps run.
 const chrome = process.env.STUDIO_UI_ONLY ? null : await runApp({ STUDIO_UI_CHECK: '', STUDIO_CHROME_CHECK: join(out, 'chrome.json') })
+standIn?.close()
 let summary = ''
 try {
   const r = JSON.parse(readFileSync(join(out, 'results.json'), 'utf8'))
