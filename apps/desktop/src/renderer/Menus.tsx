@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { timelineApi } from './Timeline'
 import {
+  askNewProject,
   closeProject,
   clearRecent,
   copy,
@@ -66,7 +67,7 @@ function menus(): Record<string, [string, Entry[]]> {
     file: [
       'File',
       [
-        { id: 'new', label: 'New project', keys: 'Ctrl+N', run: () => setState({ dialog: 'new' }) },
+        { id: 'new', label: 'New project', keys: 'Ctrl+N', run: () => void askNewProject() },
         { id: 'open', label: 'Open…', keys: 'Ctrl+O', run: openProjectDialog },
         { id: 'recent', label: 'Open recent', sub: 'recent' },
         'sep',

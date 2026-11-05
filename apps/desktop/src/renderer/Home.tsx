@@ -10,7 +10,7 @@ import type { ProjectInfo } from '../shared/api'
 import { FORMATS } from './format'
 import { openMenu } from './ContextMenu'
 import { openCapcut } from './CapcutDialog'
-import { fileUrl, forgetProject, getState, importPaths, newProject, openProjectAt, recentProjects, setState, toast, useStore } from './store'
+import { askNewProject, fileUrl, forgetProject, freeProjectName, getState, newProject, openProjectAt, recentProjects, setState, toast, useStore } from './store'
 import { useBoxSelect } from './boxSelect'
 import { Slider } from './Slider'
 import './project-dialogs.css'
@@ -71,12 +71,6 @@ function sampleCss(t: Template): CSSProperties {
   }
 }
 
-/** "Untitled", then "Untitled 2" and on, not taken by a project already. */
-function freshName(projects: ProjectInfo[]) {
-  const names = new Set(projects.map((p) => p.name))
-  for (let n = 1; ; n++) if (!names.has(n === 1 ? 'Untitled' : `Untitled ${n}`)) return n === 1 ? 'Untitled' : `Untitled ${n}`
-}
-
 export function Home() {
   const current = useStore((s) => s.snap?.dir)
   const [projects, setProjects] = useState<ProjectInfo[] | null>(null)
@@ -134,10 +128,8 @@ export function Home() {
     return sort === 'name' ? [...list].sort((a, b) => a.name.localeCompare(b.name, 'sv')) : list
   }, [projects, query, sort])
 
-  const start = async (aspect: string) => {
-    await newProject(freshName(projects ?? []), aspect)
-    setState({ page: 'edit' })
-  }
+  // Each asks what to call the project first.
+  const start = (aspect: string) => void askNewProject(aspect)
   const open = async (dir: string) => {
     if (dir !== current) await openProjectAt(dir)
     setState({ page: 'edit' })
@@ -241,7 +233,7 @@ export function Home() {
       if (current && gone.has(current)) {
         const next = (projects ?? []).find((x) => !gone.has(x.dir))
         if (next) await openProjectAt(next.dir)
-        else await newProject(freshName([]), '9:16')
+        else await newProject(freeProjectName([]), '9:16')
         setState({ page: 'home' })
       }
       let left = 0
@@ -318,8 +310,8 @@ export function Home() {
     ) : (
       <span className="title">{p.name}</span>
     )
-  // Clips dropped anywhere on Home start a 9:16 project with them on the timeline; "New project"
-  // lights up while they're over the page.
+  // Clips dropped anywhere on Home start a 9:16 project (once it's named) with them on the
+  // timeline; "New project" lights up while they're over the page.
   const onDragOver = (e: DragEvent) => {
     if (!e.dataTransfer.types.includes('Files')) return
     e.preventDefault()
@@ -330,9 +322,7 @@ export function Home() {
     if (!e.dataTransfer.types.includes('Files')) return
     e.preventDefault()
     setOver(false)
-    const paths = [...e.dataTransfer.files].map((f) => window.studio.app.pathForFile(f)).filter(Boolean)
-    await start('9:16')
-    if (paths.length) importPaths(paths, 0)
+    await askNewProject('9:16', [...e.dataTransfer.files].map((f) => window.studio.app.pathForFile(f)).filter(Boolean))
   }
 
   return (

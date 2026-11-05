@@ -28,7 +28,8 @@ kbd { font-family: var(--font-mono); font-size: 11px; color: var(--text-3); }
 .titlebar button, .titlebar a, .titlebar .menu-pop { -webkit-app-region: no-drag; }
 .titlebar-mark { width: 32px; height: 32px; display: grid; place-items: center; border: 0; padding: 0; background: transparent; }
 .titlebar-center { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 10px; white-space: nowrap; overflow: hidden; }
-.project-name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.project-name { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; -webkit-app-region: no-drag; cursor: default; }
+.project-name-edit { height: 24px; box-sizing: border-box; max-width: 40%; padding: 0 6px; border: 1px solid #6F86FF; border-radius: 3px; background: #1C1C1F; color: #EDEDEF; font: inherit; font-size: 12px; font-weight: 500; outline: 0; user-select: text; -webkit-app-region: no-drag; }
 .project-meta { font-size: 12px; color: #8A8A93; }
 
 /* Layout buttons: a little picture of each arrangement. */

@@ -1302,6 +1302,14 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
                 }
                 engine.changed();
             }
+            if let Some(name) = params.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty()) {
+                // Its name, as renaming it on Home: saved with the project but not an undo step.
+                if let Some(d) = engine.doc.lock().unwrap().as_mut() {
+                    d.quiet_update(|p| p.name = name.chars().take(120).collect());
+                    d.flush();
+                }
+                engine.changed();
+            }
             Ok(engine.snapshot())
         }
         "edit.undo" | "edit.redo" => {
@@ -1856,6 +1864,17 @@ mod tests {
         dispatch(&e, "project.setOptions", json!({ "brand": { "colors": ["#E8C050"], "fonts": ["Inter"] }, "mcp": { "allowed": "look" } })).unwrap();
         let p = e.snapshot()["project"].clone();
         assert_eq!((p["brand"]["fonts"][0].as_str(), p["mcp"]["allowed"].as_str(), p["mcp"]["askBeforeExport"].as_bool()), (Some("Inter"), Some("look"), Some(true)));
+        // Renamed from the title bar: saved in project.json, no undo step; a blank name is ignored.
+        let steps = dispatch(&e, "history.list", Value::Null).unwrap()["steps"].as_array().unwrap().len();
+        dispatch(&e, "project.setOptions", json!({ "name": "  Spring promo  " })).unwrap();
+        dispatch(&e, "project.setOptions", json!({ "name": "   " })).unwrap();
+        assert_eq!(e.snapshot()["project"]["name"], "Spring promo");
+        assert_eq!(dispatch(&e, "history.list", Value::Null).unwrap()["steps"].as_array().unwrap().len(), steps);
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(e.snapshot()["dir"].as_str().unwrap().to_string() + "/project.json").unwrap()).unwrap();
+        assert_eq!(saved["name"], "Spring promo");
+        dispatch(&e, "edit.undo", Value::Null).unwrap();
+        assert_eq!(e.snapshot()["project"]["name"], "Spring promo", "undo keeps the name");
+        assert_eq!(e.snapshot()["project"]["mcp"]["allowed"], "look", "and what MCP clients may do");
         let _ = std::fs::remove_dir_all(dir);
     }
 

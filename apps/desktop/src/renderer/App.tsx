@@ -13,7 +13,7 @@ import { LibraryPanel } from './Library'
 import { MenuBar } from './Menus'
 import { PlayerPanel } from './Player'
 import { installShortcuts } from './shortcuts'
-import { closeProject, importPaths, setLayout, setState, startStore, useStore, type Layout } from './store'
+import { call, closeProject, importPaths, setLayout, setState, startStore, useStore, type Layout } from './store'
 import { initDub } from './dub'
 import { MEDIA_MIME } from './LibraryBlocks'
 import { TEXT_MIME } from './LibraryTabs'
@@ -280,7 +280,7 @@ export function App() {
         <div className="titlebar-center">
           {project && (
             <>
-              <span className="project-name">{project.name}</span>
+              <ProjectName name={project.name} />
               <span className="project-meta">
                 {aspect ? `${aspect} · ` : ''}
                 {project.width} × {project.height} · {project.fps} fps
@@ -338,5 +338,58 @@ export function App() {
       <ContextMenu />
       <Toasts />
     </div>
+  )
+}
+
+/**
+ * The project's name in the title bar. Double-click it to type a new one, as in CapCut: Enter or
+ * clicking away keeps it, Esc leaves it as it was. Saved with the project, not an undo step.
+ */
+function ProjectName({ name }: { name: string }) {
+  const [text, setText] = useState<string | null>(null)
+  const open = useRef(false)
+  const field = useRef<HTMLInputElement>(null)
+  // The whole name selected to type over (not left to the focus event, which waits for the window's focus).
+  const editing = text !== null
+  useLayoutEffect(() => {
+    if (editing) field.current?.select()
+  }, [editing])
+  const finish = (keep: boolean) => {
+    if (!open.current) return
+    open.current = false
+    const next = text?.trim()
+    setText(null)
+    if (keep && next && next !== name) void call('project.setOptions', { name: next })
+  }
+  if (text === null)
+    return (
+      <span
+        className="project-name"
+        title="Double-click to rename"
+        onDoubleClick={() => {
+          open.current = true
+          setText(name)
+        }}
+      >
+        {name}
+      </span>
+    )
+  return (
+    <input
+      ref={field}
+      className="project-name-edit"
+      autoFocus
+      value={text}
+      maxLength={120}
+      size={Math.max(12, text.length + 2)}
+      onChange={(e) => setText(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') finish(true)
+        if (e.key === 'Escape') finish(false)
+      }}
+      onBlur={() => finish(true)}
+      spellCheck={false}
+      aria-label="Project name"
+    />
   )
 }

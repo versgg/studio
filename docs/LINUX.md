@@ -69,16 +69,20 @@ Fix every `FAIL` line. A `warn` line is optional.
 
 ## 6. Known first-run snags
 
-- **"The SUID sandbox helper binary was found, but is not configured correctly":** Ubuntu 23.10 and later block Chromium's sandbox for unpackaged Electron. Use one of these:
-  - For development, run `ELECTRON_DISABLE_SANDBOX=1 npm start`.
-  - Or give the helper its permissions:
+- **"The SUID sandbox helper binary was found, but is not configured correctly":** Ubuntu 23.10 and later block Chromium's sandbox for unpackaged Electron. It shows when Studio is started from the dock or the app grid (GNOME Shell starts apps without an AppArmor profile; the cursor spins and nothing opens), and not from a terminal or the desktop icons extension, whose processes have profiles that allow it. The fix that keeps the sandbox, and lasts through `npm install`, is a profile for Studio's Electron, as Ubuntu ships for Chrome and VS Code:
 
-    ```bash
-    sudo chown root:root node_modules/electron/dist/chrome-sandbox
-    sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
-    ```
+  ```bash
+  sudo tee /etc/apparmor.d/studio-electron >/dev/null <<'EOF' && sudo apparmor_parser -r /etc/apparmor.d/studio-electron
+  abi <abi/4.0>,
+  include <tunables/global>
 
-  The AppImage and deb packages (step 9) handle this themselves.
+  profile studio-electron /path/to/studio/node_modules/electron/dist/electron flags=(unconfined) {
+    userns,
+  }
+  EOF
+  ```
+
+  To see it the way the dock starts it, without opening a window: `aa-exec -p unconfined -- node_modules/electron/dist/electron --version`. Other ways round it: `ELECTRON_DISABLE_SANDBOX=1 npm start` for development, or `sudo chown root:root` and `sudo chmod 4755` on `node_modules/electron/dist/chrome-sandbox` (undone by every reinstall of Electron). The AppImage and deb packages (step 9) handle this themselves.
 - **Wayland or X11:** Electron picks the session's own platform. Measure both, because frame pacing can differ:
 
   ```bash
@@ -117,7 +121,7 @@ StartupNotify=true
 
 ## Notes from the first Linux runs
 
-- **Sandbox:** the "SUID sandbox helper" snag in section 6 didn't happen on Ubuntu 26.04, though `apparmor_restrict_unprivileged_userns` is 1. Electron 45 started without `chrome-sandbox` set up or `--no-sandbox`.
+- **Sandbox:** on Ubuntu 26.04 (`apparmor_restrict_unprivileged_userns` 1) the "SUID sandbox helper" snag in section 6 happens only from the dock and the app grid: the first runs were from a terminal and the desktop icon, whose processes have AppArmor profiles that allow it, so it went unseen. The journal shows it (`journalctl --user | grep setuid_sandbox_host`).
 - **ALSA:** the build needs `libasound2-dev` (only for `pkg-config alsa`; `alsa-sys` ships its bindings, so the headers themselves aren't read). Without it, `cargo` fails in `alsa-sys`.
 - **Wayland can't place windows:** `setPosition(-8000, -8000)` does nothing there, so a window "parked off the desktop" (`STUDIO_PAGE_SCRIPT_PARKED`, `STUDIO_CHROME_CHECK`, `npm run bench`) shows on the screen. The UI check and page scripts render off-screen and never show a window (`STUDIO_UI_ONLY=.` runs every step without the window-chrome run).
 - **Drag and drop:** on Wayland a drop is decided by the page's answer to the pointer's last move, and a move into a new element is answered by `dragenter` alone, so the app cancels `dragenter` as well as `dragover` (`App.tsx`). `npm run drop-check` drags real files in a GNOME Shell with no screen.

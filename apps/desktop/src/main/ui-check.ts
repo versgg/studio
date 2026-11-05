@@ -3173,6 +3173,60 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     }
   } else if (clips.length < 2) console.log('[ui-check] skip Import from CapCut: it needs two test clips')
 
+  // Naming a project: New project asks first, and the title bar renames it (late in the run, as
+  // each makes a new project the open one).
+  await step(
+    'New project: each tile asks what to call it first (a free “Untitled” selected to type over, the tile’s format picked); Cancel makes nothing, Create opens it with that name',
+    `window.__studioDev.store.setState({ page: 'home' })
+     const field = () => __t.q('.modal input[aria-label="Project name"]')
+     const wide = await __t.until(() => __t.qa('.home-tile').find((b) => /^16:9/.test(b.textContent.trim())), 5000, 'the 16:9 tile')
+     const was = (await __t.snap()).dir
+     wide.click()
+     const input = await __t.until(field, 5000, 'the name field')
+     const offered = input.value
+     if (!/^Untitled( \\d+)?$/.test(offered)) throw new Error('it offered ' + offered)
+     await __t.until(() => document.activeElement === input && input.selectionStart === 0 && input.selectionEnd === offered.length, 2000, 'the name selected to type over')
+     const picked = __t.q('.modal .formats button.on .format-name')?.textContent
+     if (picked !== '16:9') throw new Error('the format picked is ' + picked)
+     __t.qa('.modal footer button').find((b) => b.textContent === 'Cancel').click()
+     await __t.until(() => !field(), 2000, 'the dialog to close')
+     if ((await __t.snap()).dir !== was || window.__studioDev.store.getState().page !== 'home') throw new Error('Cancel made a project')
+     __t.qa('.home-tile').find((b) => /New project/.test(b.textContent)).click()
+     const again = await __t.until(field, 5000, 'the name field again')
+     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(again, 'Spring promo')
+     again.dispatchEvent(new Event('input', { bubbles: true }))
+     __t.qa('.modal footer button').find((b) => b.textContent === 'Create').click()
+     const s = await __t.until(async () => { const x = await __t.snap(); return x.dir !== was && x.project.name === 'Spring promo' && x }, 10000, 'the new project, named')
+     await __t.until(() => window.__studioDev.store.getState().page === 'edit' && __t.q('.titlebar .project-name')?.textContent === 'Spring promo', 3000, 'the editor with its name')
+     return { offered, picked, name: s.project.name, size: s.project.width + '×' + s.project.height }`,
+  )
+  await step(
+    'Title bar: double-click the project’s name to type a new one; Enter keeps it (saved, in Home’s list too), Esc leaves it as it was',
+    `const span = await __t.until(() => __t.q('.titlebar .project-name'), 3000, 'the name in the title bar')
+     const before = span.textContent
+     const type = async (text, key) => {
+       __t.q('.titlebar .project-name').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+       const input = await __t.until(() => __t.q('.titlebar input.project-name-edit'), 2000, 'the name to open for typing')
+       await __t.until(() => document.activeElement === input && input.selectionEnd === input.value.length && input.selectionStart === 0, 2000, 'the name selected to type over')
+       const offered = input.value
+       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, text)
+       input.dispatchEvent(new Event('input', { bubbles: true }))
+       input.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+       await __t.until(() => !__t.q('.titlebar input.project-name-edit') && __t.q('.titlebar .project-name'), 2000, 'the field to close')
+       return offered
+     }
+     const offered = await type('Spring promo v2', 'Enter')
+     const s = await __t.until(async () => { const x = await __t.snap(); return x.project.name === 'Spring promo v2' && x }, 5000, 'the new name')
+     await __t.until(() => __t.q('.titlebar .project-name').textContent === 'Spring promo v2' && document.title.startsWith('Spring promo v2'), 2000, 'the title bar to show it')
+     await type('Not this', 'Escape')
+     await __t.sleep(300)
+     const kept = (await __t.snap()).project.name
+     if (kept !== 'Spring promo v2' || __t.q('.titlebar .project-name').textContent !== kept) throw new Error('Esc changed it to ' + kept)
+     const listed = (await window.studio.app.projects([s.dir])).find((p) => p.dir === s.dir)?.name
+     if (listed !== 'Spring promo v2') throw new Error('Home lists it as ' + listed)
+     return { before, offered, after: kept, listed, windowTitle: document.title }`,
+  )
+
   // The window can't be made smaller than its smallest size, and the layout still fits there.
   const tiny ='window: it can’t be made smaller than its smallest size, and everything still fits there'
   if (!only || only.test(tiny)) {

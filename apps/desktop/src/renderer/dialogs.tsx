@@ -7,7 +7,7 @@ import { CloneDialogBody, VoicePickerDialog } from './AudioPanel'
 import { ExportDialog } from './ExportDialog'
 import { McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
 import { ShortcutsDialog } from './ShortcutsDialog'
-import { call, fileUrl, findClip, mediaById, newProject, removeText, setState, useStore, type Crop } from './store'
+import { call, fileUrl, findClip, importPaths, mediaById, newProject, removeText, setState, useStore, type Crop } from './store'
 
 function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -315,9 +315,17 @@ function CropDialog() {
 
 
 function NewProjectDialog() {
-  const [name, setName] = useState('Untitled ad')
-  const [aspect, setAspect] = useState('9:16')
-  const create = () => newProject(name.trim() || 'Untitled ad', aspect)
+  const at = useStore((s) => s.newAt)
+  const [name, setName] = useState(at?.name ?? 'Untitled')
+  const [aspect, setAspect] = useState(at?.aspect ?? '9:16')
+  // The offered name selected to type over, as the dialog opens.
+  const field = useRef<HTMLInputElement>(null)
+  useEffect(() => field.current?.select(), [])
+  const create = async () => {
+    await newProject(name.trim() || at?.name || 'Untitled', aspect)
+    setState({ newAt: null })
+    if (at?.paths.length) importPaths(at.paths, 0)
+  }
   return (
     <Modal title="New project" onClose={close}>
       <form
@@ -329,7 +337,7 @@ function NewProjectDialog() {
       >
         <label className="field-block">
           <span className="field-label">Name</span>
-          <input className="text-input" value={name} onChange={(e) => setName(e.target.value)} spellCheck={false} data-autofocus onFocus={(e) => e.target.select()} />
+          <input ref={field} className="text-input" value={name} onChange={(e) => setName(e.target.value)} spellCheck={false} data-autofocus onFocus={(e) => e.target.select()} aria-label="Project name" />
         </label>
         <div className="field-block">
           <span className="field-label">Format</span>

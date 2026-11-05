@@ -301,6 +301,8 @@ export interface State {
   menu: { x: number; y: number; items: MenuEntry[] } | null
   /** Set when the export dialog is exporting only these clips. */
   exportClips: string[] | null
+  /** What the New project dialog starts with: a free name, the format picked, clips dropped on Home. */
+  newAt: { name: string; aspect: string; paths: string[] } | null
   /** A library clip shown on its own in the player, and its own playhead. */
   source: { mediaId: string; positionUs: Us; playing: boolean } | null
   /** Imports and folder links still running (their names). */
@@ -385,6 +387,7 @@ let state: State = {
   attributes: null,
   menu: null,
   exportClips: null,
+  newAt: null,
   source: null,
   importing: [],
   loadTotal: 0,
@@ -1118,6 +1121,18 @@ export async function openProjectDialog() {
   if (!snap) return
   setState({ snap, selection: [], positionUs: 0, playing: false, libraryScope: 'all', libraryDir: '' })
   syncFolders(true)
+}
+
+/** "Untitled", then "Untitled 2" and on, not taken by a project already. */
+export function freeProjectName(projects: { name: string }[]) {
+  const names = new Set(projects.map((p) => p.name))
+  for (let n = 1; ; n++) if (!names.has(n === 1 ? 'Untitled' : `Untitled ${n}`)) return n === 1 ? 'Untitled' : `Untitled ${n}`
+}
+
+/** Opens New project, asking what to call it (a free "Untitled" to type over), in `aspect`, with any clips dropped to go on its timeline. */
+export async function askNewProject(aspect = '9:16', paths: string[] = []) {
+  const projects = await window.studio.app.projects(recentProjects()).catch(() => [])
+  setState({ dialog: 'new', newAt: { name: freeProjectName(projects), aspect, paths } })
 }
 
 export async function newProject(name: string, aspect: string) {

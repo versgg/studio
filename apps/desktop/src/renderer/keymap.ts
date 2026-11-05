@@ -4,6 +4,7 @@
 
 import { timelineApi } from './Timeline'
 import {
+  askNewProject,
   closeProject,
   breakCompound,
   copy,
@@ -117,7 +118,7 @@ export const ACTIONS: Action[] = [
   } },
   { id: 'keys', group: 'Edit', label: 'Keyboard shortcuts', keys: 'Ctrl+K', run: () => setState({ dialog: 'shortcuts' }) },
 
-  { id: 'new', group: 'File', label: 'New project', keys: 'Ctrl+N', run: () => setState({ dialog: 'new' }) },
+  { id: 'new', group: 'File', label: 'New project', keys: 'Ctrl+N', run: () => void askNewProject() },
   { id: 'open', group: 'File', label: 'Open project', keys: 'Ctrl+O', run: openProjectDialog },
   { id: 'import', group: 'File', label: 'Import media', keys: 'Ctrl+I', run: importDialog },
   { id: 'importFolder', group: 'File', label: 'Import a folder', keys: 'Shift+Ctrl+I', run: importFolderDialog },

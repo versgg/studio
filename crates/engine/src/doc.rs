@@ -168,6 +168,10 @@ impl Doc {
                 m.missing = cur.missing;
             }
         }
+        // What isn't an undo step stays as it is now: the name, linkage, what MCP clients may do.
+        target.name = self.project.name.clone();
+        target.linkage = self.project.linkage;
+        target.mcp = self.project.mcp.clone();
         let busy: Vec<(&str, &String)> = self.project.tracks.iter().flat_map(|t| &t.clips).filter_map(|c| Some((c.id.as_str(), c.busy.as_ref()?))).collect();
         for c in target.tracks.iter_mut().flat_map(|t| &mut t.clips) {
             c.busy = busy.iter().find(|(id, _)| *id == c.id).map(|(_, j)| (*j).clone());

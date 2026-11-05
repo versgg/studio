@@ -160,6 +160,20 @@ StartupNotify=true
 
 - Make it executable with `chmod +x`.
 - If there's a `~/Desktop` folder, copy it there too. On GNOME, also run `gio set ~/Desktop/studio.desktop metadata::trusted true`.
+- On Ubuntu 23.10 and later (`sysctl kernel.apparmor_restrict_unprivileged_userns` prints 1), Studio started from the dock or the app grid stops at once with "The SUID sandbox helper binary was found, but is not configured correctly", though it starts from a terminal. Give its Electron an AppArmor profile, as Ubuntu does for Chrome and VS Code. This needs the user's password, so hand them the command:
+
+  ```bash
+  sudo tee /etc/apparmor.d/studio-electron >/dev/null <<'EOF' && sudo apparmor_parser -r /etc/apparmor.d/studio-electron
+  abi <abi/4.0>,
+  include <tunables/global>
+
+  profile studio-electron STUDIO/node_modules/electron/dist/electron flags=(unconfined) {
+    userns,
+  }
+  EOF
+  ```
+
+  Check: `aa-exec -p unconfined -- STUDIO/node_modules/electron/dist/electron --version` prints the version without the sandbox error. The profile follows the path, so it lasts through `npm install`; move the folder and it needs writing again.
 
 ### Windows
 
