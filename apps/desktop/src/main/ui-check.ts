@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { stemsTest } from './stems'
 import { vmakeTest } from './vmake-jobs'
+import { elevenTest } from './dub-voice'
 import { MIN_WINDOW } from '../shared/window'
 
 const HELPERS = `
@@ -3158,6 +3159,59 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const captions = (s, from, to) => s.project.tracks.filter((t) => t.role === 'captions').flatMap((t) => t.clips).filter((c) => c.startUs + c.durationUs / 2 >= from && c.startUs + c.durationUs / 2 < to).map((c) => c.text.content).join(' ')
        const row = (l) => __t.q('.inspector .dub-item.line[data-line="' + l.id + '"]')
        const steps = async () => (await window.studio.engine.call('history.list')).steps.length`
+    // A clone ElevenLabs won't speak with until it's verified: deleted and cloned again, once.
+    const voiceDub = `const S = window.__studio, st = () => S.getState()
+       const dubOnce = async (label) => {
+         const known = new Set(Object.keys(st().dubJobs))
+         const clip = __t.main(await __t.snap())[0]
+         await S.dubText({ mediaId: clip.mediaId, clipId: clip.id }, { lang: 'da', model: 'skip', text: false, voice: 'clone', captions: false, review: false })
+         const dub = await __t.until(() => Object.values(st().dubJobs).find((j) => !known.has(j.id) && j.clipId === clip.id)?.id, 5000, 'the dub')
+         await __t.until(() => ['applied', 'failed'].includes(st().dubJobs[dub]?.state), 90000, label)
+         return { clip, job: st().dubJobs[dub], result: await window.studio.services.dubResult(dub) }
+       }`
+    const recloneOnce = 'Dub: a clone ElevenLabs won’t speak with until it’s verified is deleted and her voice cloned again, once, and the dub goes on'
+    if (!only || only.test(recloneOnce)) elevenTest.refuseClones(1)
+    await step(
+      recloneOnce,
+      `${voiceDub}
+       const back = (await __t.snap()).dir
+       await S.newProject('Verify', '9:16')
+       await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+       const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(dubVoice)}] })
+       await __t.until(async () => !(await __t.snap()).processing.length, 30000, 'the clip to be read')
+       await window.studio.engine.call('timeline.insert', { mediaId: r.imported[0] })
+       window.__verify = { back }
+       const { job, result } = await dubOnce('the dub with a clone to verify')
+       if (job.state !== 'applied') throw new Error('the dub ' + job.state + ': ' + job.reason)
+       if (job.voiceId !== 'fake-voice' || result.voice?.voiceId !== 'fake-voice') throw new Error('it speaks with ' + job.voiceId + ' / ' + result.voice?.voiceId)
+       const note = (job.notes ?? []).find((n) => /cloned her voice again/.test(n))
+       if (!note) throw new Error('no note: ' + JSON.stringify(job.notes))
+       return { voice: job.voiceId, note }`,
+    )
+    elevenTest.refuseClones(0)
+    const refusedTwice = 'Dub: a new clone refused too stops the dub, saying to verify it or dub with another voice, with no third clone'
+    if (!only || only.test(refusedTwice)) elevenTest.refuseClones(3)
+    await step(
+      refusedTwice,
+      `${voiceDub}
+       const { clip, job } = await dubOnce('the dub to stop')
+       if (job.state !== 'failed') throw new Error('the dub ' + job.state)
+       if (!/new clone was refused too/.test(job.reason) || !/Another voice/.test(job.reason)) throw new Error('it says: ' + job.reason)
+       __t.click(__t.clipEl(clip.id))
+       ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab')).click()
+       const shown = await __t.until(() => __t.qa('.inspector .dub-error-box').map((b) => b.textContent).find((t) => /verified/.test(t)), 3000, 'the reason in the Dub tab')
+       await S.openProjectAt(window.__verify.back)
+       await __t.until(async () => (await __t.snap()).dir === window.__verify.back, 8000, 'the test project again')
+       return { reason: job.reason, shown: shown.slice(0, 160) }`,
+    )
+    // Two clones refused, the third would speak: only two may be made.
+    const left = elevenTest.left()
+    elevenTest.refuseClones(0)
+    const twice = results.find((x) => x.step === refusedTwice)
+    if (twice?.ok && left !== 1) {
+      Object.assign(twice, { ok: false, detail: `${3 - left} clones were made, not 2` })
+      console.log(`[ui-check] FAIL ${refusedTwice}: ${3 - left} clones were made, not 2`)
+    }
     await step(
       'Dub › What she says: Reroll says a changed sentence again as a new take where its clip is, at the take’s whole length, its captions follow, and one Ctrl+Z puts the old take back',
       `const S = window.__studio, st = () => S.getState()

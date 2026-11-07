@@ -27,11 +27,12 @@
 import { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { cloneSpeaker } from '../shared/reclone'
 import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubTake, type DubText, type DubVoiceLine } from '../shared/dub'
 import { buildBase, measureLooks } from './dub-look'
 import { ClaudeSignedOut, langName, readTexts, translateSpeech, type SpeechText } from './dub-read'
 import { scanText } from './dub-scan'
-import { CPS, FAKE as ELEVEN_FAKE, cloneVoice, cutTake, fitLines, iso2, listen, mixBed, retime, speakTake, type Spoken } from './dub-voice'
+import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cloneVoice, cutTake, fitLines, iso2, listen, mixBed, removeClone, retime, speakTake, type Spoken } from './dub-voice'
 import { ElevenLabs } from './elevenlabs'
 import { ffmpeg, probeVideo } from './ffmpeg'
 import { getSecret } from './secrets'
@@ -351,6 +352,38 @@ async function waitForStems(job: DubJob, gone: () => boolean) {
 }
 
 /**
+ * Speaks with the dub's voice. A clone Studio made that ElevenLabs won't speak with until it's
+ * verified is deleted and her voice cloned again from the kept sample, once per run (the user's
+ * rule); refused again, the dub stops and says what to do. A voice the user chose is never deleted.
+ */
+function voiceOf(job: DubJob, el: ElevenLabs | null, notes?: string[]) {
+  const name = path.parse(job.name).name
+  let recloned = false
+  return cloneSpeaker({
+    voiceId: () => job.voiceId!,
+    reclone: async (refused) => {
+      if (job.voice !== 'clone') return null
+      const sample = fs.readdirSync(job.dir).find((f) => /^clone-.+\.mp3$/.test(f))
+      if (!sample && !ELEVEN_FAKE) return null
+      if (job.state === 'voicing') patch(job, { stage: 'ElevenLabs wants that clone verified: cloning her voice again' })
+      let kept = ''
+      await removeClone(el, refused).catch((e) => (kept = ` (the old one couldn’t be deleted: ${(e as Error).message})`))
+      const id = await cloneFrom(el, sample ? path.join(job.dir, sample) : '', name)
+      recloned = true
+      patch(job, { voiceId: id })
+      notes?.push(`ElevenLabs wanted her clone verified before it would speak, so Studio deleted it and cloned her voice again${kept}.`)
+      return id
+    },
+    refused: () =>
+      new Error(
+        job.voice !== 'clone'
+          ? `ElevenLabs won’t speak with ${job.voiceName ?? 'that voice'} until it’s verified. Verify it in ElevenLabs (My Voices), or choose another voice in Audio.`
+          : `ElevenLabs won’t speak with her cloned voice until it’s verified${recloned ? ', and a new clone was refused too' : ''}. Verify “${name} (Studio dub)” in ElevenLabs (My Voices) and Try again, or dub with Another voice: Vmake’s copy is used again at no cost.`,
+      ),
+  })
+}
+
+/**
  * The new voice: her clone (or the chosen voice) speaks the picked sentences as one take,
  * which is cut into sentences and fitted to their moments; a take whose sentences don't fit
  * goes back to Claude as a whole script to be said more simply, at most twice. Sentences not
@@ -386,15 +419,16 @@ async function dubVoice(job: DubJob, o: { part: string; partEnd: number; speech:
   const speed = Math.min(1.1, Math.max(0.95, need / Math.max(1, have)))
   let seed = 4242
   let best: { placed: ReturnType<typeof fitLines>['placed']; cut: Awaited<ReturnType<typeof cutTake>>; long: string[] } | null = null
+  const say = voiceOf(job, el, o.notes)
   for (let round = 1; round <= 3; round++) {
     patch(job, { state: 'voicing', stage: round === 1 ? 'Speaking the translation in one take' : `Speaking it again, shorter (take ${round})`, fraction: 0.45 + round * 0.08 })
-    let take = await speakTake(el, { voiceId: job.voiceId!, lines: said.map((l) => ({ id: l.id, translation: l.translation })), lang: job.lang, model: VOICE_MODEL, seed, speed, out: file(`take-${round}.mp3`) })
+    let take = await say((voiceId) => speakTake(el, { voiceId, lines: said.map((l) => ({ id: l.id, translation: l.translation })), lang: job.lang, model: VOICE_MODEL, seed, speed, out: file(`take-${round}.mp3`) }))
     // A take in the wrong language (or accent) is spoken again with another seed.
     if (el) {
       const heard = await el.transcribe({ file: take.file, diarize: false })
       if (iso2(heard.language) !== job.lang) {
         seed += 1
-        take = await speakTake(el, { voiceId: job.voiceId!, lines: said.map((l) => ({ id: l.id, translation: l.translation })), lang: job.lang, model: VOICE_MODEL, seed, speed, out: file(`take-${round}b.mp3`) })
+        take = await say((voiceId) => speakTake(el, { voiceId, lines: said.map((l) => ({ id: l.id, translation: l.translation })), lang: job.lang, model: VOICE_MODEL, seed, speed, out: file(`take-${round}b.mp3`) }))
         const again = await el.transcribe({ file: take.file, diarize: false })
         if (iso2(again.language) !== job.lang) o.notes.push(`Take ${round} still sounded like ${again.language}, not ${job.lang}; listen to it.`)
       }
@@ -466,6 +500,7 @@ export async function reroll(id: string, ids: string[], edits: Record<string, st
   const changed = lines.filter((l) => !l.own && ids.includes(l.id)).map((l) => l.id)
   if (!changed.length) return []
   const el = eleven()
+  const say = voiceOf(job, el)
   const tag = `r${Date.now().toString(36)}`
   const out: DubVoiceLine[] = []
   // Runs of neighbouring sentences, each spoken with the sentence before it.
@@ -482,7 +517,7 @@ export async function reroll(id: string, ids: string[], edits: Record<string, st
     const script = [...(before ? [{ id: before.id, translation: before.text }] : []), ...run.map((rid) => ({ id: rid, translation: words(lines.find((l) => l.id === rid)!) }))]
     // A new seed each time: the same words with the same seed come back as the same take.
     const seed = Math.floor(Math.random() * 2 ** 32)
-    const take = await speakTake(el, { voiceId: job.voiceId, lines: script, lang: job.lang, model: voice.model ?? VOICE_MODEL, seed, speed: voice.speed ?? 1, out: file(`take-${tag}-${run[0]}.mp3`) })
+    const take = await say((voiceId) => speakTake(el, { voiceId, lines: script, lang: job.lang, model: voice.model ?? VOICE_MODEL, seed, speed: voice.speed ?? 1, out: file(`take-${tag}-${run[0]}.mp3`) }))
     const cut = await cutTake(take, script.map((s) => s.id), job.dir, tag)
     for (const rid of run) {
       const c = cut.find((x) => x.id === rid)!
@@ -497,6 +532,8 @@ export async function reroll(id: string, ids: string[], edits: Record<string, st
       out.push({ ...old })
     }
   }
+  // A clone cloned again (see voiceOf) is the one the dub speaks with from now on.
+  voice.voiceId = job.voiceId!
   fs.writeFileSync(file('voice.json'), JSON.stringify(voice, null, 1))
   keepWords(job, Object.fromEntries(out.map((l) => [l.id, l.text])))
   return out

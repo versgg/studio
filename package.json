@@ -11,7 +11,7 @@
     "build": "npm run native && npm run build -w @studio/desktop",
     "start": "npm run start -w @studio/desktop",
     "bench": "npm run build && npm run bench -w @studio/desktop",
-    "test": "cargo test --workspace && npm run typecheck -w @studio/desktop && node --test scripts/vmake-estimate.test.mjs scripts/stems.test.mjs scripts/transcript.test.mjs scripts/eleven.test.mjs",
+    "test": "cargo test --workspace && npm run typecheck -w @studio/desktop && node --test scripts/vmake-estimate.test.mjs scripts/stems.test.mjs scripts/transcript.test.mjs scripts/eleven.test.mjs scripts/reclone.test.mjs",
     "smoke": "npm run native && node scripts/smoke.mjs",
     "doctor": "node scripts/doctor.mjs",
     "e2e": "node scripts/e2e.mjs",

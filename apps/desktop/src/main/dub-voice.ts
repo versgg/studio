@@ -19,7 +19,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { ElevenLabs } from './elevenlabs'
+import { ElevenError, ElevenLabs } from './elevenlabs'
 import { ffmpeg } from './ffmpeg'
 
 export const FAKE = process.env.STUDIO_ELEVEN_FAKE === '1'
@@ -101,7 +101,7 @@ export const iso2 = (code: string) => (code.length === 3 ? (ISO3[code.toLowerCas
 
 /** One instant clone of a speaker from up to two minutes of their own sentences (longest first). */
 export async function cloneVoice(el: ElevenLabs | null, voiceFile: string, lines: Spoken[], speaker: string, name: string, dir: string): Promise<string> {
-  if (FAKE) return 'fake-voice'
+  if (FAKE) return fakeClone()
   const mine = lines.filter((l) => l.speaker === speaker).sort((a, b) => b.end - b.start - (a.end - a.start))
   const picked: Spoken[] = []
   let total = 0
@@ -116,7 +116,40 @@ export async function cloneVoice(el: ElevenLabs | null, voiceFile: string, lines
   const chain = picked.map((_, i) => `[${i}:a]aresample=44100,aformat=channel_layouts=mono,apad=pad_dur=0.3[a${i}]`).join(';')
   const sample = path.join(dir, `clone-${speaker}.mp3`)
   await ffmpeg(['-y', ...inputs, '-filter_complex', `${chain};${picked.map((_, i) => `[a${i}]`).join('')}concat=n=${picked.length}:v=0:a=1[out]`, '-map', '[out]', '-c:a', 'libmp3lame', '-b:a', '192k', sample])
+  return cloneFrom(el, sample, name)
+}
+
+/** An instant clone named "<name> (Studio dub)" from a sample `cloneVoice` made (kept in the dub's folder). */
+export async function cloneFrom(el: ElevenLabs | null, sample: string, name: string): Promise<string> {
+  if (FAKE) return fakeClone()
   return el!.clone({ name: `${name} (Studio dub)`, files: [sample], removeNoise: true, description: 'Made by Studio for a dub of this clip.' })
+}
+
+/** Deletes a clone Studio made from the account. */
+export async function removeClone(el: ElevenLabs | null, voiceId: string) {
+  if (FAKE) return void unverified.delete(voiceId)
+  await el!.deleteVoice(voiceId)
+}
+
+// The UI check's stand-in for clones ElevenLabs won't speak with until they're verified.
+let refuseLeft = 0
+let fakeClones = 0
+const unverified = new Set<string>()
+/** For the UI check, in fake mode only. */
+export const elevenTest = {
+  /** The next `n` clones are ones ElevenLabs won't speak with until they're verified. */
+  refuseClones(n: number) {
+    if (FAKE) refuseLeft = n
+  },
+  /** How many of those are still to be made. */
+  left: () => refuseLeft,
+}
+function fakeClone() {
+  if (refuseLeft <= 0) return 'fake-voice'
+  refuseLeft--
+  const id = `fake-unverified-${++fakeClones}`
+  unverified.add(id)
+  return id
 }
 
 export type Take = { file: string; chars: string[]; starts: number[]; ends: number[]; script: string; spans: [number, number][] }
@@ -131,6 +164,7 @@ export async function speakTake(el: ElevenLabs | null, o: { voiceId: string; lin
     script = script ? `${script} ${t}` : t
     spans.push([s, script.length])
   }
+  if (FAKE && unverified.has(o.voiceId)) throw new ElevenError('ElevenLabs: This voice requires verification. Please verify your voice to continue. (voice_access_denied)', false, 'voice_access_denied')
   const timed = FAKE
     ? await fakeSpeak(script, o.out)
     : await el!.speakTimed({ voiceId: o.voiceId, text: script, modelId: o.model, stability: 0.5, similarity: 0.8, speed: o.speed, languageCode: o.lang, seed: o.seed, out: o.out })
