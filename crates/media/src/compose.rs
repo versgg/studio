@@ -336,6 +336,15 @@ pub(crate) fn fit_against(fit: Fit, w: u32, h: u32) -> String {
 
 /// The `-i` for an overlay's picture: a still read once, a video's stretch (WebM through
 /// libvpx, which keeps its alpha).
+/// An overlay's stream ends at its last frame, and FFmpeg's overlay lets the picture below
+/// through from there: a piece cut between frames (any cut made on the timeline) ends a little
+/// before its time is up, so the main track showed for the frame at each cut between pieces laid
+/// end to end on an overlay track (the user had to overlap them, 2026-11-07). The last frame is
+/// held two frames longer; the overlay's own `enable` still ends it exactly on time.
+fn hold_last(fps: u32) -> String {
+    format!("tpad=stop_mode=clone:stop_duration={}", s(2_000_000 / fps.max(1) as Us))
+}
+
 fn pic_input(p: &Pic) -> Vec<String> {
     if p.still {
         return vec!["-i".into(), p.path.clone()];
@@ -472,9 +481,12 @@ fn pic_filters(pic: &Pic, j: usize, cur: &str, next: &str, args: &mut Vec<String
         if pic.blend != "normal" {
             return f.into_iter().chain(blend_splice(pic, &tag, cur, next, start, end, total_us, v)).collect();
         }
-        f.push(format!("[{tag}l]setpts=PTS-STARTPTS+{a}/TB[{tag}t]"));
+        f.push(format!("[{tag}l]{},setpts=PTS-STARTPTS+{a}/TB[{tag}t]", hold_last(fps)));
         f.push(format!("[{cur}][{tag}t]overlay=x=0:y=0:eof_action=pass:enable='between(t,{a},{})':format={}[{next}]", s(end - 1), over_fmt(v)));
         return f;
+    }
+    if varying {
+        after.push(hold_last(fps));
     }
     after.push(format!("setpts=PTS-STARTPTS+{a}/TB"));
     f.push(format!("[{tag}p]{}[{tag}t]", after.join(",")));
@@ -514,6 +526,7 @@ fn motion_filters(pic: &Pic, file: &Path, tag: &str, cur: &str, next: &str, args
     }
     c.extend(alpha_opacity(l, tag));
     let a = s(pic.start_us);
+    c.push(hold_last(v.fps));
     c.push(format!("setpts=PTS+{a}/TB"));
     let Place::Over { x, y, eval, .. } = placement_at(l, w, h, true, &format!("(t-{a})")) else { unreachable!("overlays are always placed over") };
     let end = (pic.start_us + pic.dur_us).min(total_us);

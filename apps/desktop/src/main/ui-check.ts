@@ -1629,6 +1629,28 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      return { liftedToS: +(at / 1e6).toFixed(2), backAtIndex: __t.main(s).findIndex((k) => k.id === c.id), of: n }`,
   )
   await shot('17b-stacking')
+  await step(
+    'Timeline: several clips selected on the video track and dragged above the tracks go up together, end to end on one new track, as one undo step',
+    `let s = await __t.snap(); const main = __t.main(s); const n = main.length
+     if (n < 3) throw new Error('needs three clips on the video track, has ' + n)
+     const [a, b] = [main[n - 2], main[n - 1]]
+     const ea = await __t.until(() => __t.clipEl(a.id), 3000, 'the clips'), eb = __t.clipEl(b.id)
+     __t.click(ea); __t.click(eb, { ctrlKey: true })
+     await __t.until(() => window.__studio.getState().selection.length === 2, 2000, 'both selected')
+     const r = __t.rect(ea), top = __t.rect(__t.qa('.tl-row')[0])
+     await __t.drag(ea, r.left + r.width / 2, r.top + r.height / 2, r.left + r.width / 2 + 40, top.top - 10)
+     const on = (x, id) => x.project.tracks.find((t) => t.clips.some((k) => k.id === id))
+     s = await __t.until(async () => { const x = await __t.snap(); return __t.main(x).length === n - 2 && x }, 5000, 'both clips off the video track (only ' + (n - __t.main(await __t.snap()).length) + ' went)')
+     const [ta, tb] = [on(s, a.id), on(s, b.id)]
+     if (ta.id !== tb.id || ta.main || ta.role !== 'overlay') throw new Error('they went to ' + [ta.role, tb.role, ta.id === tb.id ? 'one track' : 'two tracks'].join(', '))
+     const [ca, cb] = [ta.clips.find((k) => k.id === a.id), tb.clips.find((k) => k.id === b.id)]
+     if (cb.startUs - ca.startUs !== b.startUs - a.startUs) throw new Error('not end to end as they were: ' + (cb.startUs - ca.startUs) + ' vs ' + (b.startUs - a.startUs))
+     const lifted = await __t.snap()
+     __t.key('z', { ctrlKey: true })
+     const undone = await __t.rev(lifted.revision)
+     if (__t.main(undone).length !== n) throw new Error('one undo left ' + __t.main(undone).length + ' of ' + n + ' on the video track')
+     return { startS: +(ca.startUs / 1e6).toFixed(2), gapUs: cb.startUs - ca.startUs - ca.durationUs }`,
+  )
 
   // Dragging anything anywhere, as CapCut does (Timeline.tsx `aim`): onto a row of its kind with
   // room, else onto a new track at the line the drag shows. The ghost mid-drag is where it lands.

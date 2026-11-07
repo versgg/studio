@@ -328,6 +328,66 @@ fn animation_presets_move_overlays_over_their_time() {
 }
 
 #[test]
+fn overlay_clips_back_to_back_cover_the_main_track_at_every_frame() {
+    // Repro (2026-11-07): clips cut and lifted onto an overlay track, end to end, let the main
+    // track's picture through for a frame at each cut (an overlay drops its stream's last frame).
+    let Some(lab) = Lab::new("abut") else { return };
+    let red = lab.colour("red", "red", 4);
+    let blue = lab.colour("blue", "blue", 2);
+    let white = lab.colour("white", "white", 2);
+    let mut p = project(&lab, vec![red, blue, white]);
+    p.insert("red", 0).unwrap();
+    let (a, track) = p.add_overlay(Some("blue"), None, 0, None, "overlay", None).unwrap();
+    let (b, _) = p.add_overlay(Some("white"), None, 2 * SECOND, None, "overlay", Some(&track)).unwrap();
+    assert_eq!(p.clip(&a).unwrap().start_us + p.clip(&a).unwrap().duration_us, p.clip(&b).unwrap().start_us, "end to end");
+    let f = lab.frames(&p);
+    assert_eq!(f.len(), 40);
+    for (i, fr) in f.iter().enumerate() {
+        let c = mean(fr, 0.3, 0.3, 0.7, 0.7);
+        let want = if i < 20 { BLUE } else { WHITE };
+        assert!(near(c, want, 40.0), "frame {i} ({:.1} s) shows {c:?}, not the overlay", i as f64 / 10.0);
+    }
+}
+
+#[test]
+fn overlay_pieces_cut_between_frames_cover_the_main_track_at_every_frame() {
+    // The user's case: pieces cut at any moment (in-points and cuts between frames), lifted
+    // onto an overlay track end to end.
+    let Some(lab) = Lab::new("abut2") else { return };
+    let red = lab.colour("red", "red", 6);
+    let blue = lab.colour("blue", "blue", 6);
+    let white = lab.colour("white", "white", 6);
+    let mut p = project(&lab, vec![red, blue, white]);
+    p.insert("red", 0).unwrap();
+    let (a, track) = p.add_overlay(Some("blue"), None, 0, None, "overlay", None).unwrap();
+    let (b, _) = p.add_overlay(Some("white"), None, 4 * SECOND, None, "overlay", Some(&track)).unwrap();
+    let mut bad = vec![];
+    for (a_in, a_start, a_dur, b_in) in [(333_333, 120_000, 1_437_000, 2_051_000), (47_000, 0, 1_963_000, 666_667), (1_250_000, 37_000, 2_010_000, 13_000), (500_000, 0, 2_000_000, 500_000)] {
+        for c in p.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+            if c.id == a {
+                (c.in_us, c.start_us, c.duration_us) = (a_in, a_start, a_dur);
+            }
+            if c.id == b {
+                (c.in_us, c.start_us, c.duration_us) = (b_in, a_start + a_dur, 1_500_000);
+            }
+        }
+        let f = lab.frames(&p);
+        let end = a_start + a_dur + 1_500_000;
+        for (i, fr) in f.iter().enumerate() {
+            let t = i as Us * 100_000;
+            if t < a_start || t >= end {
+                continue;
+            }
+            let c = mean(fr, 0.3, 0.3, 0.7, 0.7);
+            if near(c, RED, 60.0) {
+                bad.push(format!("in {a_in}, cut at {}: frame {i} ({:.1} s) shows the main track", a_start + a_dur, t as f64 / 1e6));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+#[test]
 fn speed_ramps_smooth_slow_motion_and_video_overlays_run() {
     let Some(lab) = Lab::new("ramp") else { return };
     // Brighter over 2 s, so time order shows in the picture.

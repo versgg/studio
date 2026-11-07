@@ -1373,6 +1373,38 @@ impl Project {
         Ok(self.find_clip(clip_id).map(|(t, _)| self.tracks[t].id.clone()).unwrap_or_default())
     }
 
+    /// Main-track pictures lifted together, a selection dragged up off the main track: each to
+    /// its own start (`moves`), all on one track. The first (earliest) goes where `track_id` (an
+    /// id that names none: a new track on top) or `new_at` (a new track made there) puts it, the
+    /// rest onto the track it landed on. Before, only the clip held went up and the rest of the
+    /// selection stayed on the main track (2026-11-07). Returns that track's id.
+    pub fn lift_many(&mut self, moves: &[(String, Us)], track_id: Option<&str>, new_at: Option<usize>) -> R<String> {
+        let ids: Vec<String> = moves.iter().map(|(id, _)| id.clone()).collect();
+        self.check_unlocked(&ids)?;
+        if self.main_track().locked {
+            return err("The main track is locked");
+        }
+        if ids.iter().any(|id| !self.main_track().clips.iter().any(|c| &c.id == id)) {
+            return err("Only clips on the main track are lifted together");
+        }
+        let mut order = moves.to_vec();
+        order.sort_by_key(|(_, to)| *to);
+        let mut landed = String::new();
+        for (n, (id, to)) in order.iter().enumerate() {
+            let (ti, ci) = self.find_clip(id).ok_or_else(|| EditError(format!("no clip {id}")))?;
+            let onto = match (n, new_at) {
+                (0, Some(index)) => Onto::NewAt(index),
+                (0, None) => Onto::Track(track_id.unwrap_or("above")),
+                _ => Onto::Track(&landed),
+            };
+            self.lift_off_main(ti, ci, *to, onto)?;
+            if n == 0 {
+                landed = self.find_clip(id).map(|(t, _)| self.tracks[t].id.clone()).unwrap_or_default();
+            }
+        }
+        Ok(landed)
+    }
+
     /// A main-track picture lifted onto a track over the video, starting at `start_us`. Over an
     /// overlay track it goes on that track if it fits there, else on a new overlay track just
     /// above it; over a track of another kind (text, stickers) on a new one above that; with an
@@ -2475,6 +2507,30 @@ mod tests {
         assert!(p.move_clip(&b, 0, Some(&vo_track)).is_err());
         let (text, _) = p.add_overlay(None, None, 0, Some(SECOND), "text", None).unwrap();
         assert!(p.move_clip(&text, 0, Some(&main)).is_err());
+    }
+
+    #[test]
+    fn a_selection_lifted_off_the_main_track_goes_up_together_end_to_end() {
+        let mut p = project();
+        for at in [0, 10, 20, 30] {
+            p.insert("a", at * SECOND).unwrap();
+        }
+        let ids: Vec<String> = p.main_track().clips.iter().map(|c| c.id.clone()).collect();
+        let (b, c) = (ids[1].clone(), ids[2].clone());
+        let (bs, cs) = (p.clip(&b).unwrap().start_us, p.clip(&c).unwrap().start_us);
+        // B and C dragged up together onto a new track at index 1, 1 s later than they were.
+        let track = p.lift_many(&[(c.clone(), cs + SECOND), (b.clone(), bs + SECOND)], None, Some(1)).unwrap();
+        let on = |p: &Project, id: &str| p.tracks[p.find_clip(id).unwrap().0].id.clone();
+        assert_eq!((on(&p, &b), on(&p, &c)), (track.clone(), track.clone()), "both on the one new track");
+        assert_eq!(p.track(&track).unwrap().role, "overlay");
+        assert_eq!((p.clip(&b).unwrap().start_us, p.clip(&c).unwrap().start_us), (bs + SECOND, cs + SECOND), "end to end as they were");
+        assert_eq!(main_ids(&p).len(), 2, "the main track closed up");
+        // Onto an existing track by id, and the space above every track.
+        let ids: Vec<String> = p.main_track().clips.iter().map(|c| c.id.clone()).collect();
+        let t2 = p.lift_many(&[(ids[0].clone(), 0), (ids[1].clone(), 4 * SECOND)], Some("above"), None).unwrap();
+        assert!(p.main_track().clips.is_empty() && on(&p, &ids[0]) == t2 && on(&p, &ids[1]) == t2);
+        // Only main-track clips.
+        assert!(p.lift_many(&[(b.clone(), 0)], Some("above"), None).is_err());
     }
 
     #[test]

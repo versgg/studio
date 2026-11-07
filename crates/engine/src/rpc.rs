@@ -1121,6 +1121,18 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
                 None => engine.edit("Move clip", |p| p.move_clip(&clip, start, track.as_deref())),
             }
         }
+        "timeline.liftMany" => {
+            // A selection dragged up off the main track: `moves` [{ clipId, startUs }], all on one
+            // track (`trackId`, or a new one at `newTrackAt`), one undo step.
+            let moves: Vec<(String, Us)> = params
+                .get("moves")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|m| Some((m.get("clipId")?.as_str()?.to_string(), m.get("startUs")?.as_i64()?))).collect())
+                .unwrap_or_default();
+            let track = params.get("trackId").and_then(Value::as_str).map(str::to_string);
+            let at = params.get("newTrackAt").and_then(Value::as_u64).map(|i| i as usize);
+            engine.edit("Move clips", |p| p.lift_many(&moves, track.as_deref(), at).map(|t| json!({ "trackId": t })))
+        }
         "timeline.moveMany" => {
             // A selection dragged together: `moves` [{ clipId, startUs }], each on its own track, one undo step.
             let moves: Vec<(String, Us)> = params

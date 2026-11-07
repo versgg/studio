@@ -175,6 +175,8 @@ type Drag =
       /** Where it started, and the rest of the selection moving with it (each on its own track, by the same time). */
       fromUs: Us
       group: { id: string; startUs: Us; durationUs: Us }[]
+      /** The rest of a selection on the main track, held with this one: lifted up together, each `offUs` from it (as they sit now). */
+      lift: { id: string; offUs: Us; durationUs: Us }[]
     } & Landing)
   | {
       type: 'trim'
@@ -801,7 +803,11 @@ export function TimelinePanel() {
         const group = !found.t.main && sel.length > 1 && sel.includes(id)
           ? snap.project.tracks.filter((t) => !t.main && !t.locked).flatMap((t) => t.clips.filter((c) => c.id !== id && sel.includes(c.id) && !c.busy)).map((c) => ({ id: c.id, startUs: c.startUs, durationUs: c.durationUs }))
           : []
-        update({ type: 'move', clipId: id, main: found.t.main, free: !ripple, trackId: found.t.id, lane, x0: e.clientX, y0: e.clientY, grabUs: timeAt(e.clientX) - found.c.startUs, started: false, atUs: found.c.startUs, rowId: found.t.id, newAt: null, line: null, snapUs: null, picture, dest: null, fromUs: found.c.startUs, group })
+        // Several main-track clips selected: dragged up off the main track, they all go, together.
+        const lift = found.t.main && picture && sel.length > 1 && sel.includes(id)
+          ? found.t.clips.filter((c) => c.id !== id && sel.includes(c.id) && !c.busy && mediaById(snap, c.mediaId)?.kind !== 'audio').map((c) => ({ id: c.id, offUs: c.startUs - found.c.startUs, durationUs: c.durationUs }))
+          : []
+        update({ type: 'move', clipId: id, main: found.t.main, free: !ripple, trackId: found.t.id, lane, x0: e.clientX, y0: e.clientY, grabUs: timeAt(e.clientX) - found.c.startUs, started: false, atUs: found.c.startUs, rowId: found.t.id, newAt: null, line: null, snapUs: null, picture, dest: null, fromUs: found.c.startUs, group, lift })
       }
       return
     }
@@ -882,11 +888,14 @@ export function TimelinePanel() {
       update({ ...d, started: true, dest: null, atUs: d.fromUs + shift, rowId: d.trackId, newAt: null, line: null, snapUs: s.at })
       return
     }
-    let start = Math.max(0, t - d.grabUs)
+    // Main-track clips lifted together: none before 0, and they land where all of them fit.
+    const first = Math.min(0, ...(inMain ? [] : d.lift.map((l) => l.offUs)))
+    let start = Math.max(-first, t - d.grabUs)
     const s = snapTo([start, start + clip.durationUs], d.clipId)
-    start = Math.max(0, start + s.shift)
+    start = Math.max(-first, start + s.shift)
+    const span = d.lift.length && !inMain ? { id: d.clipId, durationUs: Math.max(clip.durationUs, ...d.lift.map((l) => l.offUs + l.durationUs)) - first } : clip
     // Anywhere else: a row of its kind with room, or a new track (see `aim`).
-    const to: Landing = inMain ? { rowId: video!.id, newAt: null, line: null } : aim(d.lane, y, clip, start)
+    const to: Landing = inMain ? { rowId: video!.id, newAt: null, line: null } : aim(d.lane, y, span, start + first)
     update({ ...d, started: true, dest, atUs: start, ...to, snapUs: s.at })
   }
 
@@ -937,6 +946,10 @@ export function TimelinePanel() {
       const r = trimmed(d, d.d)
       if (r.dur === d.clip.durationUs && r.inUs === d.clip.inUs && r.start === d.clip.startUs) return
       p = call('timeline.trim', { clipId: d.clipId, inUs: Math.round(r.inUs), durationUs: Math.round(r.dur), ...(d.ripple ? {} : { startUs: Math.round(r.start) }) })
+    } else if (d.started && d.lift.length && (d.newAt != null || d.dest === 'over')) {
+      // The selection lifted off the main track together, onto one track.
+      const moves = [{ clipId: d.clipId, startUs: Math.round(d.atUs) }, ...d.lift.map((l) => ({ clipId: l.id, startUs: Math.round(d.atUs + l.offUs) }))]
+      p = call('timeline.liftMany', { moves, ...(d.newAt != null ? { newTrackAt: d.newAt } : { trackId: d.rowId }) })
     } else if (d.started && d.group.length) {
       const shift = d.atUs - d.fromUs
       if (!shift) return
@@ -1162,6 +1175,35 @@ export function TimelinePanel() {
                     </button>
                   )),
               )}
+            {ghost &&
+              moving &&
+              !ghostAtPointer &&
+              (moving.newAt != null || moving.dest === 'over') &&
+              moving.lift.map((l) => {
+                const c = snap?.project.tracks.flatMap((t) => t.clips).find((x) => x.id === l.id)
+                return c ? (
+                  <ClipView
+                    key={`lift-${c.id}`}
+                    clip={c}
+                    media={mediaById(snap, c.mediaId)}
+                    x={px(ghost.at + l.offUs)}
+                    w={px(c.durationUs)}
+                    inUs={c.inUs}
+                    dur={c.durationUs}
+                    top={ghostTop}
+                    h={ghostH}
+                    pps={pps}
+                    variant={ghostVariant}
+                    tone={ghostRow?.tone ?? ghost.tone ?? 'music'}
+                    role={ghostRow?.role ?? (ghost.lane === 'audio' ? undefined : ghost.lane)}
+                    selected
+                    linked={linkage && !!c.link}
+                    ghost
+                    waveforms={showWaveforms}
+                    thumbnails={showThumbnails}
+                  />
+                ) : null
+              })}
             {ghost && (
               <ClipView
                 clip={ghost.clip}
