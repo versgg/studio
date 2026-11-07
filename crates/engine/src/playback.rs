@@ -159,6 +159,8 @@ pub struct Playback {
     loop_range: Mutex<Option<(Us, Us)>>,
     /// Goes up whenever a run stops, so a loop's restart never undoes a pause made meanwhile.
     generation: AtomicU64,
+    /// A play is starting (its sound being mixed): background work waits, as while playing.
+    starting: AtomicBool,
     /// The stretch started ahead, and the ahead worker's queue of one.
     held: Arc<Mutex<Option<Held>>>,
     ahead: AheadRequest,
@@ -191,7 +193,7 @@ impl Playback {
             std::thread::Builder::new().name("ahead".into()).spawn(move || ahead_worker(ff, ahead, held, epoch)).expect("spawn ahead worker");
         }
         let state = State { playing: false, position: 0, run: None, project: None };
-        Self { ff, ring, events, audio, state: Arc::new(Mutex::new(state)), seek, mixes, context: Mutex::new("timeline"), loop_range: Mutex::new(None), generation: AtomicU64::new(0), held, ahead, ahead_epoch, hidden: Mutex::new(Hidden::default()), tickets: AtomicU64::new(0), me }
+        Self { ff, ring, events, audio, state: Arc::new(Mutex::new(state)), seek, mixes, context: Mutex::new("timeline"), loop_range: Mutex::new(None), generation: AtomicU64::new(0), starting: AtomicBool::new(false), held, ahead, ahead_epoch, hidden: Mutex::new(Hidden::default()), tickets: AtomicU64::new(0), me }
     }
 
     /// Sets the loop region (at least 0.2 s), or clears it with `None`. A run already playing
@@ -206,6 +208,11 @@ impl Playback {
 
     pub fn is_playing(&self) -> bool {
         self.state.lock().unwrap().playing
+    }
+
+    /// Playing, or a play starting: thumbnails and proxies wait (jobs.rs).
+    pub fn is_busy(&self) -> bool {
+        self.starting.load(Ordering::Acquire) || self.is_playing()
     }
 
     pub fn position(&self) -> Us {
@@ -307,6 +314,13 @@ impl Playback {
     }
 
     pub fn play(&self, project: Arc<Project>, revision: u64, from: Us) -> Result<(), String> {
+        self.starting.store(true, Ordering::Release);
+        let r = self.play_now(project, revision, from);
+        self.starting.store(false, Ordering::Release);
+        r
+    }
+
+    fn play_now(&self, project: Arc<Project>, revision: u64, from: Us) -> Result<(), String> {
         let t0 = Instant::now();
         let debug = debug();
         self.stop_run();
@@ -785,7 +799,9 @@ impl Mixes {
                 if let Some(buf) = self.cached(epoch, revision) {
                     return Ok(buf);
                 }
-                if *making == Some((epoch, revision)) {
+                // The premix runs at low priority: on a busy machine it can take minutes, so play
+                // never waits for it; it mixes the sound itself, at normal priority.
+                if background && *making == Some((epoch, revision)) {
                     making = self.ready.wait(making).unwrap();
                     continue;
                 }

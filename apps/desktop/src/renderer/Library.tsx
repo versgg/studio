@@ -1,5 +1,5 @@
 import './library.css'
-import { useMemo, useRef, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { AudioPanel } from './AudioPanel'
 import { libraryMenu, openMenu } from './ContextMenu'
 import { DIcon, LIB_ICONS } from './design-icons'
@@ -144,6 +144,8 @@ function MediaBin() {
   const setPicked = (ids: string[]) => setState({ libraryPicked: ids })
   const importing = useStore((s) => s.importing)
   const loadTotal = useStore((s) => s.loadTotal)
+  const unreadable = useStore((s) => (s.snap && s.unreadable.dir === s.snap.dir ? s.unreadable.ids : null))
+  const unread = unreadable ? Object.keys(unreadable).length : 0
   const anchorRef = useRef<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const binRef = useRef<HTMLDivElement>(null)
@@ -162,6 +164,13 @@ function MediaBin() {
   const q = query.trim().toLowerCase()
   const under = (m: Media) => (node ? m.folder === node.folder.id && (!node.dir || m.dir === node.dir || (m.dir ?? '').startsWith(`${node.dir}/`)) : true)
   const items = q ? all.filter((m) => under(m) && m.name.toLowerCase().includes(q)) : node ? all.filter((m) => m.folder === node.folder.id && (m.dir ?? '') === node.dir) : loose
+  // The engine makes the posters of what's shown first (a linked folder can hold thousands of
+  // files; the one being looked at shouldn't wait behind the rest).
+  const waiting = items.filter((m) => !m.poster && m.kind !== 'audio' && !m.missing).slice(0, 300).map((m) => m.id)
+  const want = waiting.join()
+  useEffect(() => {
+    if (want) void window.studio.engine.call('media.want', { mediaIds: want.split(',') }).catch(() => {})
+  }, [want])
   const go = (folderId: string | 'all', d = '') => {
     setState({ libraryScope: folderId, libraryDir: d })
     setQuery('')
@@ -251,10 +260,17 @@ function MediaBin() {
         ) : busy > 0 ? (
           <div className="bin-status" role="status">
             <span>
-              Loading thumbnails and previews: {Math.max(0, loadTotal - busy)} of {Math.max(loadTotal, busy)} ready. You can already use what's here.
+              Loading thumbnails: {Math.max(0, loadTotal - busy)} of {Math.max(loadTotal, busy)} ready. You can already use what's here.
+              {unread > 0 && ` ${unread} file${unread === 1 ? '' : 's'} couldn’t be read.`}
             </span>
             <span className="bin-progress">
               <span style={{ width: `${(100 * Math.max(0, loadTotal - busy)) / Math.max(1, loadTotal, busy)}%` }} />
+            </span>
+          </div>
+        ) : unread > 0 ? (
+          <div className="bin-status" role="status">
+            <span>
+              {unread} file{unread === 1 ? '' : 's'} couldn’t be read (marked on {unread === 1 ? 'its tile' : 'their tiles'}): no picture in {unread === 1 ? 'it' : 'them'}, or still being written.
             </span>
           </div>
         ) : null}
@@ -362,6 +378,7 @@ export async function addToTimeline(ids: { id: string; kind: Media['kind']; dura
 }
 
 function MediaTile({ media, busy, selected, used, onPick, onMenu, dragIds, showPlace }: { media: Media; busy: boolean; selected: boolean; used: boolean; onPick: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void; dragIds: Media[]; showPlace?: boolean }) {
+  const cant = useStore((s) => (s.snap && s.unreadable.dir === s.snap.dir ? s.unreadable.ids[media.id] : undefined))
   // Where the player is in this clip, when it's the one being previewed.
   const mark = useStore((s) => (s.source?.mediaId === media.id ? s.source.positionUs : null))
   const length = media.kind === 'image' ? 3_000_000 : Math.max(1, media.durationUs)
@@ -384,7 +401,7 @@ function MediaTile({ media, busy, selected, used, onPick, onMenu, dragIds, showP
       }}
       onContextMenu={onMenu}
       onDoubleClick={() => !media.missing && call('timeline.insert', { mediaId: media.id })}
-      title={`${media.name}\n${media.missing ? 'Missing on disk: ' + media.path : media.kind === 'audio' ? 'Audio' : `${media.width} × ${media.height}`}${media.kind === 'image' || media.missing ? '' : ` · ${mss(media.durationUs)}`}${used ? '\nOn the timeline' : ''}\nDouble-click or drag to add it to the timeline`}
+      title={`${media.name}\n${media.missing ? 'Missing on disk: ' + media.path : media.kind === 'audio' ? 'Audio' : `${media.width} × ${media.height}`}${media.kind === 'image' || media.missing ? '' : ` · ${mss(media.durationUs)}`}${used ? '\nOn the timeline' : ''}${cant ? `\nNo thumbnail: ${cant}` : ''}\nDouble-click or drag to add it to the timeline`}
     >
       <div className={`tile-thumb kind-${media.kind}`}>
         {media.poster ? <img src={fileUrl(media.poster)} alt="" draggable={false} loading="lazy" /> : media.kind === 'audio' ? <DIcon d={LIB_ICONS.audio} size={20} /> : null}
@@ -394,6 +411,7 @@ function MediaTile({ media, busy, selected, used, onPick, onMenu, dragIds, showP
           </span>
         )}
         {media.missing ? <span className="tile-missing">Missing</span> : media.kind !== 'image' && <span className="tile-dur">{mss(media.durationUs)}</span>}
+        {cant && !media.poster && <span className="tile-missing">No picture</span>}
         {busy && <span className="tile-busy" aria-label="Preparing" />}
         {mark != null && media.kind !== 'image' && <span className="tile-mark" style={{ left: `${Math.min(100, (100 * mark) / length)}%` }} />}
         {!media.missing && (

@@ -92,16 +92,34 @@ pub(crate) fn run(mut cmd: Command, what: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// JPEGs are full range: FFmpeg 8's encoder refuses a picture marked TV range (most phone and
+/// TikTok clips: 375 of 400 in one B-roll folder), so their posters and filmstrips all failed
+/// with "Nothing was written into output file". yuvj420p has swscale convert the range.
+const FULL_RANGE: &str = "format=yuvj420p";
+const POSTER_VF: &str = "scale=-2:360:flags=fast_bilinear,format=yuvj420p";
+
 impl Ffmpeg {
-    /// One still for the media bin.
+    /// One still for the media bin: the keyframe at or before 40 % of a video, decoded alone on
+    /// one thread with its sound left closed (a tenth of the CPU of decoding up to that frame,
+    /// on all cores, as before: 0.08 s instead of 0.8 s for a 720p phone clip). A clip whose
+    /// picture ends before its sound (2.6 s of picture in a 10 s file) has nothing there, so it
+    /// falls back to its first keyframe, then to its first frame decoded in full.
     pub fn poster(&self, src: &Path, out: &Path, kind: MediaKind, duration_us: Us) -> anyhow::Result<()> {
-        let mut c = self.cmd_background();
-        c.args(["-hide_banner", "-loglevel", "error"]);
-        if kind == MediaKind::Video {
-            c.args(["-ss", &secs(duration_us * 2 / 5)]);
+        if kind != MediaKind::Video {
+            let mut c = self.cmd_background();
+            c.args(["-hide_banner", "-loglevel", "error", "-threads", "1"]).arg("-i").arg(src).args(["-frames:v", "1", "-vf", POSTER_VF, "-q:v", "4", "-y"]).arg(out);
+            return run(c, "poster");
         }
-        c.arg("-i").arg(src).args(["-frames:v", "1", "-vf", "scale=-2:360", "-q:v", "4", "-y"]).arg(out);
-        run(c, "poster")
+        let attempt = |at: Us, keyframes_only: bool| {
+            let mut c = self.cmd_background();
+            c.args(["-hide_banner", "-loglevel", "error", "-threads", "1"]);
+            if keyframes_only {
+                c.args(["-skip_frame", "nokey", "-noaccurate_seek"]);
+            }
+            c.args(["-ss", &secs(at), "-an", "-sn", "-dn"]).arg("-i").arg(src).args(["-frames:v", "1", "-vf", POSTER_VF, "-threads", "1", "-q:v", "4", "-y"]).arg(out);
+            run(c, "poster").and_then(|()| if out.metadata().is_ok_and(|m| m.len() > 0) { Ok(()) } else { anyhow::bail!("poster: no picture") })
+        };
+        attempt(duration_us * 2 / 5, true).or_else(|_| attempt(0, true)).or_else(|_| attempt(0, false))
     }
 
     /// Ten frames side by side at timeline height, for the clip filmstrip.
@@ -123,9 +141,9 @@ impl Ffmpeg {
         c.arg("-i").arg(src).args(["-an"]);
         let vf = if kind == MediaKind::Video {
             let rate = 10.0 / (duration_us.max(100_000) as f64 / 1_000_000.0);
-            format!("fps={rate:.6},scale=-2:96,tile=10x1")
+            format!("fps={rate:.6},scale=-2:96,tile=10x1,{FULL_RANGE}")
         } else {
-            "scale=-2:96".to_string()
+            format!("scale=-2:96,{FULL_RANGE}")
         };
         c.args(["-vf", &vf, "-frames:v", "1", "-q:v", "5", "-y"]).arg(out);
         run(c, "filmstrip")
@@ -165,8 +183,11 @@ impl Ffmpeg {
         let mut c = self.cmd_background();
         let s = PROXY_SIZE;
         let fit = format!("scale=w='if(gt(iw,ih),min({s},iw),-2)':h='if(gt(iw,ih),-2,min({s},ih))'");
-        c.args(["-hide_banner", "-loglevel", "error"]).arg("-i").arg(src).args(["-an", "-vf", &fit]);
-        if self.has("libx264") {
+        let x264 = self.has("libx264");
+        // An MJPEG proxy (no x264) is JPEG too: full range.
+        let vf = if x264 { fit } else { format!("{fit},{FULL_RANGE}") };
+        c.args(["-hide_banner", "-loglevel", "error"]).arg("-i").arg(src).args(["-an", "-vf", &vf]);
+        if x264 {
             c.args(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-g", "1", "-pix_fmt", "yuv420p"]);
         } else {
             c.args(["-c:v", "mjpeg", "-q:v", "5"]);
@@ -183,6 +204,68 @@ impl Ffmpeg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opt-in, on real files: `STUDIO_POSTER_SAMPLE=<folder> cargo test -p studio-media --release -- --ignored poster_sample --nocapture`
+    /// makes a poster for up to 200 videos under the folder (into a temp folder) and prints how many failed and how long it took.
+    #[test]
+    #[ignore]
+    fn poster_sample() {
+        let Some(root) = std::env::var_os("STUDIO_POSTER_SAMPLE") else { return };
+        let ff = Ffmpeg::detect().unwrap();
+        let mut files = vec![];
+        let mut stack = vec![std::path::PathBuf::from(root)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|x| x == "mp4") && files.len() < 200 {
+                    files.push(p);
+                }
+            }
+        }
+        let out = std::env::temp_dir().join(format!("studio-poster-sample-{}", std::process::id()));
+        std::fs::create_dir_all(&out).unwrap();
+        let t = std::time::Instant::now();
+        let durations: Vec<Us> = ff.probe_many(&files, 8).into_iter().map(|p| p.map(|p| p.duration_us).unwrap_or(0)).collect();
+        let failed: Vec<String> = std::thread::scope(|s| {
+            let jobs: Vec<(usize, (&std::path::PathBuf, Us))> = files.iter().zip(durations).enumerate().collect();
+            let chunks: Vec<Vec<(usize, (&std::path::PathBuf, Us))>> = jobs.chunks(files.len().div_ceil(6).max(1)).map(|c| c.to_vec()).collect();
+            let handles: Vec<_> = chunks.into_iter().map(|chunk| {
+                let (ff, out) = (&ff, &out);
+                s.spawn(move || chunk.into_iter().filter_map(|(i, (f, dur))| {
+                    ff.poster(f, &out.join(format!("{i}.jpg")), MediaKind::Video, dur).err().map(|e| format!("{}: {e}", f.display()))
+                }).collect::<Vec<_>>())
+            }).collect();
+            handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
+        });
+        println!("posters: {} files, {} failed, {:.1} s", files.len(), failed.len(), t.elapsed().as_secs_f64());
+        for f in failed.iter().take(5) {
+            println!("  {f}");
+        }
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    #[test]
+    fn a_tv_range_clip_whose_picture_ends_early_gets_its_poster_and_filmstrip() {
+        // Repro (2026-11-07): a cut TikTok clip, TV range, 2.6 s of picture in a 10 s file.
+        let Ok(ff) = Ffmpeg::detect() else { return };
+        if !ff.has("libx264") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("studio-tv-range-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("tv.mp4");
+        let made = ff.cmd().args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=720x1280:rate=30:duration=1", "-f", "lavfi", "-i", "sine=d=4"])
+            .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-color_range", "tv", "-c:a", "aac"]).arg(&src).status().unwrap();
+        assert!(made.success());
+        let t = std::time::Instant::now();
+        ff.poster(&src, &dir.join("poster.jpg"), MediaKind::Video, 4_000_000).expect("a poster, from its first keyframe");
+        assert!(std::fs::metadata(dir.join("poster.jpg")).unwrap().len() > 1000);
+        ff.strip(&src, &dir.join("strip.jpg"), MediaKind::Video, 4_000_000).expect("a filmstrip");
+        assert!(t.elapsed().as_secs() < 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn keyframes_come_from_the_sample_tables_and_pick_the_filmstrip_s_way() {

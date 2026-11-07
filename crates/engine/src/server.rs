@@ -4,7 +4,7 @@
 use crate::rpc::{self, Engine};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use studio_engine_core::protocol::{parse_request, response};
+use studio_engine_core::protocol::{RpcError, parse_request, response};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
 #[cfg(windows)]
@@ -48,18 +48,42 @@ where
     });
 }
 
+/// Requests answered alongside the rest instead of in turn: they take long (linking a folder of
+/// thousands of files probes each one: minutes) and nothing sent after them waits on them (the
+/// app awaits an import's answer before using what it imported). In turn, a link held up every
+/// request and every event behind it: Space, clicks and the screen's updates, for minutes, and
+/// the app looked crashed (2026-11-07). Everything else stays in order, as edits must.
+const ALONGSIDE: [&str; 2] = ["media.import", "media.syncFolder"];
+
 async fn handle<S: AsyncRead + AsyncWrite>(stream: S, engine: Arc<Engine>, conn: u64) -> anyhow::Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);
     let mut lines = BufReader::new(reader).lines();
     let mut events = engine.events.subscribe();
+    let (done, mut answers) = tokio::sync::mpsc::unbounded_channel::<String>();
     loop {
         tokio::select! {
+            Some(reply) = answers.recv() => {
+                writer.write_all(reply.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+            }
             line = lines.next_line() => {
                 let Some(line) = line? else { return Ok(()) };
                 if line.trim().is_empty() {
                     continue;
                 }
                 let reply = match parse_request(&line) {
+                    Ok(req) if ALONGSIDE.contains(&req.method.as_str()) => {
+                        let (engine, done) = (engine.clone(), done.clone());
+                        tokio::spawn(async move {
+                            let (method, params) = (req.method.clone(), req.params);
+                            let result = tokio::task::spawn_blocking(move || rpc::dispatch_on(&engine, conn, &method, params)).await;
+                            let result = result.unwrap_or_else(|e| Err(RpcError::new(RpcError::INTERNAL, format!("{e}"))));
+                            if req.id.is_some() {
+                                let _ = done.send(response(&req.id, result));
+                            }
+                        });
+                        continue;
+                    }
                     Ok(req) => {
                         // Handlers can block (probing, mixing), so keep them off the I/O threads.
                         let engine = engine.clone();

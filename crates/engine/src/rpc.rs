@@ -107,7 +107,11 @@ impl Engine {
                 }),
             );
             Services {
-                jobs: Jobs::start(ff.clone(), doc.clone(), processing.clone(), events.clone(), on_change),
+                // Thumbnails and proxies wait while playing, so the sound and picture get the machine.
+                jobs: Jobs::start(ff.clone(), doc.clone(), processing.clone(), events.clone(), on_change, {
+                    let pb = playback.clone();
+                    Arc::new(move || pb.is_busy())
+                }),
                 playback,
                 exports: Exports::new(ff.clone(), events.clone()),
                 analysis: Analysis::start(ff.clone(), events.clone()),
@@ -732,7 +736,11 @@ fn batched_changes(doc: Arc<Mutex<Option<Doc>>>, processing: Arc<Mutex<BTreeMap<
                         pending = cv.wait(pending).unwrap();
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(250));
+                // A big project (thousands of linked files: a 3 MB project.json) is saved and sent
+                // less often while its thumbnails arrive: 250 ms, plus 250 ms a thousand files, at
+                // most 2 s.
+                let files = doc.lock().unwrap().as_ref().map_or(0, |d| d.project.media.len()) as u64;
+                std::thread::sleep(std::time::Duration::from_millis((250 + files / 4).min(2000)));
                 *s.0.lock().unwrap() = false;
                 if let Some(d) = doc.lock().unwrap().as_mut() {
                     d.flush();
@@ -1069,6 +1077,14 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
             let merge = gesture(&params);
             let label = params.get("label").and_then(Value::as_str).unwrap_or("Import");
             engine.import(strings(&params, "paths"), merge.as_deref().map(|m| (label, m)))
+        }
+        // The library shows these media: their posters first.
+        "media.want" => {
+            let ids: Vec<String> = params.get("mediaIds").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+            if let Ok(m) = engine.services() {
+                m.jobs.want(&ids);
+            }
+            Ok(json!({}))
         }
         "media.syncFolder" => {
             let _one_at_a_time = engine.imports.lock().unwrap_or_else(|e| e.into_inner());

@@ -309,6 +309,8 @@ export interface State {
   importing: string[]
   /** Files in the current batch of thumbnails and waveforms (for the progress bar). */
   loadTotal: number
+  /** Library files whose poster couldn't be made (the open project's, by media id): marked on their tile and counted, never a toast each. */
+  unreadable: { dir: string; ids: Record<string, string> }
   /** Work running on outside services (text removal, voices), shown in the title bar. */
   tasks: Task[]
   /** What the text-removal dialog is for: a clip on the timeline, or a library item. */
@@ -391,6 +393,7 @@ let state: State = {
   source: null,
   importing: [],
   loadTotal: 0,
+  unreadable: { dir: '', ids: {} },
   tasks: [],
   vmakeTarget: null,
   vmakeJobs: {},
@@ -721,6 +724,14 @@ function onEvent(method: string, params: any) {
     }
     case 'media.warning': {
       const m = mediaById(state.snap, params.mediaId)
+      // A library file whose poster can't be made: thousands of files can be linked, so it's
+      // marked on its tile and counted in the library, not a toast each.
+      if (/^Poster:/.test(params.message) && state.snap) {
+        const dir = state.snap.dir
+        const ids = state.unreadable.dir === dir ? state.unreadable.ids : {}
+        setState({ unreadable: { dir, ids: { ...ids, [params.mediaId]: params.message.replace(/^Poster:\s*/, '') } } })
+        break
+      }
       toast(`${m?.name ?? 'Media'}: ${params.message}`, 'error')
       break
     }

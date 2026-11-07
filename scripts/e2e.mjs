@@ -3,7 +3,7 @@
 // Usage: node scripts/e2e.mjs [folder-with-clips]
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import { dirname, join } from 'node:path'
@@ -776,6 +776,17 @@ try {
   clip(join(tree, '01 Produkt', 'a.mp4'), 1, '720x1280')
   clip(join(tree, '05 Stock', 'Jul', 'b.mp4'))
   writeFileSync(join(tree, 'README.md'), 'not media')
+  await call('project.new', { name: 'E2E Folders', aspect: '9:16' })
+  // A big folder being linked doesn't hold up the rest: a request sent after it is answered first.
+  const many = join(work, 'Many')
+  mkdirSync(many, { recursive: true })
+  clip(join(many, 'm0.mp4'))
+  for (let i = 1; i < 120; i++) linkSync(join(many, 'm0.mp4'), join(many, `m${i}.mp4`))
+  const order = []
+  const linking = call('media.import', { paths: [many] }).then(() => order.push('link'))
+  await call('engine.capabilities').then(() => order.push('other'))
+  await linking
+  check(order.join() === 'other,link', `a request sent while 120 files are linked is answered first (${order.join(', ')})`)
   await call('project.new', { name: 'E2E Folders', aspect: '9:16' })
   let r = await call('media.import', { paths: [tree] })
   const folderId = r.folders[0]?.folderId

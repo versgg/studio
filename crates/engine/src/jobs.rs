@@ -180,6 +180,21 @@ impl Lanes {
         self.add(found, true);
     }
 
+    /// The posters of these media go first (the library is showing them).
+    fn want(&mut self, ids: &[String]) {
+        let mut found = vec![];
+        for q in &mut self.ranks {
+            let (theirs, rest): (VecDeque<Task>, VecDeque<Task>) = std::mem::take(q).into_iter().partition(|t| t.pass == Pass::Poster && ids.contains(&t.job.media_id));
+            *q = rest;
+            found.extend(theirs);
+        }
+        // In the order asked (the library's, top first).
+        found.sort_by_key(|t| ids.iter().position(|id| id == &t.job.media_id));
+        for t in found.into_iter().rev() {
+            self.ranks[0].push_front(t);
+        }
+    }
+
     fn done(&mut self, t: &Task) {
         if t.pass != Pass::Poster {
             self.heavy -= 1;
@@ -213,6 +228,9 @@ struct Queue {
     lanes: Mutex<Lanes>,
     ready: Condvar,
     heavy_max: usize,
+    /// True while the engine wants the machine to itself (a play starting or playing): no new
+    /// work starts until it's false again (checked every 250 ms).
+    quiet: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 #[derive(Clone)]
@@ -225,9 +243,9 @@ pub struct Jobs {
 }
 
 impl Jobs {
-    pub fn start(ff: Arc<Ffmpeg>, doc: Arc<Mutex<Option<Doc>>>, processing: Arc<Mutex<BTreeMap<String, usize>>>, events: Events, on_change: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub fn start(ff: Arc<Ffmpeg>, doc: Arc<Mutex<Option<Doc>>>, processing: Arc<Mutex<BTreeMap<String, usize>>>, events: Events, on_change: Arc<dyn Fn() + Send + Sync>, quiet: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
         let heavy_max = std::thread::available_parallelism().map(|n| (n.get() / 4).clamp(2, 4)).unwrap_or(2);
-        let queue = Arc::new(Queue { lanes: Mutex::default(), ready: Condvar::new(), heavy_max });
+        let queue = Arc::new(Queue { lanes: Mutex::default(), ready: Condvar::new(), heavy_max, quiet });
         for n in 0..heavy_max * 2 {
             let (queue, ff, doc, events, processing, on_change) = (queue.clone(), ff.clone(), doc.clone(), events.clone(), processing.clone(), on_change.clone());
             std::thread::Builder::new().name(format!("media-{n}")).spawn(move || worker(queue, ff, doc, events, processing, on_change)).expect("spawn media worker");
@@ -271,6 +289,12 @@ impl Jobs {
         self.queue.lanes.lock().unwrap().hurry(media_id);
     }
 
+    /// The library is showing these media: their posters go first, in this order.
+    pub fn want(&self, ids: &[String]) {
+        self.queue.lanes.lock().unwrap().want(ids);
+        self.queue.ready.notify_all();
+    }
+
     /// True if a filmstrip and waveform for this media of this project (its cache) is queued,
     /// being made, or failed this time the project was opened (so it isn't asked for on every edit).
     pub fn look_pending(&self, cache: &Path, media_id: &str) -> bool {
@@ -299,10 +323,13 @@ fn worker(queue: Arc<Queue>, ff: Arc<Ffmpeg>, doc: Arc<Mutex<Option<Doc>>>, even
         let task = {
             let mut l = queue.lanes.lock().unwrap();
             loop {
-                if let Some(t) = l.take(queue.heavy_max) {
-                    break t;
+                if !(queue.quiet)() {
+                    if let Some(t) = l.take(queue.heavy_max) {
+                        break t;
+                    }
                 }
-                l = queue.ready.wait(l).unwrap();
+                // Woken by new work or a lane coming free; every 250 ms while playing, to resume.
+                l = queue.ready.wait_timeout(l, std::time::Duration::from_millis(250)).unwrap().0;
             }
         };
         let job = &task.job;
@@ -512,6 +539,16 @@ mod tests {
         // Put on the timeline, it's asked for its filmstrip and waveform (rpc.rs, `want_looks`), urgent.
         l.add(passes(used("lib2", MediaKind::Video, false, false)), true);
         assert_eq!(order(&mut l, 3), ["lib2 Look", "lib2 Poster", "lib0 Poster", "lib1 Poster"]);
+    }
+
+    #[test]
+    fn the_posters_the_library_shows_go_first() {
+        let mut l = Lanes::default();
+        for n in 0..5 {
+            l.add(passes(job(&format!("m{n}"), MediaKind::Video, true, false)), false);
+        }
+        l.want(&["m3".to_string(), "m1".to_string()]);
+        assert_eq!(order(&mut l, 3), ["m3 Poster", "m1 Poster", "m0 Poster", "m2 Poster", "m4 Poster"]);
     }
 
     #[test]
