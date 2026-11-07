@@ -319,7 +319,7 @@ async function run(job: VmakeJob) {
         patch(job, { state: 'downloading', stage: 'Bringing the finished video back', fraction: 0.88 })
         break
       }
-      if (t.status !== 0 && t.status !== 1) throw new VmakeError(`Vmake could not process that video (status ${t.status}).`)
+      if (t.status !== 0 && t.status !== 1) throw new VmakeError(`Vmake couldn’t finish that video (it says it failed, status ${t.status}); vmake.ai gives the credits for a failed job back. Start it again to try once more.`)
       watched = true
       // By the clock against the estimate (or Vmake's own number, if it ever sends one).
       patch(job, { stage: 'Vmake is removing the text', fraction: waitFraction(Date.now() - (job.chargedAt ?? job.startedAt), job.expectedMs ?? 60_000, job.fraction, t.progress), ...(t.progress > 0 ? { reported: true } : {}) })
