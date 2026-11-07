@@ -37,3 +37,4 @@
 .dub-hint { margin: 4px 0 0; font-size: 11px; line-height: 14px; color: #6e6e77; }
 .dub-error, .dub-error-box { margin: 4px 0 8px; padding: 6px 8px; border-radius: 3px; background: #241a1b; font-size: 12px; line-height: 16px; color: #f08080; }
 .dub-error-box .insp-buttons { margin: 6px 0 0; }
+.dub-error-box .dub-again-with { display: block; margin-top: 6px; color: #c8c8cf; }

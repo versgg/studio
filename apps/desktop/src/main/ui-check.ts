@@ -877,16 +877,16 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      const [account, headline, text] = __t.qa('.reels-field input')
      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
      const was = account.value
-     set.call(account, 'duckandpippin'); account.dispatchEvent(new Event('input', { bubbles: true }))
+     set.call(account, 'examplestore'); account.dispatchEvent(new Event('input', { bubbles: true }))
      set.call(text, 'En lång första rad som inte får plats på en enda rad i flödet utan klipps av'); text.dispatchEvent(new Event('input', { bubbles: true }))
-     await __t.until(() => words().includes('duckandpippin'), 2000, 'the new account on the overlay')
+     await __t.until(() => words().includes('examplestore'), 2000, 'the new account on the overlay')
      const line = words().find((w) => w.startsWith('En lång'))
      if (!line || !line.endsWith('...') || line.length > 60) throw new Error('the text was not cut to one line: ' + line)
      __t.key('Escape')
      await __t.until(() => !__t.q('.reels-edit'), 2000, 'the panel to close on Escape')
      if (!__t.q('.reels-phone')) throw new Error('Escape closed the overlay too')
      const kept = JSON.parse(localStorage.getItem('studio.reels.v1') || '{}')
-     if (kept.last?.account !== 'duckandpippin') throw new Error('the words were not kept')
+     if (kept.last?.account !== 'examplestore') throw new Error('the words were not kept')
      return { trim: +trim.toFixed(4), cardTop: +cardTop.toFixed(3), was, line, words: words() }`,
   )
   await shot('6b-reels')
@@ -3200,8 +3200,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        __t.click(__t.clipEl(clip.id))
        ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab')).click()
        const shown = await __t.until(() => __t.qa('.inspector .dub-error-box').map((b) => b.textContent).find((t) => /verified/.test(t)), 3000, 'the reason in the Dub tab')
-       await S.openProjectAt(window.__verify.back)
-       await __t.until(async () => (await __t.snap()).dir === window.__verify.back, 8000, 'the test project again')
+       window.__verify.stopped = job.id
        return { reason: job.reason, shown: shown.slice(0, 160) }`,
     )
     // Two clones refused, the third would speak: only two may be made.
@@ -3212,6 +3211,38 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
       Object.assign(twice, { ok: false, detail: `${3 - left} clones were made, not 2` })
       console.log(`[ui-check] FAIL ${refusedTwice}: ${3 - left} clones were made, not 2`)
     }
+    // The user's rule: Try again after picking another voice speaks with it, the old clone forgotten.
+    await step(
+      'Dub: the stopped dub’s Dub tab shows its own settings, and Try again after picking Another speaks with that voice, not the old clone',
+      `const S = window.__studio, st = () => S.getState()
+       const id = window.__verify?.stopped
+       if (!id) throw new Error('no stopped dub (the step before it sets it up)')
+       const pressed = (group) => __t.q('.inspector [role=group][aria-label="' + group + '"] button[aria-pressed="true"]')?.textContent.trim()
+       // The first step's dub is on this clip, its own sound off: undone, so the clip speaks again.
+       const clipId = st().dubJobs[id].clipId
+       const detached = async () => (await __t.snap()).project.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId)?.detached
+       for (let i = 0; i < 8 && (await detached()); i++) await window.studio.engine.call('edit.undo')
+       if (await detached()) throw new Error('the clip’s own sound is still off')
+       // The form starts from the stopped dub: Danish, the text left as filmed, her voice, no captions.
+       await __t.until(() => pressed('Voice') === 'Her voice' && pressed('On-screen text') === 'Leave' && pressed('Captions') === 'None', 3000, 'the stopped dub’s settings in the form, not ' + [pressed('On-screen text'), pressed('Voice'), pressed('Captions')].join(' / '))
+       if (__t.q('.inspector .dub-again-with')) throw new Error('it lists a change before anything was changed')
+       window.__studioDev.store.setState({ voice: { id: 'fake-chosen', name: 'Test Voice', category: 'premade', description: '', labels: {} } })
+       __t.qa('.inspector [role=group][aria-label="Voice"] button').find((b) => b.textContent.trim() === 'Another').click()
+       const says = await __t.until(() => __t.q('.inspector .dub-again-with')?.textContent, 3000, 'what Try again uses')
+       if (!/Test Voice instead of her cloned voice/.test(says)) throw new Error('it says: ' + says)
+       const before = st().dubJobs[id].reason
+       __t.qa('.inspector .dub-error-box button').find((b) => b.textContent.trim() === 'Try again').click()
+       // Applied, or stopped for another reason (the same one again would be the old clone).
+       await __t.until(() => st().dubJobs[id]?.state === 'applied' || (st().dubJobs[id]?.state === 'failed' && st().dubJobs[id]?.reason !== before), 90000, 'the dub to carry on with the voice picked')
+       const job = st().dubJobs[id]
+       if (job.state !== 'applied') throw new Error('the dub ' + job.state + ': ' + job.reason)
+       const result = await window.studio.services.dubResult(id)
+       if (job.voice !== 'voice' || job.voiceId !== 'fake-chosen' || result.voice?.voiceId !== 'fake-chosen') throw new Error('it speaks with ' + job.voice + ' ' + job.voiceId + ' / ' + result.voice?.voiceId)
+       if ((job.notes ?? []).some((n) => /clone/.test(n))) throw new Error('a clone was made: ' + job.notes.join(' '))
+       await S.openProjectAt(window.__verify.back)
+       await __t.until(async () => (await __t.snap()).dir === window.__verify.back, 8000, 'the test project again')
+       return { says, voice: job.voiceId }`,
+    )
     await step(
       'Dub › What she says: Reroll says a changed sentence again as a new take where its clip is, at the take’s whole length, its captions follow, and one Ctrl+Z puts the old take back',
       `const S = window.__studio, st = () => S.getState()
@@ -3299,10 +3330,13 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 10 }))
        const item = await __t.until(() => __t.qa('.context-menu button').find((b) => b.textContent.startsWith('Reroll voice')), 2000, 'Reroll voice in the menu')
        const label = item.textContent
+       const toastBefore = Math.max(0, ...S.getState().toasts.map((t) => t.id))
        item.click()
        const after = await __t.until(async () => { const l = (await sentences())[0]; return l.takes?.length === 2 && l }, 20000, 'a second take')
        const clipNow = async () => { const s = await __t.snap(); return pathOf(s, s.project.tracks.flatMap((t) => t.clips).find((c) => c.id === was.id)) }
        await __t.until(async () => (await clipNow()) === after.takes[1].file, 5000, 'the new take on its clip (it plays ' + (await clipNow()).split('/').pop() + ')')
+       // Done, its captions drawn too, once it says so: the next step's edits mustn't land in between.
+       await __t.until(() => S.getState().toasts.some((t) => t.id > toastBefore && /is in/.test(t.text)), 10000, 'the reroll to finish (its toast)')
        if (after.takes[1].text !== line.text) throw new Error('its words changed: ' + after.takes[1].text)
        // The video clip's own menu has no Reroll voice.
        __t.click(__t.clipEl(clipId))
@@ -3344,6 +3378,9 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        ;(await __t.until(() => { const b = row(first)?.querySelector('.dub-btn.reroll'); return b && !b.disabled && b }, 3000, 'Reroll on the right piece')).click()
        await __t.until(async () => ((await sentences())[0].takes?.length ?? 1) === takes + 1, 20000, 'a new take from the right piece')
        await __t.until(() => new RegExp('Take ' + (takes + 1) + ' of').test(row(first)?.textContent ?? ''), 5000, 'the new take shown on the right piece')
+       // The reroll is done (its captions too) once Reroll is on again; an undo before that can land
+       // ahead of its last caption drawings.
+       await __t.until(() => { const b = row(first)?.querySelector('.dub-btn.reroll'); return b && !b.disabled }, 10000, 'the reroll to finish')
        // Undo the reroll, then the cut: one clip again.
        await window.studio.engine.call('edit.undo')
        await window.studio.engine.call('edit.undo')

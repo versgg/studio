@@ -1,6 +1,7 @@
 // The surface the preload exposes to the renderer as `window.studio`.
 
 import type { DubJob, DubLook, DubScan, DubSpoken, DubText, DubVoice, DubVoiceLine } from './dub'
+import type { DubChange } from './dub-retry'
 import type { StemsJob } from './stems'
 import type { TrItem, TrJob, TrLine, TrText, TrVoice } from './translate'
 import type { CcDraft, CcProject } from './capcut'
@@ -263,7 +264,8 @@ export interface StudioApi {
     dubSummary(projects: string[]): Promise<Record<string, DubJob[]>>
     /** The Dub tab's picks after review (and translations changed there): the paid steps start. */
     dubGo(id: string, o: { texts: string[]; lines: string[]; edits?: Record<string, string> }): Promise<DubJob | null>
-    dubRetry(id: string): Promise<DubJob | null>
+    /** Carries on a stopped dub; `change` is what the Dub tab shows that differs from its settings, used instead. */
+    dubRetry(id: string, change?: DubChange): Promise<DubJob | null | ServiceError>
     /** Starts a dub's text removal again after it stopped (it's paid again). */
     dubRemoveAgain(id: string): Promise<DubJob | { error: string }>
     dubCancel(id: string): Promise<DubJob | null>

@@ -6,9 +6,10 @@
 // things are selected; this tab only shows it.
 
 import './dub.css'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import type { VmakeAccount } from '../shared/api'
 import { vmakeCheck, vmakeKnown } from './vmakeAccount'
+import { describeChange, settingsChange, type DubSettings } from '../shared/dub-retry'
 import { dubRunning, unchanged, type DubJob, type DubScan, type DubText, type DubVoice, type DubVoiceLine } from '../shared/dub'
 import { Buttons, Note, Sec, SegRow, SelectRow } from './InspectorBlocks'
 import { BusyBar } from './LibraryBlocks'
@@ -72,6 +73,9 @@ function useKeys() {
   return keys
 }
 
+/** Stopped dubs whose settings the form has started from (once each, so a change sticks while you look elsewhere). */
+const seeded = new Set<string>()
+
 function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last?: DubJob; onAgain: () => void }) {
   const voiceChosen = useStore((s) => s.voice)
   const [lang, setLang] = useUi('dub.lang', 'sv')
@@ -84,6 +88,19 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
   const [chosenModel, setModel] = useUi('dub.model', 'pro')
   // Remove needs Vmake: None isn't offered then.
   const model = removeText && chosenModel === 'skip' ? 'pro' : chosenModel
+  // A stopped dub: the form starts from its own settings, so what's changed after is the user's
+  // pick, and Try again uses it (the old voice forgotten).
+  const stopped = last && (last.state === 'failed' || last.state === 'cancelled') ? last : undefined
+  useLayoutEffect(() => {
+    if (!stopped || seeded.has(stopped.id)) return
+    seeded.add(stopped.id)
+    setLang(stopped.lang)
+    setOnScreen(!stopped.text ? 'leave' : stopped.removeText ? 'remove' : 'translate')
+    if (stopped.text) setModel(stopped.model)
+    // Without sound a dub's voice is always Keep: that isn't a pick, so the form keeps its own.
+    if (media?.hasAudio) setVoice(stopped.voice)
+    setCaptions(stopped.captions)
+  }, [stopped?.id])
   const keys = useKeys()
   const [account, setAccount] = useState<VmakeAccount | null>(vmakeKnown)
   const sound = !!media?.hasAudio && !clip.detached
@@ -99,6 +116,14 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
   const needVmake = text && model !== 'skip' && !cleaned && keys && !keys.vmake
   const needEleven = hears && keys && !keys.elevenlabs
   const anything = text || speaks || (sound && captions)
+  const want: DubSettings = { lang, text, removeText, model: text ? model : 'skip', voice: sound ? voice : 'keep', ...(voice === 'voice' && voiceChosen ? { voiceId: voiceChosen.id, voiceName: voiceChosen.name } : {}), captions: sound && captions }
+  const change = stopped ? settingsChange(stopped, want) : {}
+  const changed = stopped ? describeChange(stopped, change, (l) => LANG_NAMES[l] ?? l) : []
+  const again = () => {
+    if (!stopped) return
+    if (change.voice === 'voice' && !voiceChosen) return void toast('Choose the voice in the Audio tab first, or use her own voice.', 'error')
+    void retryDub(stopped.id, changed.length ? change : undefined)
+  }
   const start = () => {
     if (!media) return
     if (voice === 'voice' && speaks && !voiceChosen) return void toast('Choose the voice in the Audio tab first, or use her own voice.', 'error')
@@ -107,12 +132,13 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
   }
   return (
     <>
-      {last && (last.state === 'failed' || last.state === 'cancelled') && (
+      {stopped && (
         <div className="dub-error-box">
           <span>
-            The last dub into {LANG_NAMES[last.lang] ?? last.lang} stopped: {last.reason ?? 'cancelled'}
+            The last dub into {LANG_NAMES[stopped.lang] ?? stopped.lang} stopped: {stopped.reason ?? 'cancelled'}
           </span>
-          <Buttons items={[{ label: 'Try again', onClick: () => void retryDub(last.id), title: 'Carries on from where it stopped, keeping what it found and translated' }]} />
+          {changed.length > 0 && <span className="dub-again-with">Try again uses what’s set below: {changed.join('; ')}.</span>}
+          <Buttons items={[{ label: 'Try again', onClick: again, title: changed.length ? 'Carries on from where it stopped with what’s set below, keeping what still holds' : 'Carries on from where it stopped, keeping what it found and translated' }]} />
         </div>
       )}
       {last && last.state !== 'applied' && last.text && <Removal job={last} />}

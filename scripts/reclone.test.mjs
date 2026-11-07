@@ -1,26 +1,28 @@
-// A clone ElevenLabs wants verified is cloned again once (apps/desktop/src/shared/reclone.ts): node --test scripts/reclone.test.mjs
+// A clone ElevenLabs wants verified (or that's gone) is cloned again once (apps/desktop/src/shared/reclone.ts): node --test scripts/reclone.test.mjs
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { cloneSpeaker } from '../apps/desktop/src/shared/reclone.ts'
 
 const refusal = () => Object.assign(new Error('ElevenLabs: This voice requires verification. (voice_access_denied)'), { code: 'voice_access_denied' })
+const missing = (id) => Object.assign(new Error(`ElevenLabs: A voice with voice_id '${id}' was not found. (voice_not_found)`), { code: 'voice_not_found' })
 
-function setup({ refuse = [], recloneTo = 'v2' } = {}) {
+function setup({ refuse = [], gone = [], recloneTo = 'v2' } = {}) {
   const log = []
   let voice = 'v1'
   const say = cloneSpeaker({
     voiceId: () => voice,
-    reclone: async (old) => {
-      log.push(`reclone ${old}`)
+    reclone: async (old, why) => {
+      log.push(`reclone ${old}${why === 'gone' ? ' (gone)' : ''}`)
       if (!recloneTo) return null
       voice = recloneTo
       return recloneTo
     },
-    refused: () => new Error('verify it'),
+    refused: (why) => new Error(why === 'gone' ? 'it is gone' : 'verify it'),
   })
   const speak = async (id) => {
     log.push(`speak ${id}`)
     if (refuse.includes(id)) throw refusal()
+    if (gone.includes(id)) throw missing(id)
     return `take by ${id}`
   }
   return { log, say, speak, voice: () => voice }
@@ -62,4 +64,21 @@ test('any other error goes through as it is, with no re-clone', async () => {
     /credits/,
   )
   assert.deepEqual(s.log, [])
+})
+
+test('a clone that is gone from the account is cloned again once (nothing to delete), and the new one speaks', async () => {
+  const s = setup({ gone: ['v1'] })
+  assert.equal(await s.say(s.speak), 'take by v2')
+  assert.deepEqual(s.log, ['speak v1', 'reclone v1 (gone)', 'speak v2'])
+})
+
+test('a new clone gone as soon as it is made stops with why, no third clone', async () => {
+  const s = setup({ refuse: ['v1'], gone: ['v2'] })
+  await assert.rejects(s.say(s.speak), /it is gone/)
+  assert.deepEqual(s.log, ['speak v1', 'reclone v1', 'speak v2'])
+})
+
+test('gone with no way to clone again (a chosen voice) stops with why', async () => {
+  const s = setup({ gone: ['v1'], recloneTo: null })
+  await assert.rejects(s.say(s.speak), /it is gone/)
 })

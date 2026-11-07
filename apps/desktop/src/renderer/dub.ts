@@ -11,6 +11,7 @@
 // wide as the original's, drawn over the original's letter mask (dub-look.ts) and scored by how
 // well they cover it (an earlier dubbing tool's fontfit round 3).
 
+import type { DubChange } from '../shared/dub-retry'
 import type { DubJob, DubLook, DubScan, DubText, DubVoice, DubVoiceLine } from '../shared/dub'
 import { dubRunning, unchanged } from '../shared/dub'
 import { cuesOf, placeCaptions, recaption } from './captions'
@@ -215,15 +216,21 @@ export async function cancelDub(id: string) {
  * Starts a stopped dub again from where it stopped (what it found, read and had removed is kept;
  * a text removal that stopped is started, and paid for, again). Its clip is busy again first.
  */
-export async function retryDub(id: string) {
+/** Carries on a stopped dub; with `change` (the Dub tab's settings that differ from the dub's), with those. */
+export async function retryDub(id: string, change?: DubChange) {
   const job = getState().dubJobs[id]
   const c = job && findClip(getState().snap, job.clipId)?.clip
   if (!job || !c) return void toast('That clip is gone, so the dub can’t start again. Start a new one from its clip.', 'error')
   if (c.busy && c.busy !== id) return void toast('That clip is busy with something else.')
   told.delete(`${id}:end`)
   told.delete(id)
-  if (!c.busy) await window.studio.engine.call('clip.busy', { clipId: c.id, job: id })
-  await window.studio.services.dubRetry(id)
+  const took = !c.busy
+  if (took) await window.studio.engine.call('clip.busy', { clipId: c.id, job: id })
+  const r = await window.studio.services.dubRetry(id, change)
+  if (r && 'error' in r) {
+    if (took) await window.studio.engine.call('clip.release', { clipId: c.id, job: id })
+    toast(`The dub couldn’t start again: ${r.error}`, 'error')
+  }
 }
 
 /** Starts a dub's text removal again after Vmake stopped (paid again); the dub itself goes on. */

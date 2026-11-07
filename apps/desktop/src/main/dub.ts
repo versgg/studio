@@ -27,6 +27,7 @@
 import { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { retryPlan, type DubChange } from '../shared/dub-retry'
 import { cloneSpeaker } from '../shared/reclone'
 import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubTake, type DubText, type DubVoiceLine } from '../shared/dub'
 import { buildBase, measureLooks } from './dub-look'
@@ -354,31 +355,39 @@ async function waitForStems(job: DubJob, gone: () => boolean) {
 /**
  * Speaks with the dub's voice. A clone Studio made that ElevenLabs won't speak with until it's
  * verified is deleted and her voice cloned again from the kept sample, once per run (the user's
- * rule); refused again, the dub stops and says what to do. A voice the user chose is never deleted.
+ * rule); one gone from the account is cloned again the same way. Refused again, the dub stops and
+ * says what to do. A voice the user chose is never deleted.
  */
 function voiceOf(job: DubJob, el: ElevenLabs | null, notes?: string[]) {
   const name = path.parse(job.name).name
+  const free = job.text ? ': Vmake’s copy is used again at no cost' : ''
   let recloned = false
   return cloneSpeaker({
     voiceId: () => job.voiceId!,
-    reclone: async (refused) => {
+    reclone: async (old, why) => {
       if (job.voice !== 'clone') return null
       const sample = fs.readdirSync(job.dir).find((f) => /^clone-.+\.mp3$/.test(f))
       if (!sample && !ELEVEN_FAKE) return null
-      if (job.state === 'voicing') patch(job, { stage: 'ElevenLabs wants that clone verified: cloning her voice again' })
+      if (job.state === 'voicing') patch(job, { stage: why === 'verify' ? 'ElevenLabs wants that clone verified: cloning her voice again' : 'Her clone is gone from ElevenLabs: cloning her voice again' })
       let kept = ''
-      await removeClone(el, refused).catch((e) => (kept = ` (the old one couldn’t be deleted: ${(e as Error).message})`))
+      if (why === 'verify') await removeClone(el, old).catch((e) => (kept = ` (the old one couldn’t be deleted: ${(e as Error).message})`))
       const id = await cloneFrom(el, sample ? path.join(job.dir, sample) : '', name)
       recloned = true
       patch(job, { voiceId: id })
-      notes?.push(`ElevenLabs wanted her clone verified before it would speak, so Studio deleted it and cloned her voice again${kept}.`)
+      notes?.push(why === 'verify' ? `ElevenLabs wanted her clone verified before it would speak, so Studio deleted it and cloned her voice again${kept}.` : 'Her clone was no longer in ElevenLabs, so Studio cloned her voice again.')
       return id
     },
-    refused: () =>
+    refused: (why) =>
       new Error(
         job.voice !== 'clone'
-          ? `ElevenLabs won’t speak with ${job.voiceName ?? 'that voice'} until it’s verified. Verify it in ElevenLabs (My Voices), or choose another voice in Audio.`
-          : `ElevenLabs won’t speak with her cloned voice until it’s verified${recloned ? ', and a new clone was refused too' : ''}. Verify “${name} (Studio dub)” in ElevenLabs (My Voices) and Try again, or dub with Another voice: Vmake’s copy is used again at no cost.`,
+          ? why === 'verify'
+            ? `ElevenLabs won’t speak with ${job.voiceName ?? 'that voice'} until it’s verified. Verify it in ElevenLabs (My Voices), or choose another voice in Audio.`
+            : `${job.voiceName ?? 'That voice'} isn’t in your ElevenLabs voices any more. Choose another voice in Audio and Try again.`
+          : why === 'verify'
+          ? `ElevenLabs won’t speak with her cloned voice until it’s verified${recloned ? ', and a new clone was refused too' : ''}. Verify “${name} (Studio dub)” in ElevenLabs (My Voices) and Try again, or dub with Another voice${free}.`
+          : recloned
+          ? `ElevenLabs didn’t keep her new clone: it was gone as soon as it was made, so it won’t keep a clone of this voice. Dub with Another voice and Try again${free}.`
+          : `Her cloned voice isn’t in ElevenLabs any more, and its sample is missing. Dub with Another voice and Try again${free}.`,
       ),
   })
 }
@@ -581,13 +590,19 @@ export function go(id: string, o: { texts: string[]; lines: string[]; edits?: Re
   return job
 }
 
-/** Starts a failed or waiting dub again from where it stopped. */
-export function retry(id: string): DubJob | null {
+/**
+ * Starts a failed or waiting dub again from where it stopped. With `change` (what the Dub tab
+ * shows that differs from the dub's own settings), those are used instead: the old voice is
+ * forgotten, and only the files the change makes wrong are made again (retryPlan).
+ */
+export function retry(id: string, change?: DubChange): DubJob | null {
   const job = jobs.get(id)
   if (!job) return null
+  const plan = change && Object.keys(change).length ? retryPlan(job, change) : null
   live.get(id)?.abort()
   live.delete(id)
-  patch(job, { state: 'preparing', stage: 'Starting again', reason: undefined, needsClaude: false })
+  for (const f of plan?.drop ?? []) fs.rmSync(path.join(job.dir, f), { force: true })
+  patch(job, { ...plan?.patch, state: 'preparing', stage: 'Starting again', reason: undefined, needsClaude: false })
   void run(job, true)
   return job
 }

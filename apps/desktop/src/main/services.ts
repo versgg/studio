@@ -139,7 +139,7 @@ export function registerServices() {
   ipcMain.handle('dub:reroll', (_e, id: string, lineIds: string[], edits?: Record<string, string>) => dub.reroll(id, lineIds, edits).catch((e: Error) => ({ error: e.message })))
   ipcMain.handle('dub:pickTake', (_e, id: string, lineId: string, take: number) => tried(() => dub.pickTake(id, lineId, take)))
   ipcMain.handle('dub:go', (_e, id: string, o: Parameters<typeof dub.go>[1]) => dub.go(id, o))
-  ipcMain.handle('dub:retry', (_e, id: string) => dub.retry(id))
+  ipcMain.handle('dub:retry', (_e, id: string, change?: Parameters<typeof dub.retry>[1]) => tried(() => dub.retry(id, change)))
   ipcMain.handle('dub:removeAgain', (_e, id: string) => tried(() => dub.removeAgain(id)))
   ipcMain.handle('dub:cancel', (_e, id: string) => dub.cancel(id))
   ipcMain.handle('dub:result', (_e, id: string) => tried(() => dub.result(id)))
