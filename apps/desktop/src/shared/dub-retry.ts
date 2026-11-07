@@ -13,6 +13,8 @@ export type DubSettings = {
   /** For `voice`: the voice chosen in Audio (a clone's id once it's made). */
   voiceId?: string
   voiceName?: string
+  /** Her clone stays in the ElevenLabs account (else it's deleted after each use). */
+  keepClone?: boolean
   captions: boolean
 }
 
@@ -27,6 +29,7 @@ export function settingsChange(job: DubSettings, want: DubSettings): DubChange {
   // A clone's id isn't the user's pick, so only a chosen voice's id counts.
   if (want.voice !== job.voice || (want.voice === 'voice' && want.voiceId !== job.voiceId)) Object.assign(c, { voice: want.voice, voiceId: want.voiceId, voiceName: want.voiceName })
   if (want.captions !== job.captions) c.captions = want.captions
+  if (want.voice === 'clone' && !!want.keepClone !== !!job.keepClone) c.keepClone = !!want.keepClone
   return c
 }
 
@@ -43,6 +46,7 @@ export function describeChange(job: DubSettings, c: DubChange, langName: (code: 
   if (c.model && n.text && job.text) out.push(`${MODELS[n.model] ?? n.model} instead of ${MODELS[job.model] ?? job.model}`)
   if (c.voice) out.push(`${who(n)} instead of ${who(job)}`)
   if ('captions' in c) out.push(n.captions ? `${langName(n.lang)} captions` : 'no captions')
+  if ('keepClone' in c) out.push(n.keepClone ? 'her clone kept in ElevenLabs' : 'her clone deleted after use')
   return out
 }
 

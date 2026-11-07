@@ -51,7 +51,8 @@ export function dubbedLines(snap: Snapshot | null, clipIds: string[]): { job: Du
     const c = findClip(snap, id)?.clip
     const path = (c && mediaById(snap, c.mediaId)?.path) ?? ''
     const line = LINE_FILE.exec(fileName(path))?.[1]
-    const job = line && jobs.find((j) => j.dir === folderOf(path) && j.voiceId)
+    // A voice dub's own sentence (her clone may be deleted between uses: it's made again to speak).
+    const job = line && jobs.find((j) => j.dir === folderOf(path) && j.voice !== 'keep')
     if (!job) continue
     const entry = out.get(job.id) ?? { job, lineIds: [] }
     if (!entry.lineIds.includes(line)) entry.lineIds.push(line)
@@ -166,7 +167,7 @@ export async function pickLineTake(job: DubJob, lineId: string, take: number): P
 export const goDub = (id: string, o: { texts: string[]; lines: string[]; edits?: Record<string, string> }) => window.studio.services.dubGo(id, o)
 
 /** Starts a dub of a clip; the clip is busy until it's on the timeline (or cancelled). */
-export type DubOptions = { lang: string; model: string; text: boolean; removeText?: boolean; voice: DubVoice; voiceId?: string; voiceName?: string; captions: boolean; review: boolean }
+export type DubOptions = { lang: string; model: string; text: boolean; removeText?: boolean; voice: DubVoice; voiceId?: string; voiceName?: string; keepClone?: boolean; captions: boolean; review: boolean }
 
 export async function dubText(target: { mediaId: string; clipId: string }, o: DubOptions | string, model?: string) {
   // (target, lang, model): the on-screen text only, everything dubbed (the UI check and Claude's old call).

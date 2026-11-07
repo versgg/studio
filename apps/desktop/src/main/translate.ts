@@ -19,7 +19,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { trProjectName, trRunning, type TrItem, type TrJob, type TrLine, type TrText, type TrVoice } from '../shared/translate'
 import { ClaudeSignedOut, translateSpeech } from './dub-read'
-import { CPS, FAKE as ELEVEN_FAKE, cutTake, fitLines, iso2, retime, speakTake, type Spoken } from './dub-voice'
+import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cutTake, fitLines, iso2, removeClone, retime, speakTake, type Spoken } from './dub-voice'
 import { ElevenLabs } from './elevenlabs'
 import { getSecret } from './secrets'
 import { budgets, translateItems } from './translate-read'
@@ -291,38 +291,46 @@ async function speak(job: TrJob, items: TrItem[], texts: TrText[], said: TrItem[
     const speed = Math.min(1.1, Math.max(0.95, need / Math.max(1, have)))
     let seed = 4242
     let best: { placed: ReturnType<typeof fitLines>['placed']; cut: Awaited<ReturnType<typeof cutTake>>; long: string[]; script: typeof script } | null = null
-    for (let round = 1; round <= 3; round++) {
-      if (gone()) return null
-      const who = groups.size > 1 ? `${v.name}: ` : ''
-      patch(job, { state: 'voicing', stage: `${who}${round === 1 ? 'Speaking the translation in one take' : `Speaking it again, shorter (take ${round})`}`, fraction: 0.35 + (0.55 * (g - 1 + round / 3)) / groups.size })
-      const ask = { voiceId, lines: script.map((s) => ({ id: s.id, translation: s.translation })), lang: job.lang, model: v.model, seed, speed, out: file(`take-${g}-${round}.mp3`) }
-      let take = await speakTake(el, ask)
-      // A take in the wrong language (or accent) is spoken again with another seed.
-      if (el) {
-        const heard = await el.transcribe({ file: take.file, diarize: false })
-        if (iso2(heard.language) !== job.lang) {
-          seed += 1
-          take = await speakTake(el, { ...ask, seed, out: file(`take-${g}-${round}b.mp3`) })
-          const again = await el.transcribe({ file: take.file, diarize: false })
-          if (iso2(again.language) !== job.lang) notes.push(`A take still sounded like ${again.language}, not ${job.lang}; listen to it.`)
+    // A dub's clone that isn't kept is gone from the account: cloned again from its sample for these
+    // takes, and deleted after (the user's rule: no clone left behind unless it's kept).
+    const made = v.clone ? await cloneFrom(el, v.clone.sample, v.clone.name) : ''
+    const speakAs = made || voiceId
+    try {
+      for (let round = 1; round <= 3; round++) {
+        if (gone()) return null
+        const who = groups.size > 1 ? `${v.name}: ` : ''
+        patch(job, { state: 'voicing', stage: `${who}${round === 1 ? 'Speaking the translation in one take' : `Speaking it again, shorter (take ${round})`}`, fraction: 0.35 + (0.55 * (g - 1 + round / 3)) / groups.size })
+        const ask = { voiceId: speakAs, lines: script.map((s) => ({ id: s.id, translation: s.translation })), lang: job.lang, model: v.model, seed, speed, out: file(`take-${g}-${round}.mp3`) }
+        let take = await speakTake(el, ask)
+        // A take in the wrong language (or accent) is spoken again with another seed.
+        if (el) {
+          const heard = await el.transcribe({ file: take.file, diarize: false })
+          if (iso2(heard.language) !== job.lang) {
+            seed += 1
+            take = await speakTake(el, { ...ask, seed, out: file(`take-${g}-${round}b.mp3`) })
+            const again = await el.transcribe({ file: take.file, diarize: false })
+            if (iso2(again.language) !== job.lang) notes.push(`A take still sounded like ${again.language}, not ${job.lang}; listen to it.`)
+          }
         }
+        if (gone()) return null
+        const cut = await cutTake(take, script.map((s) => s.id), job.dir, `${g}-${round}`)
+        const { placed, long } = fitLines(cut, spoken, end, round < 3 ? 1.08 : 1.12)
+        if (!best || long.length < best.long.length) best = { placed, cut, long, script }
+        if (!long.length || round === 3) break
+        // Too long for their moments: the whole script again, those sentences simpler.
+        patch(job, { state: 'reading', stage: `Claude is making ${long.length} sentence${long.length === 1 ? '' : 's'} shorter` })
+        const shorter = script.map((s) => {
+          const r = room.get(s.item.id)!
+          const c = cut.find((x) => x.id === s.id)!
+          const now = s.translation.length
+          return { id: s.id, heard: s.item.text, seconds: r.seconds, budget: long.includes(s.id) ? Math.max(Math.round(now * 0.7), Math.round((now * r.seconds * 1.05) / c.dur)) : Math.max(r.budget, now) }
+        })
+        const again = await translateSpeech(shorter, job.lang, { from: job.from, previous: script.map((s) => ({ id: s.id, text: s.item.text, translation: s.translation })) })
+        script = script.map((s) => ({ ...s, translation: again.find((a) => a.id === s.id)?.translation ?? s.translation }))
+        seed += 7
       }
-      if (gone()) return null
-      const cut = await cutTake(take, script.map((s) => s.id), job.dir, `${g}-${round}`)
-      const { placed, long } = fitLines(cut, spoken, end, round < 3 ? 1.08 : 1.12)
-      if (!best || long.length < best.long.length) best = { placed, cut, long, script }
-      if (!long.length || round === 3) break
-      // Too long for their moments: the whole script again, those sentences simpler.
-      patch(job, { state: 'reading', stage: `Claude is making ${long.length} sentence${long.length === 1 ? '' : 's'} shorter` })
-      const shorter = script.map((s) => {
-        const r = room.get(s.item.id)!
-        const c = cut.find((x) => x.id === s.id)!
-        const now = s.translation.length
-        return { id: s.id, heard: s.item.text, seconds: r.seconds, budget: long.includes(s.id) ? Math.max(Math.round(now * 0.7), Math.round((now * r.seconds * 1.05) / c.dur)) : Math.max(r.budget, now) }
-      })
-      const again = await translateSpeech(shorter, job.lang, { from: job.from, previous: script.map((s) => ({ id: s.id, text: s.item.text, translation: s.translation })) })
-      script = script.map((s) => ({ ...s, translation: again.find((a) => a.id === s.id)?.translation ?? s.translation }))
-      seed += 7
+    } finally {
+      if (made) await removeClone(el, made).catch((e) => notes.push(`The clone made for this translation couldn’t be deleted from ElevenLabs: ${(e as Error).message}`))
     }
     if (best!.long.length) notes.push(`${best!.long.length} sentence${best!.long.length === 1 ? ' runs' : 's run'} a little past ${best!.long.length === 1 ? 'its' : 'their'} moment at 12 % faster.`)
     for (const p of best!.placed) {
@@ -441,7 +449,7 @@ export function context(project: string, paths: string[]) {
     for (const d of fs.readdirSync(dubs)) {
       const dir = path.join(dubs, d)
       try {
-        const job = readJson<{ lang: string; voiceName?: string; state?: string }>(path.join(dir, 'job.json'))
+        const job = readJson<{ lang: string; name?: string; voiceName?: string; state?: string; voice?: string; voiceId?: string; keepClone?: boolean }>(path.join(dir, 'job.json'))
         if (job.state !== 'applied') continue
         langs.push(job.lang)
         const t = path.join(dir, 'texts.json')
@@ -451,8 +459,12 @@ export function context(project: string, paths: string[]) {
         const voice = readJson<{ voiceId: string; model: string; speed: number; lines: { id: string; file: string; text: string; own?: boolean }[] }>(v)
         const sf = path.join(dir, `speech-${job.lang}.json`)
         const heard = fs.existsSync(sf) ? readJson<{ lines: { id: string; text: string }[] }>(sf).lines : []
+        // Her clone: the one kept in the account, else made again from the dub's sample for the take.
+        const kept = job.voice === 'clone' && job.keepClone && job.voiceId
+        const sample = job.voice === 'clone' && !kept ? fs.readdirSync(dir).find((f) => /^clone-.+\.mp3$/.test(f)) : undefined
+        const clone = sample ? { clone: { sample: path.join(dir, sample), name: path.parse(job.name ?? 'Her voice').name } } : {}
         for (const l of voice.lines)
-          sounds[key(l.file)] = l.own ? { text: l.text } : { voiceId: voice.voiceId, model: voice.model, speed: voice.speed, name: job.voiceName ?? 'The dub’s voice', text: l.text, original: heard.find((h) => h.id === l.id)?.text, lang: job.lang }
+          sounds[key(l.file)] = l.own ? { text: l.text } : { voiceId: kept || voice.voiceId, model: voice.model, speed: voice.speed, name: job.voiceName ?? 'The dub’s voice', text: l.text, original: heard.find((h) => h.id === l.id)?.text, lang: job.lang, ...clone }
       } catch {}
     }
   // A translation already on this project's timeline (this is a copy): it's in that language now,
@@ -465,7 +477,7 @@ export function context(project: string, paths: string[]) {
       const items = readJson<{ items: TrItem[] }>(path.join(own, 'items.json')).items
       for (const l of readJson<{ lines: TrLine[] }>(path.join(own, 'voice.json')).lines) {
         const v = items.find((i) => i.id === l.id)?.voice
-        if (v) sounds[key(l.file)] = { voiceId: v.voiceId, model: v.model, speed: v.speed, name: v.name, text: l.text, lang: job.lang }
+        if (v) sounds[key(l.file)] = { voiceId: v.voiceId, model: v.model, speed: v.speed, name: v.name, text: l.text, lang: job.lang, ...(v.clone ? { clone: v.clone } : {}) }
       }
     }
   } catch {}

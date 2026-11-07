@@ -101,7 +101,6 @@ export const iso2 = (code: string) => (code.length === 3 ? (ISO3[code.toLowerCas
 
 /** One instant clone of a speaker from up to two minutes of their own sentences (longest first). */
 export async function cloneVoice(el: ElevenLabs | null, voiceFile: string, lines: Spoken[], speaker: string, name: string, dir: string): Promise<string> {
-  if (FAKE) return fakeClone()
   const mine = lines.filter((l) => l.speaker === speaker).sort((a, b) => b.end - b.start - (a.end - a.start))
   const picked: Spoken[] = []
   let total = 0
@@ -116,6 +115,7 @@ export async function cloneVoice(el: ElevenLabs | null, voiceFile: string, lines
   const chain = picked.map((_, i) => `[${i}:a]aresample=44100,aformat=channel_layouts=mono,apad=pad_dur=0.3[a${i}]`).join(';')
   const sample = path.join(dir, `clone-${speaker}.mp3`)
   await ffmpeg(['-y', ...inputs, '-filter_complex', `${chain};${picked.map((_, i) => `[a${i}]`).join('')}concat=n=${picked.length}:v=0:a=1[out]`, '-map', '[out]', '-c:a', 'libmp3lame', '-b:a', '192k', sample])
+  // The stand-in keeps the sample too, as her clone is made again from it.
   return cloneFrom(el, sample, name)
 }
 
@@ -127,13 +127,18 @@ export async function cloneFrom(el: ElevenLabs | null, sample: string, name: str
 
 /** Deletes a clone Studio made from the account. */
 export async function removeClone(el: ElevenLabs | null, voiceId: string) {
-  if (FAKE) return void unverified.delete(voiceId)
+  if (FAKE) {
+    unverified.delete(voiceId)
+    fakeLive = Math.max(0, fakeLive - 1)
+    return
+  }
   await el!.deleteVoice(voiceId)
 }
 
 // The UI check's stand-in for clones ElevenLabs won't speak with until they're verified.
 let refuseLeft = 0
 let fakeClones = 0
+let fakeLive = 0
 const unverified = new Set<string>()
 /** For the UI check, in fake mode only. */
 export const elevenTest = {
@@ -143,8 +148,11 @@ export const elevenTest = {
   },
   /** How many of those are still to be made. */
   left: () => refuseLeft,
+  /** How many clones Studio made are in the stand-in account now. */
+  live: () => fakeLive,
 }
 function fakeClone() {
+  fakeLive++
   if (refuseLeft <= 0) return 'fake-voice'
   refuseLeft--
   const id = `fake-unverified-${++fakeClones}`

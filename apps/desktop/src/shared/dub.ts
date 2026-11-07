@@ -109,6 +109,11 @@ export interface DubJob {
   /** For `voice`: the ElevenLabs voice chosen in Audio. A clone's id once it's made. */
   voiceId?: string
   voiceName?: string
+  /**
+   * Her clone stays in the user's ElevenLabs account. Off (the default), it's deleted after each
+   * use (the dub, a Reroll) and made again from the sample kept in the dub's folder when needed.
+   */
+  keepClone?: boolean
   captions: boolean
   /** Vmake's removal model (vmake.ts MODELS), or 'skip'. */
   model: string

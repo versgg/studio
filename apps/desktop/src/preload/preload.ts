@@ -81,6 +81,7 @@ const api: StudioApi = {
     dubJobs: (project) => ipcRenderer.invoke('dub:jobs', project),
     dubSummary: (projects) => ipcRenderer.invoke('dub:summary', projects),
     dubGo: (id, o) => ipcRenderer.invoke('dub:go', id, o),
+    dubKeepClone: (id, keep) => ipcRenderer.invoke('dub:keepClone', id, keep),
     dubRetry: (id, change) => ipcRenderer.invoke('dub:retry', id, change),
     dubRemoveAgain: (id) => ipcRenderer.invoke('dub:removeAgain', id),
     dubCancel: (id) => ipcRenderer.invoke('dub:cancel', id),

@@ -112,7 +112,7 @@ export async function collect(snap: Snapshot) {
       startUs: c.startUs,
       endUs: last.startUs + last.durationUs,
       ...(run.length > 1 ? { pieces: run.slice(1).map((x) => x.id) } : {}),
-      ...(s.voiceId ? { voice: { voiceId: s.voiceId, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, name: s.name ?? 'The voice' } } : {}),
+      ...(s.voiceId ? { voice: { voiceId: s.voiceId, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, name: s.name ?? 'The voice', ...(s.clone ? { clone: s.clone } : {}) } } : {}),
     })
   }
   items.sort((a, b) => a.startUs - b.startUs || a.kind.localeCompare(b.kind))

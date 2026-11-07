@@ -3183,7 +3183,8 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        window.__verify = { back }
        const { job, result } = await dubOnce('the dub with a clone to verify')
        if (job.state !== 'applied') throw new Error('the dub ' + job.state + ': ' + job.reason)
-       if (job.voiceId !== 'fake-voice' || result.voice?.voiceId !== 'fake-voice') throw new Error('it speaks with ' + job.voiceId + ' / ' + result.voice?.voiceId)
+       // It spoke with the new clone, which was then deleted from the account (Her clone: Delete after use).
+       if (job.voiceId || result.voice?.voiceId !== 'fake-voice') throw new Error('it spoke with ' + result.voice?.voiceId + (job.voiceId ? ', and her clone is still in the account: ' + job.voiceId : ''))
        const note = (job.notes ?? []).find((n) => /cloned her voice again/.test(n))
        if (!note) throw new Error('no note: ' + JSON.stringify(job.notes))
        return { voice: job.voiceId, note }`,
@@ -3385,10 +3386,48 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await window.studio.engine.call('edit.undo')
        await window.studio.engine.call('edit.undo')
        await __t.until(async () => __t.main(await __t.snap()).filter((c) => c.mediaId === video.mediaId).length === 1, 3000, 'one clip again')
-       await S.openProjectAt(window.__reroll.back)
-       await __t.until(async () => (await __t.snap()).dir === window.__reroll.back, 8000, 'the test project again')
        return { shown, takes: takes + 1 }`,
     )
+    const herClone = 'Dub › Her clone: deleted from ElevenLabs after the dub and every Reroll; Keep leaves it there, and Delete after use deletes it at once'
+    await step(
+      herClone,
+      `const S = window.__studio, st = () => S.getState()
+       ${rr}
+       const job = () => st().dubJobs[id]
+       if (job().voiceId) throw new Error('her clone is still in the account after the dub and its rerolls: ' + job().voiceId)
+       __t.click(__t.clipEl(clipId))
+       ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab')).click()
+       const choice = (label) => __t.qa('.inspector [role=group][aria-label="Her clone"] button').find((b) => b.textContent.trim() === label)
+       const pressed = () => __t.q('.inspector [role=group][aria-label="Her clone"] button[aria-pressed="true"]')?.textContent.trim()
+       await __t.until(() => pressed() === 'Delete after use', 3000, 'Her clone at Delete after use')
+       choice('Keep in ElevenLabs').click()
+       await __t.until(() => job().keepClone === true, 3000, 'Keep saved with the dub')
+       const line = (await sentences())[1], takes = line.takes?.length ?? 1
+       ;(await __t.until(() => { const b = row(line)?.querySelector('.dub-btn.reroll'); return b && !b.disabled && b }, 3000, 'Reroll')).click()
+       await __t.until(async () => ((await sentences()).find((l) => l.id === line.id).takes?.length ?? 1) === takes + 1, 20000, 'a new take')
+       await __t.until(() => { const b = row(line)?.querySelector('.dub-btn.reroll'); return b && !b.disabled }, 10000, 'the reroll to finish')
+       const kept = job().voiceId
+       if (!kept) throw new Error('Keep didn’t keep her clone')
+       // A translation with Same voice speaks with the clone kept…
+       const ctxOf = async () => { const files = (await sentences()).map((l) => l.file); return (await window.studio.services.translateContext((await __t.snap()).dir, files)).sounds[files[0]] }
+       const keptCtx = await ctxOf()
+       if (keptCtx?.voiceId !== kept || keptCtx.clone) throw new Error('a translation would speak with ' + JSON.stringify(keptCtx))
+       window.__herClone = { kept: true }
+       choice('Delete after use').click()
+       await __t.until(() => !job().voiceId && job().keepClone === false, 5000, 'her clone deleted at once')
+       // …and, deleted, clones her again from the dub's sample for its takes.
+       const gone = await ctxOf()
+       if (!/[\\/]clone-[^\\/]+\\.mp3$/.test(gone?.clone?.sample ?? '')) throw new Error('a translation has no sample to clone her from: ' + JSON.stringify(gone))
+       await S.openProjectAt(window.__reroll.back)
+       await __t.until(async () => (await __t.snap()).dir === window.__reroll.back, 8000, 'the test project again')
+       return { kept }`,
+    )
+    // Every clone Studio made is gone from the (stand-in) account by now.
+    const her = results.find((x) => x.step === herClone)
+    if (her?.ok && elevenTest.live() !== 0) {
+      Object.assign(her, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account` })
+      console.log(`[ui-check] FAIL ${herClone}: ${elevenTest.live()} clone(s) left in the account`)
+    }
   } else console.log('[ui-check] skip Reroll: set STUDIO_CLAUDE_FAKE=1, STUDIO_ELEVEN_FAKE=1 and STUDIO_STEMS_FAKE=1 (the stand-ins; real Claude, ElevenLabs and the stems server are never called from tests)')
 
   // Import from CapCut, from a CapCut project made here (STUDIO_CAPCUT_DIR): the test clips with a

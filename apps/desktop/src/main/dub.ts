@@ -28,7 +28,8 @@ import { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { retryPlan, type DubChange } from '../shared/dub-retry'
-import { cloneSpeaker } from '../shared/reclone'
+import { cloneLease } from '../shared/clone-lease'
+import { VOICE_GONE, cloneSpeaker } from '../shared/reclone'
 import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubTake, type DubText, type DubVoiceLine } from '../shared/dub'
 import { buildBase, measureLooks } from './dub-look'
 import { ClaudeSignedOut, langName, readTexts, translateSpeech, type SpeechText } from './dub-read'
@@ -66,7 +67,7 @@ const safeName = (s: string) => s.replace(/[<>:"/\\|?*\x00-\x1f]+/g, ' ').replac
 const readJson = <T>(f: string): T => JSON.parse(fs.readFileSync(f, 'utf8'))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export type DubStart = Pick<DubJob, 'project' | 'clipId' | 'mediaId' | 'name' | 'source' | 'inUs' | 'spanUs' | 'lang' | 'model' | 'text' | 'removeText' | 'voice' | 'voiceId' | 'voiceName' | 'captions' | 'review'>
+export type DubStart = Pick<DubJob, 'project' | 'clipId' | 'mediaId' | 'name' | 'source' | 'inUs' | 'spanUs' | 'lang' | 'model' | 'text' | 'removeText' | 'voice' | 'voiceId' | 'voiceName' | 'keepClone' | 'captions' | 'review'>
 
 /** A new dub of a clip, started at once. */
 export function start(o: DubStart): DubJob {
@@ -258,7 +259,12 @@ async function run(job: DubJob, again = false) {
 
     // 7. The voice.
     if (lineIds.length && !fs.existsSync(file('voice.json'))) {
-      await dubVoice(job, { part, partEnd, speech: speech!, said, lineIds, gone, notes })
+      try {
+        await dubVoice(job, { part, partEnd, speech: speech!, said, lineIds, gone, notes })
+      } finally {
+        // Her clone is deleted once she's spoken (or the voice step stopped), unless it's kept.
+        await leaseOf(job).tidy().catch((e) => notes.push(`Her clone couldn’t be deleted from ElevenLabs: ${(e as Error).message}`))
+      }
       if (gone()) return
     }
 
@@ -352,6 +358,56 @@ async function waitForStems(job: DubJob, gone: () => boolean) {
   }
 }
 
+/** The sample her clone is made from (kept in the dub's folder), if it's there. */
+function sampleOf(job: DubJob) {
+  const f = fs.existsSync(job.dir) ? fs.readdirSync(job.dir).find((x) => /^clone-.+\.mp3$/.test(x)) : undefined
+  return f && path.join(job.dir, f)
+}
+
+const leases = new Map<string, ReturnType<typeof cloneLease>>()
+
+/**
+ * Her clone, used one use at a time: made again from the sample when it was deleted, and deleted
+ * from the account after each use unless Her clone is set to Keep (the user's rule). A voice the
+ * user chose is never deleted.
+ */
+function leaseOf(job: DubJob) {
+  let lease = leases.get(job.id)
+  if (!lease) {
+    lease = cloneLease({
+      id: () => job.voiceId,
+      make: async () => {
+        if (job.voice !== 'clone') throw new Error('This dub has no voice of its own to speak with.')
+        const sample = sampleOf(job)
+        if (!sample && !ELEVEN_FAKE) throw new Error('Her voice sample is gone from the dub’s folder, so she can’t be cloned again. Dub the clip again.')
+        const id = await cloneFrom(eleven(), sample ?? '', path.parse(job.name).name)
+        patch(job, { voiceId: id })
+        return id
+      },
+      drop: async (id) => {
+        // One already gone from the account counts as deleted.
+        await removeClone(eleven(), id).catch((e) => {
+          if ((e as { code?: string }).code !== VOICE_GONE) throw e
+        })
+        if (job.voiceId === id) patch(job, { voiceId: undefined })
+      },
+      keep: () => job.voice !== 'clone' || !!job.keepClone,
+    })
+    leases.set(job.id, lease)
+  }
+  return lease
+}
+
+/** The Dub tab's Her clone: Keep leaves it in the account; Delete deletes one that's there now. */
+export async function keepClone(id: string, keep: boolean): Promise<DubJob> {
+  const job = jobs.get(id)
+  if (!job) throw new Error('That dub is gone.')
+  patch(job, { keepClone: keep })
+  // A dub that's voicing deletes it itself when its voice step ends.
+  if (!keep && !dubRunning(job)) await leaseOf(job).tidy()
+  return job
+}
+
 /**
  * Speaks with the dub's voice. A clone Studio made that ElevenLabs won't speak with until it's
  * verified is deleted and her voice cloned again from the kept sample, once per run (the user's
@@ -366,12 +422,12 @@ function voiceOf(job: DubJob, el: ElevenLabs | null, notes?: string[]) {
     voiceId: () => job.voiceId!,
     reclone: async (old, why) => {
       if (job.voice !== 'clone') return null
-      const sample = fs.readdirSync(job.dir).find((f) => /^clone-.+\.mp3$/.test(f))
+      const sample = sampleOf(job)
       if (!sample && !ELEVEN_FAKE) return null
       if (job.state === 'voicing') patch(job, { stage: why === 'verify' ? 'ElevenLabs wants that clone verified: cloning her voice again' : 'Her clone is gone from ElevenLabs: cloning her voice again' })
       let kept = ''
       if (why === 'verify') await removeClone(el, old).catch((e) => (kept = ` (the old one couldn’t be deleted: ${(e as Error).message})`))
-      const id = await cloneFrom(el, sample ? path.join(job.dir, sample) : '', name)
+      const id = await cloneFrom(el, sample ?? '', name)
       recloned = true
       patch(job, { voiceId: id })
       notes?.push(why === 'verify' ? `ElevenLabs wanted her clone verified before it would speak, so Studio deleted it and cloned her voice again${kept}.` : 'Her clone was no longer in ElevenLabs, so Studio cloned her voice again.')
@@ -384,7 +440,7 @@ function voiceOf(job: DubJob, el: ElevenLabs | null, notes?: string[]) {
             ? `ElevenLabs won’t speak with ${job.voiceName ?? 'that voice'} until it’s verified. Verify it in ElevenLabs (My Voices), or choose another voice in Audio.`
             : `${job.voiceName ?? 'That voice'} isn’t in your ElevenLabs voices any more. Choose another voice in Audio and Try again.`
           : why === 'verify'
-          ? `ElevenLabs won’t speak with her cloned voice until it’s verified${recloned ? ', and a new clone was refused too' : ''}. Verify “${name} (Studio dub)” in ElevenLabs (My Voices) and Try again, or dub with Another voice${free}.`
+          ? `ElevenLabs won’t speak with her cloned voice until it’s verified${recloned ? ', and a new clone was refused too' : ''}. ${job.keepClone ? `Verify “${name} (Studio dub)” in ElevenLabs (My Voices) and Try again, or dub with Another voice${free}.` : `Dub with Another voice${free}. To verify her voice in ElevenLabs instead, set Her clone to Keep and Try again: the clone stays in My Voices.`}`
           : recloned
           ? `ElevenLabs didn’t keep her new clone: it was gone as soon as it was made, so it won’t keep a clone of this voice. Dub with Another voice and Try again${free}.`
           : `Her cloned voice isn’t in ElevenLabs any more, and its sample is missing. Dub with Another voice and Try again${free}.`,
@@ -501,7 +557,12 @@ function keepWords(job: DubJob, words: Record<string, string>) {
 export async function reroll(id: string, ids: string[], edits: Record<string, string> = {}): Promise<DubVoiceLine[]> {
   const job = jobs.get(id)
   if (!job) throw new Error('That dub is gone.')
-  if (!job.voiceId) throw new Error('This dub has no voice of its own to speak with.')
+  if (job.voice === 'keep' || (job.voice === 'voice' && !job.voiceId)) throw new Error('This dub has no voice of its own to speak with.')
+  // Her clone: made again from the sample if it was deleted, and deleted after unless it's kept.
+  return leaseOf(job).use(() => rerollWith(job, ids, edits))
+}
+
+async function rerollWith(job: DubJob, ids: string[], edits: Record<string, string>): Promise<DubVoiceLine[]> {
   const file = (f: string) => path.join(job.dir, f)
   const voice = readJson<VoiceFile>(file('voice.json'))
   const lines = voice.lines

@@ -16,6 +16,8 @@ export type TrSound = {
   text?: string
   original?: string
   lang?: string
+  /** A dub's clone that isn't kept: cloned again from this sample for the take, then deleted. */
+  clone?: { sample: string; name: string }
   /** A voiceover Studio didn't make, as it was heard (main/voice-read.ts): its sentences in seconds into the file (none: no speech), how its voice was found, or why it wasn't. */
   read?: { sentences: { text: string; start: number; end: number }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string }
 }
@@ -257,13 +259,15 @@ export interface StudioApi {
      * Visual dub (src/main/dub.ts): a clip's on-screen text found, read and translated by
      * Claude, removed by Vmake and measured, ready for the page to put back as text clips.
      */
-    dubStart(o: { project: string; clipId: string; mediaId: string; name: string; source: string; inUs: number; spanUs: number; lang: string; model: string; text: boolean; voice: DubVoice; voiceId?: string; voiceName?: string; captions: boolean; review: boolean }): Promise<DubJob | ServiceError>
+    dubStart(o: { project: string; clipId: string; mediaId: string; name: string; source: string; inUs: number; spanUs: number; lang: string; model: string; text: boolean; voice: DubVoice; voiceId?: string; voiceName?: string; keepClone?: boolean; captions: boolean; review: boolean }): Promise<DubJob | ServiceError>
     /** A project's dubs; ones left running are picked up again. */
     dubJobs(project: string): Promise<DubJob[]>
     /** Home: each project's dubs that still need something (running, waiting, ready, stopped). */
     dubSummary(projects: string[]): Promise<Record<string, DubJob[]>>
     /** The Dub tab's picks after review (and translations changed there): the paid steps start. */
     dubGo(id: string, o: { texts: string[]; lines: string[]; edits?: Record<string, string> }): Promise<DubJob | null>
+    /** Her clone kept in the ElevenLabs account, or deleted (now, and after each use). */
+    dubKeepClone(id: string, keep: boolean): Promise<DubJob | ServiceError>
     /** Carries on a stopped dub; `change` is what the Dub tab shows that differs from its settings, used instead. */
     dubRetry(id: string, change?: DubChange): Promise<DubJob | null | ServiceError>
     /** Starts a dub's text removal again after it stopped (it's paid again). */

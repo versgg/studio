@@ -85,6 +85,8 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
   const removeText = onScreen === 'remove'
   const [voice, setVoice] = useUi<DubVoice>('dub.voice', 'clone')
   const [captions, setCaptions] = useUi('dub.captions', false)
+  // Her clone in the user's ElevenLabs account: deleted after each use unless kept.
+  const [keepClone, setKeepClone] = useUi('dub.keepClone', false)
   const [chosenModel, setModel] = useUi('dub.model', 'pro')
   // Remove needs Vmake: None isn't offered then.
   const model = removeText && chosenModel === 'skip' ? 'pro' : chosenModel
@@ -100,6 +102,7 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
     // Without sound a dub's voice is always Keep: that isn't a pick, so the form keeps its own.
     if (media?.hasAudio) setVoice(stopped.voice)
     setCaptions(stopped.captions)
+    setKeepClone(!!stopped.keepClone)
   }, [stopped?.id])
   const keys = useKeys()
   const [account, setAccount] = useState<VmakeAccount | null>(vmakeKnown)
@@ -116,7 +119,7 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
   const needVmake = text && model !== 'skip' && !cleaned && keys && !keys.vmake
   const needEleven = hears && keys && !keys.elevenlabs
   const anything = text || speaks || (sound && captions)
-  const want: DubSettings = { lang, text, removeText, model: text ? model : 'skip', voice: sound ? voice : 'keep', ...(voice === 'voice' && voiceChosen ? { voiceId: voiceChosen.id, voiceName: voiceChosen.name } : {}), captions: sound && captions }
+  const want: DubSettings = { lang, text, removeText, model: text ? model : 'skip', voice: sound ? voice : 'keep', ...(voice === 'voice' && voiceChosen ? { voiceId: voiceChosen.id, voiceName: voiceChosen.name } : {}), keepClone, captions: sound && captions }
   const change = stopped ? settingsChange(stopped, want) : {}
   const changed = stopped ? describeChange(stopped, change, (l) => LANG_NAMES[l] ?? l) : []
   const again = () => {
@@ -128,7 +131,7 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
     if (!media) return
     if (voice === 'voice' && speaks && !voiceChosen) return void toast('Choose the voice in the Audio tab first, or use her own voice.', 'error')
     onAgain()
-    void dubText({ mediaId: media.id, clipId: clip.id }, { lang, model: text ? model : 'skip', text, removeText, voice: sound ? voice : 'keep', ...(voice === 'voice' && voiceChosen ? { voiceId: voiceChosen.id, voiceName: voiceChosen.name } : {}), captions: sound && captions, review: true })
+    void dubText({ mediaId: media.id, clipId: clip.id }, { lang, model: text ? model : 'skip', text, removeText, voice: sound ? voice : 'keep', ...(voice === 'voice' && voiceChosen ? { voiceId: voiceChosen.id, voiceName: voiceChosen.name } : {}), ...(voice === 'clone' ? { keepClone } : {}), captions: sound && captions, review: true })
   }
   return (
     <>
@@ -143,7 +146,8 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
       )}
       {last && last.state !== 'applied' && last.text && <Removal job={last} />}
       {last?.state === 'applied' && <Note>Dubbed into {LANG_NAMES[last.lang] ?? last.lang}: the new text and sound are on the timeline as their own clips.</Note>}
-      {last?.state === 'applied' && last.voice !== 'keep' && last.voiceId && <WhatSheSays key={last.id} job={last} />}
+      {last?.state === 'applied' && last.voice !== 'keep' && (last.voiceId || last.voice === 'clone') && <WhatSheSays key={last.id} job={last} />}
+      {last?.state === 'applied' && last.voice === 'clone' && <HerClone job={last} />}
       <Sec title="Dub" first />
       <SelectRow label="Into" value={lang} options={LANGS.map((l) => [l, LANG_NAMES[l]] as [string, string])} onChange={setLang} />
       <SegRow label="On-screen text" value={onScreen} items={[['translate', 'Translate'], ['remove', 'Remove'], ['leave', 'Leave']]} onPick={(v) => setOnScreen(v as typeof onScreen)} />
@@ -151,6 +155,7 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
         <>
           <SegRow label="Voice" value={voice} items={[['clone', 'Her voice'], ['voice', 'Another'], ['keep', 'Keep']]} onPick={(v) => setVoice(v as DubVoice)} />
           {voice === 'voice' && <Note>{voiceChosen ? `Speaks with ${voiceChosen.name} (chosen in Audio).` : 'Choose the voice in the Audio tab first.'}</Note>}
+          {voice === 'clone' && <SegRow label="Her clone" value={keepClone ? 'keep' : 'delete'} items={CLONE_CHOICES} onPick={(v) => setKeepClone(v === 'keep')} />}
           <SegRow label="Captions" value={captions ? 'on' : 'off'} items={[['on', LANG_NAMES[lang]], ['off', 'None']]} onPick={(v) => setCaptions(v === 'on')} />
         </>
       ) : (
@@ -179,6 +184,25 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
           : `Studio finds the text, Claude reads and translates it, and you pick what to dub and change any translation${text && model !== 'skip' ? '' : ' before anything is paid for'}.`}
       </Note>
       <Buttons items={[{ label: 'Find what to dub', onClick: start, disabled: !media || !anything || !!needVmake || !!needEleven || !keys }]} />
+    </>
+  )
+}
+
+const CLONE_CHOICES: [string, string][] = [['delete', 'Delete after use'], ['keep', 'Keep in ElevenLabs']]
+
+/**
+ * A done dub's clone of her voice: deleted from the user's ElevenLabs account after each use (the
+ * dub, every Reroll, a translation) and made again from the kept sample, or kept there.
+ */
+function HerClone({ job }: { job: DubJob }) {
+  const pick = async (keep: boolean) => {
+    const r = await window.studio.services.dubKeepClone(job.id, keep)
+    if ('error' in r) toast(`Couldn’t change that: ${r.error}`, 'error')
+  }
+  return (
+    <>
+      <SegRow label="Her clone" value={job.keepClone ? 'keep' : 'delete'} items={CLONE_CHOICES} onPick={(v) => void pick(v === 'keep')} />
+      <Note>{job.keepClone ? (job.voiceId ? 'Her clone stays in your ElevenLabs voices.' : 'The next Reroll clones her voice and leaves it in your ElevenLabs voices.') : 'Not in your ElevenLabs voices: a Reroll or translation clones her again from the sample kept with the dub, and deletes it after.'}</Note>
     </>
   )
 }
