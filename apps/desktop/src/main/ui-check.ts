@@ -2614,6 +2614,28 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const toast = await __t.until(() => __t.qa('.toast.error, .toast').map((t) => t.textContent).find((t) => /Text removal failed/.test(t)), 3000, 'the reason')
        return toast`,
     )
+    // The user's rule: a job Vmake was paid for is followed until Vmake says it's done.
+    const keeps = 'Vmake: a paid job is followed through a dropped connection and an expired token, and lands when Vmake is done'
+    if (wanted(keeps)) {
+      vmakeTest.dropQueries(6)
+      vmakeTest.expireToken(3)
+    }
+    await step(
+      keeps,
+      `let s = await __t.snap()
+       const c = __t.main(s).find((x) => s.project.media.find((m) => m.id === x.mediaId)?.kind === 'video')
+       const stages = new Set()
+       const off = window.studio.services.onVmakeJob?.((j) => stages.add(j.stage))
+       await window.__studio.removeText({ mediaId: c.mediaId, clipId: c.id }, 'full')
+       await __t.until(() => __t.clipEl(c.id)?.classList.contains('busy'), 5000, 'the clip to go grey')
+       s = await __t.until(async () => { const s = await __t.snap(); const x = __t.main(s).find((y) => y.id === c.id); return x && !x.busy && s }, 60000, 'the removal to land')
+       off?.()
+       const now = __t.main(s).find((y) => y.id === c.id)
+       const plays = s.project.media.find((m) => m.id === now.mediaId)
+       if (!/\\(no text\\)/.test(plays?.name ?? '')) throw new Error('it ended without the clean copy: the clip plays ' + plays?.name + '; stages: ' + [...stages].join(' | '))
+       await window.studio.engine.call('edit.undo')
+       return { plays: plays.name, stages: [...stages].filter((x) => /reach|token/.test(x)) }`,
+    )
   } else console.log('[ui-check] skip Vmake text removal: set STUDIO_VMAKE_FAKE=1 (the stand-in; the real Vmake is never called from tests)')
 
   // Dub, on the stand-ins (STUDIO_VMAKE_FAKE=1 and STUDIO_CLAUDE_FAKE=1), in a project of its own:

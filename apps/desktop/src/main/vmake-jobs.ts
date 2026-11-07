@@ -28,7 +28,7 @@ import path from 'node:path'
 import { ffmpeg } from './ffmpeg'
 import { getSecret } from './secrets'
 import { expectedWait, HISTORY_SIZE, waitFraction } from '../shared/vmake-estimate'
-import { Vmake, VmakeAuthError, VmakeError, type VmakeRef, type VmakeStatus } from './vmake'
+import { Vmake, VmakeAuthError, VmakeError, VmakeUnreachable, type VmakeRef, type VmakeStatus } from './vmake'
 
 export type JobState = 'preparing' | 'uploading' | 'charging' | 'working' | 'downloading' | 'done' | 'failed' | 'cancelled'
 
@@ -75,7 +75,8 @@ export interface VmakeJob {
 
 export const FAKE = process.env.STUDIO_VMAKE_FAKE === '1'
 const POLL_MS = FAKE ? 300 : 4000
-const LIMIT_MS = 45 * 60_000
+/** Past this a job still working is asked about less often (it carries on as long as Vmake works on it). */
+const LONG_MS = 45 * 60_000
 export const ended = (j: VmakeJob) => j.state === 'done' || j.state === 'failed' || j.state === 'cancelled'
 
 /** Every job known in this session, by id (any project). */
@@ -217,6 +218,9 @@ interface Remote {
 
 let failNext = false
 let slowNext = 0
+// The stand-in's next queries fail as a dropped connection or an expired token would.
+let dropQueries = 0
+let expiredQueries = 0
 
 const stand: Remote = {
   async upload(file) {
@@ -233,6 +237,8 @@ const stand: Remote = {
     return r
   },
   async query(recordId, taskId) {
+    if (dropQueries > 0 && dropQueries--) throw new VmakeUnreachable('Vmake did not answer: fetch failed')
+    if (expiredQueries > 0 && expiredQueries--) throw new VmakeAuthError('Vmake rejected that token: it has expired. Copy a fresh one.')
     const [, t0, ms, how] = String(recordId).split(':')
     const f = (Date.now() - Number(t0)) / Number(ms)
     // Like Vmake: working or done, no progress number.
@@ -258,7 +264,7 @@ async function run(job: VmakeJob) {
   live.set(job.id, stop)
   const stopped = () => stop.signal.aborted || jobs.get(job.id) !== job
   try {
-    const vm = remote(job)
+    let vm = remote(job)
     let charged = false
     if (job.state === 'uploading') {
       if (!job.source || !fs.existsSync(job.source)) throw new VmakeError('The part to send is gone.')
@@ -279,15 +285,31 @@ async function run(job: VmakeJob) {
     // Charged or seen working in this run: how long it took is then known when it's done (not
     // so for one found done after the app was closed, which may have finished long before).
     let watched = charged
+    // A job Vmake was paid for is followed until Vmake itself says it's done or failed (the
+    // user's rule: "when it's done it's done"). It used to end at 45 minutes, after 5 missed
+    // answers or on an expired token, and its record went with it, while Vmake carried on
+    // (2026-11-07: a compound at 85 % after 45 minutes, est. 26 more).
     while (job.state === 'working') {
       let t: VmakeStatus
       try {
         t = await vm.query(job.recordId!, job.taskId!)
         misses = 0
       } catch (e) {
-        // A dropped connection (a laptop waking up) is tried again a few times.
-        if (e instanceof VmakeAuthError || ++misses >= 5) throw e
-        await sleep(POLL_MS * 2, stop.signal)
+        misses++
+        // Vmake refusing the question itself (not the job: that's its status, below) may be a
+        // passing fault on its side; only a refusal that lasts half an hour ends the job.
+        if (e instanceof VmakeError && !(e instanceof VmakeUnreachable) && misses >= 30) throw e
+        if (e instanceof VmakeAuthError) {
+          // Waits for a fresh token (pasted under Remove text), read again each time.
+          patch(job, { stage: 'Vmake carries on, but needs a fresh access token for Studio to follow it: paste one under Remove text' })
+          await sleep(FAKE ? POLL_MS : 10_000, stop.signal)
+          if (stopped()) return
+          vm = remote(job)
+          continue
+        }
+        // A dropped connection (a laptop asleep, no network): asked again, less and less often.
+        if (misses >= 3) patch(job, { stage: 'Can’t reach Vmake right now; trying again (it carries on there)' })
+        await sleep(Math.min(POLL_MS * 2 ** Math.min(misses, 6), FAKE ? 2000 : 60_000), stop.signal)
         if (stopped()) return
         continue
       }
@@ -298,19 +320,31 @@ async function run(job: VmakeJob) {
         break
       }
       if (t.status !== 0 && t.status !== 1) throw new VmakeError(`Vmake could not process that video (status ${t.status}).`)
-      if (Date.now() - (job.chargedAt ?? job.startedAt) > LIMIT_MS) throw new VmakeError('Vmake did not finish within 45 minutes.')
       watched = true
       // By the clock against the estimate (or Vmake's own number, if it ever sends one).
       patch(job, { stage: 'Vmake is removing the text', fraction: waitFraction(Date.now() - (job.chargedAt ?? job.startedAt), job.expectedMs ?? 60_000, job.fraction, t.progress), ...(t.progress > 0 ? { reported: true } : {}) })
-      await sleep(POLL_MS, stop.signal)
+      await sleep(Date.now() - (job.chargedAt ?? job.startedAt) > LONG_MS ? POLL_MS * 5 : POLL_MS, stop.signal)
       if (stopped()) return
     }
     if (job.state === 'downloading') {
-      // Asked again here: a link from before a restart may have run out.
-      const t = await vm.query(job.recordId!, job.taskId!)
-      if (!(t.status === 2 && t.result)) throw new VmakeError(`Vmake no longer has the finished video (status ${t.status}).`)
       const tmp = `${job.out}.download`
-      await vm.download(t.result, tmp, stop.signal)
+      // Brought back, tried again on a dropped connection (each time with a fresh link: one from
+      // before a restart may have run out).
+      for (let tries = 1; ; tries++) {
+        try {
+          const t = await vm.query(job.recordId!, job.taskId!)
+          if (!(t.status === 2 && t.result)) throw new VmakeError(`Vmake no longer has the finished video (status ${t.status}).`)
+          await vm.download(t.result, tmp, stop.signal)
+          break
+        } catch (e) {
+          if (stopped()) return
+          if ((e instanceof VmakeError && !(e instanceof VmakeUnreachable)) || tries >= 20) throw e
+          if (e instanceof VmakeAuthError) vm = remote(job)
+          patch(job, { stage: e instanceof VmakeAuthError ? 'Done on Vmake: paste a fresh access token under Remove text to bring it back' : 'Can’t reach Vmake right now; trying again to bring it back' })
+          await sleep(Math.min(POLL_MS * 2 ** Math.min(tries, 6), FAKE ? 2000 : 60_000), stop.signal)
+          if (stopped()) return
+        }
+      }
       if (stopped()) return
       fs.renameSync(tmp, job.out)
       if (job.removeSource) rm(job.source)
@@ -451,6 +485,14 @@ export const vmakeTest = {
   /** The next job takes `ms` (instead of STUDIO_VMAKE_FAKE_MS), so a step can be sure it's still working. */
   slowNext(ms: number) {
     if (FAKE) slowNext = ms
+  },
+  /** The next `n` questions about a job fail as a dropped connection would. */
+  dropQueries(n: number) {
+    if (FAKE) dropQueries = n
+  },
+  /** The next `n` questions about a job are refused as an expired token would be. */
+  expireToken(n: number) {
+    if (FAKE) expiredQueries = n
   },
   /** As if the app quit and started again: every job stops where it is, and is read back from disk. */
   restart() {

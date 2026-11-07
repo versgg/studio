@@ -19,6 +19,8 @@ const UA = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, 
 
 export class VmakeAuthError extends Error {}
 export class VmakeError extends Error {}
+/** No answer from Vmake at all (no network, a timeout, an HTTP error): the job on Vmake isn't affected. */
+export class VmakeUnreachable extends VmakeError {}
 
 function timezone() {
   const m = -new Date().getTimezoneOffset()
@@ -54,7 +56,7 @@ export class Vmake {
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       payload = await r.json()
     } catch (e) {
-      throw new VmakeError(`Vmake did not answer: ${String((e as Error).message).slice(0, 200)}`)
+      throw new VmakeUnreachable(`Vmake did not answer: ${String((e as Error).message).slice(0, 200)}`)
     }
     const meta = payload?.meta ?? {}
     if (meta.code === 10022) throw new VmakeAuthError('Vmake rejected that token: it has expired. Copy a fresh one.')
