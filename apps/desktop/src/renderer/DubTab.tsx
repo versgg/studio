@@ -12,7 +12,7 @@ import { vmakeCheck, vmakeKnown } from './vmakeAccount'
 import { dubRunning, unchanged, type DubJob, type DubScan, type DubText, type DubVoice, type DubVoiceLine } from '../shared/dub'
 import { Buttons, Note, Sec, SegRow, SelectRow } from './InspectorBlocks'
 import { BusyBar } from './LibraryBlocks'
-import { LANG_NAMES, cancelDub, cleanFor, dubText, goDub, lineClip, pickLineTake, removeAgain, rerollLines, retryDub } from './dub'
+import { LANG_NAMES, cancelDub, cleanFor, dubOf, dubText, goDub, lineClip, pickLineTake, removeAgain, rerollLines, retryDub } from './dub'
 import { Icon } from './icons'
 import { call, fileUrl, mediaById, seek, taskElapsed, toast, useStore, type Clip, type Media, type Task } from './store'
 import { useUi } from './ui-state'
@@ -22,13 +22,13 @@ const time = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStar
 
 export function DubTab({ clip, media }: { clip: Clip; media?: Media }) {
   const jobs = useStore((s) => s.dubJobs)
-  const job = Object.values(jobs)
-    .filter((j) => j.clipId === clip.id)
-    .sort((a, b) => b.startedAt - a.startedAt)[0]
-  const [fresh, setFresh] = useState(false)
+  const snap = useStore((s) => s.snap)
+  const job = dubOf(snap, clip, Object.values(jobs))
+  // Starting again hides that dub's summary (only that one: another clip's, or the new dub, still shows).
+  const [dismissed, setDismissed] = useState('')
   if (job?.state === 'review') return <Review key={job.id} job={job} />
   if (job && dubRunning(job)) return <Running job={job} />
-  return <Setup clip={clip} media={media} last={fresh ? undefined : job} onAgain={() => setFresh(true)} />
+  return <Setup clip={clip} media={media} last={job && job.id !== dismissed ? job : undefined} onAgain={() => setDismissed(job?.id ?? '')} />
 }
 
 /** A key field: shown only while the key is missing (or refused). */

@@ -60,6 +60,30 @@ export function dubbedLines(snap: Snapshot | null, clipIds: string[]): { job: Du
 }
 
 /**
+ * The dub a clip's Dub tab shows: the latest made for it, else (a piece cut from a dubbed clip, or
+ * a copy of one, has an id of its own) the latest on the timeline whose picture it plays: the dub's
+ * new picture, or where only the voice was dubbed, the same footage with its own sound off,
+ * overlapping the part dubbed.
+ */
+export function dubOf(snap: Snapshot | null, clip: Clip, jobs: DubJob[]): DubJob | undefined {
+  const latest = (js: DubJob[]) => js.sort((a, b) => b.startedAt - a.startedAt)[0]
+  const own = jobs.filter((j) => j.clipId === clip.id)
+  if (own.length) return latest(own)
+  const path = mediaById(snap, clip.mediaId)?.path
+  const from = clip.inUs
+  const to = clip.inUs + Math.round(clip.durationUs * (clip.speed ?? 1))
+  return latest(
+    jobs.filter((j) => {
+      if (j.state !== 'applied') return false
+      if (j.base && path === j.base) return true
+      if (!clip.detached || clip.mediaId !== j.mediaId) return false
+      // A clip that played a dub's clean copy was dubbed in the original's time: no part to compare.
+      return mediaById(snap, j.mediaId)?.path !== j.source || (from < j.inUs + j.spanUs && to > j.inUs)
+    }),
+  )
+}
+
+/**
  * Takes put where their sentences' clips are (a sentence you've moved stays where you put it),
  * each clip taking its take's whole length, and the dub's captions there made again from the
  * take's words: all one undo step. A sentence whose clip is gone goes back at its moment.

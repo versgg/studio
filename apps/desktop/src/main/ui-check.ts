@@ -2724,11 +2724,21 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const after = s.project.tracks.flatMap((t) => t.clips).filter((c) => c.text).length
        if (after !== window.__dub.textsBefore) throw new Error((after - window.__dub.textsBefore) + ' text clips were added')
        if ((await window.studio.services.vmakeJobs(dir)).some((j) => j.dub)) throw new Error('a new Vmake job was started')
+       // A piece cut from it is still this dub's (it plays the dub's picture), then Ctrl+Z.
+       const mid = now.startUs + Math.round(now.durationUs / 2)
+       await window.studio.engine.call('timeline.split', { atUs: mid, clipIds: [removeClip] })
+       const piece = __t.main(await __t.snap()).find((c) => c.mediaId === now.mediaId && c.startUs === mid)
+       if (!piece) throw new Error('no piece at ' + mid)
+       await __t.until(() => __t.clipEl(piece.id), 3000, 'the piece on the timeline')
+       __t.click(__t.clipEl(piece.id))
+       ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the piece’s Dub tab')).click()
+       const pieceSays = await __t.until(() => __t.qa('.inspector .insp-note').map((n) => n.textContent).find((t) => /^Dubbed into/.test(t)), 3000, 'Dubbed into… on the piece')
+       await window.studio.engine.call('edit.undo')
        await window.studio.services.clearKey('vmake')
        window.dispatchEvent(new Event('studio-keys'))
        await S.openProjectAt(back)
        await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
-       return { states: seen.filter((x, i, a) => x !== a[i - 1]), plays: plays.split(/[\\\\/]/).pop() }`,
+       return { states: seen.filter((x, i, a) => x !== a[i - 1]), plays: plays.split(/[\\\\/]/).pop(), piece: pieceSays }`,
     )
     const dubTab = `const seg = (label) => __t.until(() => __t.q('.inspector [role="group"][aria-label="' + label + '"]'), 3000, 'the ' + label + ' choices')
        const pick = async (label, choice) => { const b = [...(await seg(label)).querySelectorAll('button')].find((x) => x.textContent === choice); if (!b) throw new Error('no ' + choice + ' under ' + label); b.click(); await __t.sleep(120) }
@@ -3248,9 +3258,45 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const videoHas = [...menu.querySelectorAll('button')].some((b) => /Reroll/.test(b.textContent))
        __t.key('Escape')
        if (videoHas) throw new Error('the video clip offers Reroll voice')
+       return { label, take: after.takes[1].file.split('/').pop() }`,
+    )
+    await step(
+      'Timeline: a dubbed clip cut in two (Ctrl+B) keeps its dub: each piece’s Dub tab shows What she says and rerolls, the sentences and captions stay, and Ctrl+Z joins it again',
+      `const S = window.__studio
+       ${rr}
+       const all = (s) => s.project.tracks.flatMap((t) => t.clips)
+       const s0 = await __t.snap()
+       const video = all(s0).find((c) => c.id === clipId)
+       const rest = (s) => all(s).filter((c) => c.mediaId !== video.mediaId).map((c) => c.id + '@' + c.startUs).sort().join()
+       if (window.__studio.getState().playing) await window.studio.engine.call('playback.pause')
+       await window.studio.engine.call('playback.seek', { positionUs: video.startUs + Math.round(video.durationUs / 2) })
+       __t.click(__t.clipEl(clipId))
+       await __t.until(() => __t.clipEl(clipId).classList.contains('selected'), 2000, 'the clip selected')
+       __t.key('b', { ctrlKey: true })
+       const pieces = await __t.until(async () => { const p = __t.main(await __t.snap()).filter((c) => c.mediaId === video.mediaId); return p.length === 2 && p }, 3000, 'two pieces')
+       const s1 = await __t.snap()
+       if (rest(s1) !== rest(s0)) throw new Error('the cut changed the other clips: ' + rest(s1))
+       const lines = await sentences()
+       const shown = []
+       for (const piece of pieces) {
+         __t.click(__t.clipEl(piece.id))
+         await __t.until(() => __t.clipEl(piece.id).classList.contains('selected'), 2000, 'the piece selected')
+         ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab of the piece at ' + piece.startUs)).click()
+         await __t.until(() => lines.every((l) => row(l)), 3000, 'What she says on the piece at ' + piece.startUs + ' (the tab shows: ' + (__t.q('.inspector')?.textContent ?? '').replace(/\s+/g, ' ').slice(0, 120) + ')')
+         shown.push(piece.id === clipId ? 'left' : 'right')
+       }
+       // Reroll from the right piece's tab: a new take of its first sentence.
+       const first = lines[0], takes = first.takes?.length ?? 1
+       ;(await __t.until(() => { const b = row(first)?.querySelector('.dub-btn.reroll'); return b && !b.disabled && b }, 3000, 'Reroll on the right piece')).click()
+       await __t.until(async () => ((await sentences())[0].takes?.length ?? 1) === takes + 1, 20000, 'a new take from the right piece')
+       await __t.until(() => new RegExp('Take ' + (takes + 1) + ' of').test(row(first)?.textContent ?? ''), 5000, 'the new take shown on the right piece')
+       // Undo the reroll, then the cut: one clip again.
+       await window.studio.engine.call('edit.undo')
+       await window.studio.engine.call('edit.undo')
+       await __t.until(async () => __t.main(await __t.snap()).filter((c) => c.mediaId === video.mediaId).length === 1, 3000, 'one clip again')
        await S.openProjectAt(window.__reroll.back)
        await __t.until(async () => (await __t.snap()).dir === window.__reroll.back, 8000, 'the test project again')
-       return { label, take: after.takes[1].file.split('/').pop() }`,
+       return { shown, takes: takes + 1 }`,
     )
   } else console.log('[ui-check] skip Reroll: set STUDIO_CLAUDE_FAKE=1, STUDIO_ELEVEN_FAKE=1 and STUDIO_STEMS_FAKE=1 (the stand-ins; real Claude, ElevenLabs and the stems server are never called from tests)')
 
