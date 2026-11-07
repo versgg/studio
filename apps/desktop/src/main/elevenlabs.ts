@@ -5,7 +5,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { ELEVEN_KEYS_URL, elevenPermissionName } from '../shared/eleven-permissions'
+import { elevenProblem } from '../shared/eleven-permissions'
 import type { DesignRound } from '../shared/api'
 
 const API = 'https://api.elevenlabs.io'
@@ -32,24 +32,16 @@ export interface Voice {
   ownerId?: string
 }
 
-/** Reads all three of ElevenLabs' error shapes into one message. */
+/** Reads ElevenLabs' error answer into one message (see `elevenProblem`). */
 async function failure(r: Response): Promise<ElevenError> {
-  let detail: any
+  let body: unknown = null
   try {
-    detail = (await r.json())?.detail
+    body = await r.json()
   } catch {
-    detail = null
+    body = null
   }
-  const code = String(detail?.code ?? detail?.status ?? '')
-  const msg = Array.isArray(detail) ? detail.map((d: any) => d.msg).join('; ') : (detail?.message ?? `HTTP ${r.status}`)
-  // A working key that isn't allowed this one thing: say which setting to turn on, and keep the key.
-  const missing = /permission (\w+)/.exec(String(detail?.message ?? ''))?.[1]
-  if (code === 'missing_permissions' || missing)
-    return new ElevenError(`Your ElevenLabs key isn't allowed ${missing ? elevenPermissionName(missing) : 'this'}. Edit the key at ${ELEVEN_KEYS_URL} and turn that on; Studio keeps using the same key.`, false, code || 'missing_permissions')
-  if (r.status === 401 || code === 'invalid_api_key' || code === 'missing_api_key') return new ElevenError('ElevenLabs refused that API key. Paste a valid one.', true, code)
-  if (r.status === 402 || code === 'quota_exceeded' || code === 'insufficient_credits') return new ElevenError('Your ElevenLabs credits have run out.', false, code)
-  if (r.status === 429) return new ElevenError('ElevenLabs is busy or the plan’s limit for simultaneous requests is reached. Try again in a moment.', false, code)
-  return new ElevenError(`ElevenLabs: ${msg}`, false, code)
+  const p = elevenProblem(r.status, body)
+  return new ElevenError(p.message, p.auth, p.code)
 }
 
 export class ElevenLabs {
