@@ -207,6 +207,7 @@ impl Engine {
         let (Ok(m), Ok((project, revision))) = (self.services(), self.project()) else { return };
         // Stabilised clips whose transforms aren't made yet get them made in the background, and
         // so do pictures that turn or change size (rendered once at the preview's size).
+        self.want_looks(&project);
         let (w, h) = crate::playback::preview_size(&project);
         let mut work: Vec<Work> = graph::stab_jobs(&project, true).into_iter().map(Work::Stab).collect();
         work.extend(studio_media::motion::motion_jobs(&project, w, h, project.fps.max(1)).into_iter().map(Work::Motion));
@@ -221,6 +222,19 @@ impl Engine {
             m.playback.show_frame(project.clone());
             m.playback.prepare(project.clone());
             m.playback.premix(project, revision);
+        }
+    }
+
+    /// Every file a clip uses gets its filmstrip and waveform, ahead of the library's posters,
+    /// however the clip got there (put on, pasted, undone back, a dub, MCP).
+    fn want_looks(&self, project: &Project) {
+        let Ok(m) = self.services() else { return };
+        let cache = self.cache_dir();
+        let used: std::collections::BTreeSet<&str> = project.tracks.iter().flat_map(|t| &t.clips).map(|c| c.media_id.as_str()).collect();
+        for media in project.media.iter().filter(|x| used.contains(x.id.as_str()) && wants_look(x)) {
+            if !m.jobs.look_pending(&cache, &media.id) {
+                m.jobs.submit_urgent(job_for(media, &cache, false, true, false));
+            }
         }
     }
 
@@ -257,12 +271,14 @@ impl Engine {
             let mut used = vec![];
             for media in doc.project.media.iter().filter(|x| !x.missing) {
                 let gone = |p: &Option<String>| p.as_ref().is_none_or(|p| !Path::new(p).is_file());
-                let browse = gone(&media.poster) && media.kind != MediaKind::Audio || gone(&media.peaks) && media.has_audio;
-                // Proxies only for what the timeline uses (a linked folder can hold hundreds of files).
+                let browse = gone(&media.poster) && media.kind != MediaKind::Audio;
+                // Filmstrips, waveforms and proxies only for what the timeline uses (a linked
+                // folder can hold thousands of files, and the library shows only posters).
                 let on_timeline = doc.project.is_used(&media.id);
+                let look = on_timeline && wants_look(media);
                 let proxy = gone(&media.proxy) && wants_proxy(media) && (media.folder.is_none() || on_timeline);
-                if browse || proxy {
-                    let job = job_for(media, &cache, browse, proxy);
+                if browse || look || proxy {
+                    let job = job_for(media, &cache, browse, look, proxy);
                     if on_timeline { used.push(job) } else { m.jobs.submit(job) }
                 }
             }
@@ -313,7 +329,7 @@ impl Engine {
             })?;
             let cache = self.cache_dir();
             for media in &added {
-                m.jobs.submit(job_for(media, &cache, true, true));
+                m.jobs.submit(job_for(media, &cache, true, false, true));
             }
             imported.extend(added.into_iter().map(|x| x.id));
         }
@@ -393,7 +409,7 @@ impl Engine {
         let cache = self.cache_dir();
         if let Some(d) = self.doc.lock().unwrap().as_ref() {
             for media in d.project.media.iter().filter(|x| new_ids.contains(&x.id)) {
-                m.jobs.submit(job_for(media, &cache, true, false));
+                m.jobs.submit(job_for(media, &cache, true, false, false));
             }
         }
         self.changed();
@@ -418,7 +434,7 @@ impl Engine {
         media.name = format!("Compound {n}");
         let clip = self.edit_inner("Create compound clip", |p| p.make_compound(ids, media))?;
         let cache = self.cache_dir();
-        let job = self.doc.lock().unwrap().as_ref().and_then(|d| d.project.clip(&clip).and_then(|c| d.project.media(&c.media_id)).map(|x| job_for(x, &cache, true, true)));
+        let job = self.doc.lock().unwrap().as_ref().and_then(|d| d.project.clip(&clip).and_then(|c| d.project.media(&c.media_id)).map(|x| job_for(x, &cache, true, true, true)));
         if let Some(job) = job {
             m.jobs.submit_urgent(job);
         }
@@ -453,7 +469,7 @@ impl Engine {
         let id = self.edit_inner("Freeze frame", |p| p.freeze_frame(&clip.id, at, frozen, IMAGE_DEFAULT))?;
         // Its thumbnail for the library and the timeline.
         let cache = self.cache_dir();
-        let job = self.doc.lock().unwrap().as_ref().and_then(|d| d.project.clip(&id).and_then(|c| d.project.media(&c.media_id)).map(|x| job_for(x, &cache, true, false)));
+        let job = self.doc.lock().unwrap().as_ref().and_then(|d| d.project.clip(&id).and_then(|c| d.project.media(&c.media_id)).map(|x| job_for(x, &cache, true, true, false)));
         if let Some(job) = job {
             m.jobs.submit_urgent(job);
         }
@@ -520,7 +536,7 @@ impl Engine {
             if !wants_proxy(media) || has || m.jobs.proxy_pending(&d.cache_dir(), media_id) {
                 return;
             }
-            job_for(media, &d.cache_dir(), false, true)
+            job_for(media, &d.cache_dir(), false, false, true)
         };
         m.jobs.submit_urgent(job);
     }
@@ -554,7 +570,7 @@ impl Engine {
         copy.name = format!("{} (drawn {n})", media.name.rsplit_once('.').map_or(media.name.as_str(), |(stem, _)| stem));
         let media_id = self.edit_inner("Draw samples", |p| p.repoint_sound(&id, copy))?;
         let cache = self.cache_dir();
-        let job = self.doc.lock().unwrap().as_ref().and_then(|d| d.project.media(&media_id).map(|x| job_for(x, &cache, true, false)));
+        let job = self.doc.lock().unwrap().as_ref().and_then(|d| d.project.media(&media_id).map(|x| job_for(x, &cache, true, true, false)));
         if let Some(job) = job {
             m.jobs.submit_urgent(job);
         }
@@ -683,8 +699,16 @@ fn f32_of(params: &Value, key: &str) -> Option<f32> {
     params.get(key).and_then(Value::as_f64).map(|v| v as f32)
 }
 
-fn job_for(media: &Media, cache: &Path, browse: bool, proxy: bool) -> Job {
-    Job { media_id: media.id.clone(), path: PathBuf::from(&media.path), kind: media.kind, duration_us: media.duration_us, has_audio: media.has_audio, cache: cache.to_path_buf(), browse, proxy: proxy && wants_proxy(media) }
+/// A file's work: its poster (`browse`), its filmstrip and waveform (`look`, only for what the
+/// timeline uses) and its proxy.
+fn job_for(media: &Media, cache: &Path, browse: bool, look: bool, proxy: bool) -> Job {
+    Job { media_id: media.id.clone(), path: PathBuf::from(&media.path), kind: media.kind, duration_us: media.duration_us, has_audio: media.has_audio, cache: cache.to_path_buf(), browse, look, proxy: proxy && wants_proxy(media) }
+}
+
+/// A file a clip uses with no filmstrip or waveform yet (made only for the timeline's files).
+fn wants_look(media: &Media) -> bool {
+    let gone = |p: &Option<String>| p.as_ref().is_none_or(|p| !Path::new(p).is_file());
+    !media.missing && (media.kind != MediaKind::Audio && gone(&media.strip) || media.has_audio && gone(&media.peaks))
 }
 
 fn media_from(path: &str, p: studio_media::Probe, dir: Option<String>) -> Media {

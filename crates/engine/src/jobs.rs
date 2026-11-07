@@ -32,8 +32,12 @@ pub struct Job {
     pub duration_us: i64,
     pub has_audio: bool,
     pub cache: PathBuf,
-    /// Poster, filmstrip and peaks (what the library and timeline draw).
+    /// The poster (what the library draws).
     pub browse: bool,
+    /// Filmstrip and waveform: only for media a timeline clip uses, as only the timeline draws
+    /// them. A linked folder of 2,318 files used to get all three for every file, so the library
+    /// counted "0 of 2318 ready" for minutes while FFmpeg made filmstrips nobody would see.
+    pub look: bool,
     /// The every-frame-a-keyframe copy playback reads.
     pub proxy: bool,
 }
@@ -117,6 +121,10 @@ struct Lanes {
     proxies: usize,
     /// Media whose proxy a worker is making right now, by project cache and media id.
     making: Vec<(PathBuf, String)>,
+    /// Media whose filmstrip and waveform a worker is making right now, and ones that failed
+    /// (asked again only when the project is opened again), by project cache and media id.
+    looking: Vec<(PathBuf, String)>,
+    looks_failed: Vec<(PathBuf, String)>,
 }
 
 impl Lanes {
@@ -155,6 +163,9 @@ impl Lanes {
             self.proxies += 1;
             self.making.push((t.job.cache.clone(), t.job.media_id.clone()));
         }
+        if t.pass == Pass::Look {
+            self.looking.push((t.job.cache.clone(), t.job.media_id.clone()));
+        }
         Some(t)
     }
 
@@ -177,6 +188,9 @@ impl Lanes {
             self.proxies -= 1;
             self.making.retain(|(cache, id)| !(cache == &t.job.cache && id == &t.job.media_id));
         }
+        if t.pass == Pass::Look {
+            self.looking.retain(|(cache, id)| !(cache == &t.job.cache && id == &t.job.media_id));
+        }
     }
 
     /// Takes out what's queued for any project but the one whose cache is `cache` (another
@@ -185,6 +199,7 @@ impl Lanes {
         for q in &mut self.ranks {
             q.retain(|t| t.job.cache == cache);
         }
+        self.looks_failed.clear();
     }
 }
 
@@ -256,6 +271,14 @@ impl Jobs {
         self.queue.lanes.lock().unwrap().hurry(media_id);
     }
 
+    /// True if a filmstrip and waveform for this media of this project (its cache) is queued,
+    /// being made, or failed this time the project was opened (so it isn't asked for on every edit).
+    pub fn look_pending(&self, cache: &Path, media_id: &str) -> bool {
+        let l = self.queue.lanes.lock().unwrap();
+        let mine = |(c, m): &(PathBuf, String)| c == cache && m == media_id;
+        l.ranks.iter().flatten().any(|t| t.pass == Pass::Look && t.job.cache == cache && t.job.media_id == media_id) || l.looking.iter().any(mine) || l.looks_failed.iter().any(mine)
+    }
+
     /// True if a proxy for this media of this project (its cache) is queued or being made.
     pub fn proxy_pending(&self, cache: &Path, media_id: &str) -> bool {
         let l = self.queue.lanes.lock().unwrap();
@@ -266,7 +289,7 @@ impl Jobs {
 /// The passes a job asks for, in order.
 fn passes(job: Job) -> Vec<Task> {
     let visual = job.kind != MediaKind::Audio;
-    let wanted = [(Pass::Poster, job.browse && visual), (Pass::Look, job.browse && (visual || job.has_audio)), (Pass::Proxy, job.proxy && job.kind == MediaKind::Video)];
+    let wanted = [(Pass::Poster, job.browse && visual), (Pass::Look, job.look && (visual || job.has_audio)), (Pass::Proxy, job.proxy && job.kind == MediaKind::Video)];
     let job = Arc::new(job);
     wanted.into_iter().filter(|(_, w)| *w).map(|(pass, _)| Task { job: job.clone(), pass }).collect()
 }
@@ -302,7 +325,12 @@ fn worker(queue: Arc<Queue>, ff: Arc<Ffmpeg>, doc: Arc<Mutex<Option<Doc>>>, even
             }
             on_change();
         };
-        let fail = |what: &str, e: anyhow::Error| events.emit("media.warning", json!({ "mediaId": job.media_id, "message": format!("{what}: {e}") }));
+        let fail = |what: &str, e: anyhow::Error| {
+            if task.pass == Pass::Look {
+                queue.lanes.lock().unwrap().looks_failed.push((job.cache.clone(), job.media_id.clone()));
+            }
+            events.emit("media.warning", json!({ "mediaId": job.media_id, "message": format!("{what}: {e}") }))
+        };
         // Taken from the shared cache when another project made it already, else made and kept there.
         let shared = SHARED.get().and_then(|root| shared_dir(root, &job.path));
         let made = |name: &str, make: &dyn Fn(&Path) -> anyhow::Result<()>| -> anyhow::Result<PathBuf> {
@@ -398,7 +426,7 @@ mod tests {
     #[test]
     fn opening_another_project_drops_the_last_ones_queued_work() {
         let mut l = Lanes::default();
-        let of = |cache: &str, id: &str| passes(Job { cache: PathBuf::from(cache), ..job(id, MediaKind::Video, true, true) });
+        let of = |cache: &str, id: &str| passes(Job { cache: PathBuf::from(cache), ..used(id, MediaKind::Video, true, true) });
         l.add(of("/p/A.studio/cache", "m1"), false);
         l.add(of("/p/B.studio/cache", "m1"), false);
         l.keep_only(Path::new("/p/B.studio/cache"));
@@ -412,8 +440,12 @@ mod tests {
         assert!(l.making.is_empty());
     }
 
+    /// A file in the library: its poster (and a proxy if asked). On the timeline: its filmstrip and waveform too.
     fn job(id: &str, kind: MediaKind, browse: bool, proxy: bool) -> Job {
-        Job { media_id: id.into(), path: PathBuf::new(), kind, duration_us: 1_000_000, has_audio: true, cache: PathBuf::new(), browse, proxy }
+        Job { media_id: id.into(), path: PathBuf::new(), kind, duration_us: 1_000_000, has_audio: true, cache: PathBuf::new(), browse, look: false, proxy }
+    }
+    fn used(id: &str, kind: MediaKind, browse: bool, proxy: bool) -> Job {
+        Job { look: true, ..job(id, kind, browse, proxy) }
     }
 
     fn order(l: &mut Lanes, heavy_max: usize) -> Vec<String> {
@@ -432,11 +464,11 @@ mod tests {
         l.add(passes(job("loose", MediaKind::Video, true, true)), false);
         l.add(passes(job("lib1", MediaKind::Video, true, false)), false);
         l.add(passes(job("song", MediaKind::Audio, true, true)), false);
-        l.add(passes(job("used", MediaKind::Video, true, true)), true);
+        l.add(passes(used("used", MediaKind::Video, true, true)), true);
         assert_eq!(
             order(&mut l, 3),
-            ["used Poster", "used Look", "loose Poster", "lib1 Poster", "used Proxy", "loose Look", "lib1 Look", "song Look", "loose Proxy"],
-            "a sound file has no poster or proxy"
+            ["used Poster", "used Look", "loose Poster", "lib1 Poster", "used Proxy", "loose Proxy"],
+            "the library gets posters only, and a sound file in it nothing"
         );
     }
 
@@ -446,7 +478,7 @@ mod tests {
         for n in 0..4 {
             l.add(passes(job(&format!("used{n}"), MediaKind::Video, false, true)), true);
         }
-        l.add(passes(job("lib", MediaKind::Video, true, false)), false);
+        l.add(passes(used("lib", MediaKind::Video, true, false)), false);
         // Two heavy lanes: one proxy at a time, the other lane for a filmstrip.
         assert_eq!(l.take(2).unwrap().pass, Pass::Poster);
         let proxy = l.take(2).unwrap();
@@ -477,7 +509,18 @@ mod tests {
             l.add(passes(job(&format!("lib{n}"), MediaKind::Video, true, false)), false);
         }
         l.hurry("lib2");
-        assert_eq!(order(&mut l, 3), ["lib2 Poster", "lib2 Look", "lib0 Poster", "lib1 Poster", "lib0 Look", "lib1 Look"]);
+        // Put on the timeline, it's asked for its filmstrip and waveform (rpc.rs, `want_looks`), urgent.
+        l.add(passes(used("lib2", MediaKind::Video, false, false)), true);
+        assert_eq!(order(&mut l, 3), ["lib2 Look", "lib2 Poster", "lib0 Poster", "lib1 Poster"]);
+    }
+
+    #[test]
+    fn a_library_file_gets_only_its_poster() {
+        let kinds = |j: Job| passes(j).into_iter().map(|t| t.pass).collect::<Vec<_>>();
+        assert_eq!(kinds(job("v", MediaKind::Video, true, false)), [Pass::Poster]);
+        assert_eq!(kinds(job("s", MediaKind::Audio, true, false)), [], "a sound file in the library: nothing to make");
+        assert_eq!(kinds(used("v", MediaKind::Video, true, false)), [Pass::Poster, Pass::Look]);
+        assert_eq!(kinds(used("s", MediaKind::Audio, false, false)), [Pass::Look], "its waveform, once it's on the timeline");
     }
 
     #[test]

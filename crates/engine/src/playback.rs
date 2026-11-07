@@ -252,8 +252,10 @@ impl Playback {
 
     /// The sound of a project (the timeline, or a previewed clip), mixed at the device's rate
     /// and channel count. Cached by revision; waits for the premix if it's already on it.
-    pub fn mix_for(&self, project: &Project, revision: u64) -> anyhow::Result<Arc<Vec<f32>>> {
-        self.mixes.get_or_make(&self.ff, project, revision, false)
+    /// The timeline's sound, mixed (or the mix already made of the very same sound). `_revision`
+    /// is the project's; a mix is known by what's in it (`mix_key`), not by when it was asked for.
+    pub fn mix_for(&self, project: &Project, _revision: u64) -> anyhow::Result<Arc<Vec<f32>>> {
+        self.mixes.get_or_make(&self.ff, project, false)
     }
 
     /// Another project was opened: the sound mixed for the last one is never played for it.
@@ -263,9 +265,9 @@ impl Playback {
 
     /// Mixes the timeline's sound in the background after an edit, so pressing play is quick.
     /// Edits in quick succession collapse: only the latest revision is mixed, one at a time.
-    pub fn premix(&self, project: Arc<Project>, revision: u64) {
+    pub fn premix(&self, project: Arc<Project>, _revision: u64) {
         let (m, cv) = &self.mixes.request;
-        *m.lock().unwrap() = Some((project, revision));
+        *m.lock().unwrap() = Some(project);
         cv.notify_one();
     }
 
@@ -753,25 +755,30 @@ fn frame_at(ff: &Ffmpeg, p: &Project, t: Us, w: u32, h: u32) -> Option<Vec<u8>> 
 }
 
 /// Recent sound mixes (the timeline's and a preview's fit side by side), and the premix
-/// worker's queue of one. A mix is known by its revision, which every project counts from the
-/// start, so the cache belongs to one open project: opening another starts a new `epoch` (and
-/// a mix still being made for the old one is thrown away when it's done). Before this, opening
-/// a project at a revision the last one had reached played the last one's sound.
+/// worker's queue of one. A mix is known by what's in it: the hash of its FFmpeg command and
+/// length (`mix_key`). It used to be known by the project's revision, which every quiet update
+/// bumps too: a poster, filmstrip, waveform or proxy made, a folder linked. Linking 360 folders
+/// (2,318 files to read) threw a 3-minute mix away thousands of times, so play almost never
+/// found one and waited for FFmpeg behind all that work (2026-11-07). The cache still belongs to
+/// one open project: opening another starts a new `epoch` (and a mix still being made for the
+/// old one is thrown away when it's done), so the last project's sound is never played.
 #[derive(Default)]
 struct Mixes {
     rate: u32,
     channels: u16,
     epoch: AtomicU64,
     done: Mutex<Vec<(u64, u64, Arc<Vec<f32>>)>>,
-    /// The (epoch, revision) being mixed right now, if any; `ready` wakes anyone waiting for it.
+    /// The (epoch, key) being mixed right now, if any; `ready` wakes anyone waiting for it.
     making: Mutex<Option<(u64, u64)>>,
     ready: Condvar,
-    request: (Mutex<Option<(Arc<Project>, u64)>>, Condvar),
+    request: (Mutex<Option<Arc<Project>>>, Condvar),
 }
 
 impl Mixes {
-    fn get_or_make(&self, ff: &Ffmpeg, project: &Project, revision: u64, background: bool) -> anyhow::Result<Arc<Vec<f32>>> {
+    fn get_or_make(&self, ff: &Ffmpeg, project: &Project, background: bool) -> anyhow::Result<Arc<Vec<f32>>> {
         let epoch = self.epoch.load(Ordering::Acquire);
+        let args = mix_args(project, self.rate, self.channels);
+        let revision = mix_key(&args, project.duration_us());
         {
             let mut making = self.making.lock().unwrap();
             loop {
@@ -788,7 +795,7 @@ impl Mixes {
                 *making = Some((epoch, revision));
             }
         }
-        let result = mix(ff, project, self.rate, self.channels, background);
+        let result = mix_with(ff, &args, project.duration_us(), self.rate, self.channels, background);
         if let Ok(buf) = &result {
             self.keep(epoch, revision, buf.clone());
         }
@@ -827,7 +834,7 @@ impl Mixes {
 
 fn premix_worker(ff: Arc<Ffmpeg>, mixes: Arc<Mixes>) {
     loop {
-        let (project, revision) = {
+        let project = {
             let (m, cv) = &mixes.request;
             let mut g = m.lock().unwrap();
             loop {
@@ -837,18 +844,38 @@ fn premix_worker(ff: Arc<Ffmpeg>, mixes: Arc<Mixes>) {
                 g = cv.wait(g).unwrap();
             }
         };
-        let _ = mixes.get_or_make(&ff, &project, revision, true);
+        let _ = mixes.get_or_make(&ff, &project, true);
     }
 }
 
-fn mix(ff: &Ffmpeg, project: &Project, rate: u32, channels: u16, background: bool) -> anyhow::Result<Arc<Vec<f32>>> {
+/// The FFmpeg command that mixes the timeline's sound to raw floats.
+fn mix_args(project: &Project, rate: u32, channels: u16) -> Vec<String> {
     let mut args = graph::build(&graph::timeline_from(project, 0, false), None, true, false);
     args.extend(["-map".into(), "[aout]".into(), "-f".into(), "f32le".into(), "-ac".into(), channels.to_string(), "-ar".into(), rate.to_string(), "pipe:1".into()]);
+    args
+}
+
+/// What a mix is known by: its command and length. The same sound mixes the same way, whatever
+/// else changed in the project (posters, linked folders, text).
+fn mix_key(args: &[String], total: Us) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    args.hash(&mut h);
+    total.hash(&mut h);
+    h.finish()
+}
+
+#[cfg(test)]
+fn mix(ff: &Ffmpeg, project: &Project, rate: u32, channels: u16, background: bool) -> anyhow::Result<Arc<Vec<f32>>> {
+    mix_with(ff, &mix_args(project, rate, channels), project.duration_us(), rate, channels, background)
+}
+
+fn mix_with(ff: &Ffmpeg, args: &[String], total: Us, rate: u32, channels: u16, background: bool) -> anyhow::Result<Arc<Vec<f32>>> {
     let mut cmd = if background { ff.cmd_background() } else { ff.cmd() };
     // Never more than the timeline's length (and a second): if FFmpeg's own end doesn't come,
     // the rest is padding silence, and reading it all would fill the memory.
-    let mut raw = read_at_most(cmd.args(&args), mix_bytes(project.duration_us() + 1_000_000, rate, channels)).map_err(|e| anyhow::anyhow!("audio mix failed: {e}"))?;
-    raw.truncate(mix_bytes(project.duration_us(), rate, channels) as usize);
+    let mut raw = read_at_most(cmd.args(args), mix_bytes(total + 1_000_000, rate, channels)).map_err(|e| anyhow::anyhow!("audio mix failed: {e}"))?;
+    raw.truncate(mix_bytes(total, rate, channels) as usize);
     Ok(Arc::new(raw.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()))
 }
 
@@ -905,6 +932,53 @@ mod tests {
         let mut cmd = ff.cmd();
         cmd.args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "0.5", "-f", "f32le", "pipe:1"]);
         assert_eq!(read_at_most(&mut cmd, most).unwrap().len(), 48_000 / 2 * 2 * 4);
+    }
+
+    #[test]
+    fn a_timeline_of_sound_only_plays_its_picture_black_and_its_sound() {
+        // Repro (2026-11-07): a project whose video was deleted, a song and a voiceover left.
+        let Ok(ff) = Ffmpeg::detect() else { return };
+        let dir = std::env::temp_dir().join(format!("studio-sound-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.wav");
+        let ok = ff.cmd().args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=6", song.to_str().unwrap()]).status().unwrap();
+        assert!(ok.success());
+        let mut p = Project::new("T", "9:16");
+        p.media = vec![Media { id: "s".into(), path: song.to_string_lossy().into(), name: "song.wav".into(), kind: MediaKind::Audio, duration_us: 6 * SECOND, has_audio: true, ..Default::default() }];
+        p.insert("s", 0).unwrap();
+        assert!(p.tracks.iter().all(|t| t.kind != studio_engine_core::model::TrackKind::Video || t.clips.is_empty()), "no picture on the timeline");
+        assert_eq!(p.duration_us(), 6 * SECOND);
+        // The picture: black frames, as many as the stretch is long.
+        let (end, _, args) = plan(&p, 0, FIRST_STRETCH_US);
+        let out = ff.cmd().args(&args).stdout(Stdio::piped()).stderr(Stdio::piped()).output().unwrap();
+        let (w, h) = preview_size(&p);
+        let frames = out.stdout.len() / (w * h * 4) as usize;
+        assert!(frames as i64 >= end * p.fps as i64 / 1_000_000 - 1, "{} frames for {} µs: {}", frames, end, String::from_utf8_lossy(&out.stderr));
+        // The sound: the whole timeline.
+        let buf = mix(&ff, &p, 48_000, 2, false).unwrap();
+        assert_eq!(buf.len() as u64 * 4, mix_bytes(6 * SECOND, 48_000, 2));
+        let peak = buf.iter().fold(0f32, |a, x| a.max(x.abs()));
+        let args = graph::build(&graph::timeline_from(&p, 0, false), None, true, false);
+        assert!(peak > 0.05, "silence (peak {peak}): ffmpeg {}", args.join(" "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_mix_is_known_by_its_sound_so_posters_and_linked_folders_keep_it() {
+        let mut p = Project::new("T", "9:16");
+        p.media = vec![Media { id: "s".into(), path: "/m/song.wav".into(), name: "song.wav".into(), kind: MediaKind::Audio, duration_us: 6 * SECOND, has_audio: true, ..Default::default() }];
+        p.insert("s", 0).unwrap();
+        let key = |p: &Project| mix_key(&mix_args(p, 48_000, 2), p.duration_us());
+        let before = key(&p);
+        // What the background work and a linked folder change: posters, waveforms, more media.
+        p.media[0].poster = Some("/cache/s/poster.jpg".into());
+        p.media[0].peaks = Some("/cache/s/peaks.bin".into());
+        p.media.push(Media { id: "b".into(), path: "/broll/b.mp4".into(), name: "b.mp4".into(), kind: MediaKind::Video, duration_us: 3 * SECOND, width: 720, height: 1280, fps: 30.0, has_audio: true, ..Default::default() });
+        assert_eq!(key(&p), before, "the same sound: the same mix");
+        // A change to the sound is a new mix.
+        let id = p.tracks.iter().flat_map(|t| &t.clips).next().unwrap().id.clone();
+        p.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).find(|c| c.id == id).unwrap().volume = 0.5;
+        assert_ne!(key(&p), before, "louder or quieter: a new mix");
     }
 
     #[test]

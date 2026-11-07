@@ -176,12 +176,15 @@ try {
   await waitFor((m) => m.method === 'project.changed' && m.params.processing.length === 0, 120_000, 'media processing')
   const media = latest.project.media
   const videos = media.filter((m) => m.kind === 'video')
-  check(videos.every((m) => m.poster && m.strip && m.proxy && existsSync(m.proxy)), `posters, filmstrips and proxies for ${videos.length} videos (${((performance.now() - t0) / 1000).toFixed(1)} s)`)
-  check(media.filter((m) => m.hasAudio).every((m) => m.peaks), 'waveform peaks for everything with sound')
+  check(videos.every((m) => m.poster && m.proxy && existsSync(m.proxy)), `posters and proxies for ${videos.length} videos (${((performance.now() - t0) / 1000).toFixed(1)} s)`)
+  // The library draws posters only: filmstrips and waveforms wait for the timeline.
+  check(media.every((m) => !m.strip && !m.peaks), 'no filmstrips or waveforms for files only in the library')
 
   for (const v of videos) await call('timeline.insert', { mediaId: v.id })
   const vo = media.find((m) => m.kind === 'audio')
   await call('timeline.insert', { mediaId: vo.id, atUs: 500_000 })
+  await waitFor((m) => m.method === 'project.changed' && m.params.processing.length === 0 && m.params.project.media.every((x) => (x.kind !== 'video' || x.strip) && (!x.hasAudio || x.peaks)), 120_000, 'the timeline’s filmstrips and waveforms')
+  check(true, 'filmstrips and waveforms once the files are on the timeline')
   snap = await call('project.current')
   const main = snap.project.tracks.find((t) => t.main)
   check(main.clips.length === 3 && snap.project.tracks.length === 2, `timeline: 3 clips on the main track + 1 audio track (${(snap.durationUs / 1e6).toFixed(1)} s)`)
@@ -780,11 +783,11 @@ try {
   await waitFor((m) => m.method === 'project.changed' && m.params.processing.length === 0, 60_000, 'folder thumbnails')
   let p = latest.project
   check(p.folders.length === 1 && p.media.map((m) => m.dir).sort().join('|') === '01 Produkt|05 Stock/Jul', 'the library keeps the folder tree')
-  check(p.media.every((m) => m.poster && m.strip && !m.proxy), 'thumbnails made, proxies wait for the timeline')
+  check(p.media.every((m) => m.poster && !m.strip && !m.proxy), 'posters made; filmstrips and proxies wait for the timeline')
   const a = p.media.find((m) => m.name === 'a.mp4')
   await call('timeline.insert', { mediaId: a.id })
-  await waitFor((m) => m.method === 'project.changed' && m.params.project.media.find((x) => x.id === a.id)?.proxy, 60_000, 'a proxy for the used clip')
-  check(true, 'putting a clip on the timeline makes its proxy')
+  await waitFor((m) => m.method === 'project.changed' && m.params.project.media.find((x) => x.id === a.id)?.proxy && m.params.project.media.find((x) => x.id === a.id)?.strip, 60_000, 'a proxy and filmstrip for the used clip')
+  check(true, 'putting a clip on the timeline makes its filmstrip and proxy')
   // A clip no bigger than a proxy plays from its own file.
   const b = p.media.find((m) => m.name === 'b.mp4')
   // Listening before the insert: with nothing to make, the snapshot saying so can come before its answer.
