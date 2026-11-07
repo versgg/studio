@@ -20,6 +20,15 @@
 .dub-edit:focus { outline: none; border-color: #4a4a52; }
 .dub-edit:disabled { color: #6e6e77; background: transparent; }
 .dub-note { font-size: 11px; color: #6e6e77; }
+.dub-takes { grid-column: 2 / -1; display: flex; align-items: center; gap: 4px; }
+.dub-btn { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border: 0; border-radius: 3px; background: #1f1f23; font: inherit; font-size: 11px; color: #c8c8cf; cursor: pointer; }
+.dub-btn:hover:not(:disabled) { background: #2a2a2f; color: #ededef; }
+.dub-btn:disabled { color: #55555c; cursor: default; }
+.dub-btn.icon { width: 22px; padding: 0; justify-content: center; }
+.dub-btn:focus-visible { outline: 1px solid #6f86ff; outline-offset: 1px; }
+.dub-take { margin-left: auto; display: flex; align-items: center; gap: 2px; }
+.dub-take > .dub-btn:first-child svg { transform: scaleX(-1); }
+.dub-take-n { padding: 0 4px; font-size: 11px; color: #8a8a93; font-variant-numeric: tabular-nums; }
 .dub-item.scene { opacity: 0.6; }
 .dub-key { margin: 6px 0 8px; }
 .dub-label { display: block; margin-bottom: 4px; font-size: 11px; color: #8a8a93; }

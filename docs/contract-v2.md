@@ -141,6 +141,8 @@ For overlay clips, `fit` means "fill" or "fit" against the frame. Scale 100 = th
 - While a clip is busy, no edit may change or remove it, whoever sends it (the app, MCP, undo, redo, `history.goto`): every `Doc` edit is checked with `Project::busy_kept`, and refused with "Text is still being removed from <file>…". It may still move along its track as clips before it come and go (a ripple). Copies of it (paste) aren't busy.
 - `clip.busy { clipId, job }`: marks it. `clip.release { clipId, job }` → `{ released }`: clears the mark if it is that job's (a cancelled or failed job). Neither is an undo step.
 - `clip.replaceMedia { clipId, mediaId, job, label? }`: with `job`, the job's result. It clears the mark and replaces the media as one undo step, which never makes the clip busy again.
+- `clip.replaceMedia { clipId, mediaId, whole?, gesture?, label? }` without `job` (2026-11-07): the clip plays another file from its start, keeping its place, track and settings. Its length stays, at most the new file's; with `whole` it takes the new file's whole length (a dub's sentence said again).
+- `gesture` on `media.import` (with `label`, the step's name), `timeline.insert`, `clip.replaceMedia`, `captions.set` and `captions.draw`: edits sent with the same gesture, whatever their command, are one undo step (a rerolled sentence: its take imported, swapped in, and its captions set again).
 - All three (and `replaceMedia` with `job`) are the app's only: an MCP client (`_actor` other than "you") is refused. `project.summary` says which clips are busy.
 
 ## Files the renderer writes (main-process IPC, project folder only)

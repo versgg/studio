@@ -49,7 +49,7 @@ The agent checks your machine, installs what's missing (asking before it does), 
 - **Optional online features**, each with your own account where one is needed:
   - Voiceovers and voice changing with ElevenLabs (your API key).
   - Captions and stems (vocals, music, drums…) through an online server (no key).
-  - Dub: a clip's on-screen text and voice in another language. It uses Claude Code on your computer to read and translate, Vmake to take the old text out (your Vmake login), and ElevenLabs for the voice.
+  - Dub: a clip's on-screen text and voice in another language. It uses Claude Code on your computer to read and translate, Vmake to take the old text out (your Vmake login), and ElevenLabs for the voice. Any sentence can be rerolled as a new take (with new words if you like), and every take is kept to go back to.
   - Translations: a whole project made again in other languages.
 - **MCP:** Claude (Claude Code or Claude Desktop) can build and edit projects through Studio's MCP server; see [docs/MCP.md](docs/MCP.md).
 

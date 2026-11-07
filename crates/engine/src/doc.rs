@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(refused(&mut doc, &|p| p.move_clip(&clip, SECOND, None)), busy);
         assert_eq!(refused(&mut doc, &|p| p.delete(std::slice::from_ref(&clip))), busy);
         assert_eq!(refused(&mut doc, &|p| p.remove_media(&["m1".into()]).map(|_| ())), busy);
-        assert_eq!(refused(&mut doc, &|p| p.replace_media(&clip, "m2")), busy);
+        assert_eq!(refused(&mut doc, &|p| p.replace_media(&clip, "m2", false)), busy);
         assert_eq!(doc.project.clip(&clip).unwrap().scale, 100.0, "refused edits change nothing");
         // Undo would take the brightness back: refused too, and redo after an edit elsewhere.
         assert!(doc.blocked(false).unwrap().starts_with("Text is still being removed"));
@@ -464,8 +464,8 @@ mod tests {
         assert_eq!(doc.project.clip(&clip).unwrap().busy.as_deref(), Some("j1"), "undo and redo keep the mark");
 
         // Its job ends: the result comes in as one undo step, which never brings the mark back.
-        assert!(doc.release("you", "Remove text", &clip, "j2", |p| p.replace_media(&clip, "m2")).is_err(), "only its own job");
-        doc.release("you", "Remove text", &clip, "j1", |p| p.replace_media(&clip, "m2")).unwrap();
+        assert!(doc.release("you", "Remove text", &clip, "j2", |p| p.replace_media(&clip, "m2", false)).is_err(), "only its own job");
+        doc.release("you", "Remove text", &clip, "j1", |p| p.replace_media(&clip, "m2", false)).unwrap();
         assert_eq!((doc.project.clip(&clip).unwrap().media_id.as_str(), doc.project.clip(&clip).unwrap().busy.as_ref()), ("m2", None));
         assert!(doc.undo());
         assert_eq!((doc.project.clip(&clip).unwrap().media_id.as_str(), doc.project.clip(&clip).unwrap().busy.as_ref()), ("m1", None), "the old file, and free");

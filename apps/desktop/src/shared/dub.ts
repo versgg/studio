@@ -75,8 +75,14 @@ export type DubVoice = 'clone' | 'voice' | 'keep'
 /** What was said, as sentences: who, when (s, in the clip's part), and the words with their times. */
 export type DubSpoken = { id: string; speaker: string; start: number; end: number; text: string; words: { text: string; start: number; end: number }[] }
 
-/** A dubbed sentence on the timeline: its sound file, where it starts (s, in the part), how much faster, its words. */
-export type DubVoiceLine = { id: string; file: string; at: number; dur: number; tempo: number; text: string; words: { text: string; start: number; end: number }[]; own?: boolean }
+/** One take of a dubbed sentence: its sound file, length (s), how much faster, its words and their times. */
+export type DubTake = { file: string; dur: number; tempo: number; text: string; words: { text: string; start: number; end: number }[] }
+
+/**
+ * A dubbed sentence on the timeline: where it starts (s, in the part) and the take it plays.
+ * Rerolled, every take is kept in `takes` (the first is the dub's own), `take` the one playing.
+ */
+export type DubVoiceLine = DubTake & { id: string; at: number; own?: boolean; takes?: DubTake[]; take?: number }
 
 export interface DubJob {
   id: string

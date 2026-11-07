@@ -99,6 +99,10 @@ if (existsSync(dubFont))
     dubClip = ''
   }
 
+// A clip someone talks over, for the voice-dub steps (the stand-ins hear two sentences in it).
+const dubVoice = join(work, 'dub-voice.mp4')
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=0x3a2a2a:s=540x960:d=4:r=30', '-f', 'lavfi', '-i', 'sine=f=220:d=4', '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', dubVoice])
+
 const env = {
   ...process.env,
   STUDIO_UI_CHECK: out,
@@ -106,6 +110,7 @@ const env = {
   STUDIO_UI_CHECK_EXPORTS: join(work, 'exports'),
   STUDIO_UI_CHECK_FOLDER: tree,
   STUDIO_UI_CHECK_DUBCLIP: dubClip,
+  STUDIO_UI_CHECK_DUBVOICE: dubVoice,
   STUDIO_UI_CHECK_SPEECH: speechOk ? speech : '',
   STUDIO_PROJECTS_DIR: join(work, 'projects'),
   STUDIO_USER_DATA: join(work, 'user-data'),

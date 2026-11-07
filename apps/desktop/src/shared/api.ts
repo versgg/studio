@@ -270,8 +270,10 @@ export interface StudioApi {
     /** A ready dub's scan, readings and looks. */
     dubResult(id: string): Promise<{ job: DubJob; scan: DubScan | null; texts: DubText[]; looks: DubLook[]; speech: { language: string; lines: DubSpoken[] } | null; said: { id: string; text: string; translation: string }[]; voice: { lines: DubVoiceLine[] } | null } | ServiceError>
     dubApplied(id: string): Promise<void>
-    /** Say it again: dubbed sentences with new words, spoken by the same voice; the lines as they'll play. */
-    dubRespeak(id: string, edits: Record<string, string>): Promise<DubVoiceLine[] | ServiceError>
+    /** Reroll: dubbed sentences spoken again by the same voice as a new take (with `edits`' words where given); the lines as they'll play. */
+    dubReroll(id: string, lineIds: string[], edits?: Record<string, string>): Promise<DubVoiceLine[] | ServiceError>
+    /** An earlier take of a dubbed sentence played again (kept, so free); the line as it'll play. */
+    dubPickTake(id: string, lineId: string, take: number): Promise<DubVoiceLine | ServiceError>
     /** A ready dub couldn't go on the timeline: it ends failed with this reason. */
     dubFailed(id: string, reason: string): Promise<void>
     onDubJob(cb: (job: DubJob) => void): () => void

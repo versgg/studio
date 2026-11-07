@@ -1925,15 +1925,19 @@ impl Project {
     }
 
     /// Points a clip at other media (a cleaned copy of its own part), from the start.
-    pub fn replace_media(&mut self, clip_id: &str, media_id: &str) -> R<()> {
-        let Some(len) = self.media(media_id).map(|m| if m.kind == MediaKind::Image { Us::MAX / 4 } else { m.duration_us }) else { return err(format!("no media {media_id}")) };
+    /// The clip plays another file from its start, keeping its place, track and settings. Its
+    /// length stays, at most the new file's; with `whole` it becomes the new file's whole length
+    /// (a sentence said again, longer or shorter than before).
+    pub fn replace_media(&mut self, clip_id: &str, media_id: &str, whole: bool) -> R<()> {
+        let Some((len, image)) = self.media(media_id).map(|m| if m.kind == MediaKind::Image { (Us::MAX / 4, true) } else { (m.duration_us, false) }) else { return err(format!("no media {media_id}")) };
         let Some((ti, ci)) = self.find_clip(clip_id) else { return err(format!("no clip {clip_id}")) };
         self.check_unlocked(&[clip_id.to_string()])?;
         let before = self.main_starts();
         let c = &mut self.tracks[ti].clips[ci];
         c.media_id = media_id.into();
         c.in_us = 0;
-        c.duration_us = c.duration_us.min((len as f64 / c.speed) as Us).max(MIN_CLIP);
+        let full = (len as f64 / c.speed) as Us;
+        c.duration_us = if whole && !image { full } else { c.duration_us.min(full) }.max(MIN_CLIP);
         self.normalize();
         self.follow_links(&before);
         Ok(())
@@ -3130,7 +3134,7 @@ mod tests {
         assert_eq!(p.split(SECOND, &[]).unwrap_err().0, busy, "the main clip under the playhead");
         assert_eq!(p.delete(&[a.clone(), b.clone()]).unwrap_err().0, busy);
         assert_eq!(p.trim_at(SECOND, std::slice::from_ref(&a), true).unwrap_err().0, busy);
-        assert_eq!(p.replace_media(&a, "b").unwrap_err().0, busy);
+        assert_eq!(p.replace_media(&a, "b", false).unwrap_err().0, busy);
         assert_eq!(p.set_busy(&a, Some("job2")).unwrap_err().0, busy, "one job at a time");
         p.set_busy(&a, Some("job1")).unwrap();
 

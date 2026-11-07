@@ -3136,6 +3136,124 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     )
   } else console.log('[ui-check] skip Design a voice: set STUDIO_ELEVEN_FAKE=1 (the stand-in; the real ElevenLabs is never called from tests)')
 
+  // Reroll a dubbed sentence, on the stand-ins (Claude, ElevenLabs and the stems server are never
+  // called): a voice dub of a clip someone talks over, with captions, in a project of its own.
+  const dubVoice = process.env.STUDIO_UI_CHECK_DUBVOICE ?? ''
+  if (process.env.STUDIO_CLAUDE_FAKE === '1' && process.env.STUDIO_ELEVEN_FAKE === '1' && process.env.STUDIO_STEMS_FAKE === '1' && dubVoice) {
+    // The helpers every reroll step uses: the dub's sentences and the clip playing each.
+    const rr = `const { id, clipId } = window.__reroll
+       const sentences = async () => (await window.studio.services.dubResult(id)).voice.lines.filter((l) => !l.own)
+       const pathOf = (s, c) => s.project.media.find((m) => m.id === c.mediaId)?.path ?? ''
+       const playing = (s, l) => s.project.tracks.flatMap((t) => t.clips).find((c) => [l.file, ...(l.takes ?? []).map((t) => t.file)].includes(pathOf(s, c)) || new RegExp('/line-' + l.id + '[-.]').test(pathOf(s, c)))
+       const captions = (s, from, to) => s.project.tracks.filter((t) => t.role === 'captions').flatMap((t) => t.clips).filter((c) => c.startUs + c.durationUs / 2 >= from && c.startUs + c.durationUs / 2 < to).map((c) => c.text.content).join(' ')
+       const row = (l) => __t.q('.inspector .dub-item.line[data-line="' + l.id + '"]')
+       const steps = async () => (await window.studio.engine.call('history.list')).steps.length`
+    await step(
+      'Dub › What she says: Reroll says a changed sentence again as a new take where its clip is, at the take’s whole length, its captions follow, and one Ctrl+Z puts the old take back',
+      `const S = window.__studio, st = () => S.getState()
+       const back = (await __t.snap()).dir
+       await S.newProject('Reroll', '9:16')
+       await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+       const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(dubVoice)}] })
+       const mediaId = r.imported[0]
+       await __t.until(async () => !(await __t.snap()).processing.length, 30000, 'the clip to be read')
+       await window.studio.engine.call('timeline.insert', { mediaId })
+       const clip = __t.main(await __t.snap()).find((c) => c.mediaId === mediaId)
+       await S.dubText({ mediaId, clipId: clip.id }, { lang: 'da', model: 'skip', text: false, voice: 'clone', captions: true, review: false })
+       const dub = await __t.until(() => Object.values(st().dubJobs).find((j) => j.clipId === clip.id)?.id, 5000, 'the dub')
+       await __t.until(() => st().dubJobs[dub]?.state === 'applied' || (st().dubJobs[dub]?.state === 'failed' && Promise.reject(new Error(st().dubJobs[dub].reason))), 90000, 'the dub on the timeline')
+       window.__reroll = { back, id: dub, clipId: clip.id }
+       ${rr}
+       __t.click(__t.clipEl(clipId))
+       ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab')).click()
+       const lines = await sentences()
+       if (lines.length < 2) throw new Error(lines.length + ' sentences dubbed')
+       const line = lines[1]
+       const s0 = await __t.snap()
+       const was = playing(s0, line)
+       if (!was) throw new Error('the second sentence isn’t on the timeline')
+       const oldWords = captions(s0, was.startUs, was.startUs + was.durationUs)
+       const box = await __t.until(() => row(line)?.querySelector('textarea'), 5000, 'its row in What she says')
+       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, 'DA: It has two sentences and a good deal more to say now.')
+       box.dispatchEvent(new Event('input', { bubbles: true }))
+       const before = await steps()
+       ;(await __t.until(() => !row(line).querySelector('.dub-btn.reroll').disabled && row(line).querySelector('.dub-btn.reroll'), 2000, 'Reroll')).click()
+       const shown = await __t.until(() => /Take 2 of 2/.test(row(line)?.textContent ?? '') && row(line).textContent, 20000, 'Take 2 of 2 on its row')
+       const s1 = await __t.snap()
+       const now = s1.project.tracks.flatMap((t) => t.clips).find((c) => c.id === was.id)
+       const file = pathOf(s1, now)
+       if (!/line-[A-Za-z0-9]+-r[0-9a-z]+-fit\\.wav$/.test(file)) throw new Error('the clip plays ' + file)
+       const media = s1.project.media.find((m) => m.id === now.mediaId)
+       if (now.startUs !== was.startUs || Math.abs(now.durationUs - media.durationUs) > 2000 || now.durationUs <= was.durationUs) throw new Error('the new take is at ' + now.startUs + ' for ' + now.durationUs + ' (file ' + media.durationUs + '), the old at ' + was.startUs + ' for ' + was.durationUs)
+       const newWords = captions(s1, now.startUs, now.startUs + now.durationUs)
+       if (!/good deal more/.test(newWords) || /good deal/.test(oldWords)) throw new Error('the captions there say ' + newWords)
+       if ((await steps()) !== before + 1) throw new Error('the reroll took ' + ((await steps()) - before) + ' undo steps')
+       const toast = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /Take 2/.test(t)), 3000, 'the toast')
+       // One Ctrl+Z: the old take and its captions, and the tab shows take 1 playing.
+       await window.studio.engine.call('edit.undo')
+       const s2 = await __t.snap()
+       const undone = s2.project.tracks.flatMap((t) => t.clips).find((c) => c.id === was.id)
+       if (pathOf(s2, undone) !== pathOf(s0, was) || undone.durationUs !== was.durationUs) throw new Error('undo left ' + pathOf(s2, undone))
+       if (captions(s2, was.startUs, was.startUs + was.durationUs) !== oldWords) throw new Error('undo left the captions ' + captions(s2, was.startUs, was.startUs + was.durationUs))
+       await __t.until(() => /Take 1 of 2/.test(row(line)?.textContent ?? ''), 3000, 'Take 1 of 2 after undo')
+       await window.studio.engine.call('edit.redo')
+       await __t.until(() => /Take 2 of 2/.test(row(line)?.textContent ?? ''), 3000, 'Take 2 of 2 after redo')
+       return { shown: shown.replace(/\\s+/g, ' ').slice(0, 120), was: oldWords, now: newWords, toast }`,
+    )
+    await shot('27b-dub-reroll')
+    await step(
+      'Dub › What she says: ‹ goes back to the take before at no cost (nothing spoken), › forward again',
+      `${rr}
+       const line = (await sentences())[1]
+       const dir = line.file.slice(0, line.file.lastIndexOf('/'))
+       const spoken = async () => (await window.studio.services.dubResult(id)).voice.lines.find((l) => l.id === line.id).takes.length
+       const takes = await spoken()
+       // ‹ and › are off while a take is being put in; each is clicked once it's on again.
+       const arrow = (i, what) => __t.until(() => { const b = row(line)?.querySelectorAll('.dub-take .dub-btn')[i]; return b && !b.disabled && b }, 5000, what)
+       ;(await arrow(0, '‹ to be on')).click()
+       await __t.until(() => /Take 1 of 2/.test(row(line).textContent), 5000, 'Take 1 of 2')
+       let s = await __t.snap()
+       if (pathOf(s, playing(s, line)) !== line.takes[0].file) throw new Error('‹ plays ' + pathOf(s, playing(s, line)))
+       if (row(line).querySelector('textarea').value !== line.takes[0].text) throw new Error('the row says ' + row(line).querySelector('textarea').value)
+       if ((await spoken()) !== takes) throw new Error('‹ spoke a new take')
+       ;(await arrow(1, '› to be on')).click()
+       await __t.until(() => /Take 2 of 2/.test(row(line).textContent), 5000, 'Take 2 of 2')
+       s = await __t.snap()
+       if (pathOf(s, playing(s, line)) !== line.takes[1].file) throw new Error('› plays ' + pathOf(s, playing(s, line)))
+       return { takes, back: line.takes[0].file.split('/').pop(), forward: line.takes[1].file.split('/').pop() }`,
+    )
+    await step(
+      'Timeline: right-click a dubbed sentence › Reroll voice says it again as a new take, in its own words',
+      `const S = window.__studio
+       ${rr}
+       const line = (await sentences())[0]
+       const s0 = await __t.snap()
+       const was = playing(s0, line)
+       await __t.until(() => __t.clipEl(was.id), 3000, 'the sentence on the timeline')
+       __t.click(__t.clipEl(was.id))
+       const el = __t.clipEl(was.id), r = __t.rect(el)
+       el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 10 }))
+       const item = await __t.until(() => __t.qa('.context-menu button').find((b) => b.textContent.startsWith('Reroll voice')), 2000, 'Reroll voice in the menu')
+       const label = item.textContent
+       item.click()
+       const after = await __t.until(async () => { const l = (await sentences())[0]; return l.takes?.length === 2 && l }, 20000, 'a second take')
+       const clipNow = async () => { const s = await __t.snap(); return pathOf(s, s.project.tracks.flatMap((t) => t.clips).find((c) => c.id === was.id)) }
+       await __t.until(async () => (await clipNow()) === after.takes[1].file, 5000, 'the new take on its clip (it plays ' + (await clipNow()).split('/').pop() + ')')
+       if (after.takes[1].text !== line.text) throw new Error('its words changed: ' + after.takes[1].text)
+       // The video clip's own menu has no Reroll voice.
+       __t.click(__t.clipEl(clipId))
+       const v = __t.clipEl(clipId), vr = __t.rect(v)
+       v.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: vr.left + 10, clientY: vr.top + 10 }))
+       const menu = await __t.until(() => __t.q('.context-menu'), 2000, 'the video’s menu')
+       const videoHas = [...menu.querySelectorAll('button')].some((b) => /Reroll/.test(b.textContent))
+       __t.key('Escape')
+       if (videoHas) throw new Error('the video clip offers Reroll voice')
+       await S.openProjectAt(window.__reroll.back)
+       await __t.until(async () => (await __t.snap()).dir === window.__reroll.back, 8000, 'the test project again')
+       return { label, take: after.takes[1].file.split('/').pop() }`,
+    )
+  } else console.log('[ui-check] skip Reroll: set STUDIO_CLAUDE_FAKE=1, STUDIO_ELEVEN_FAKE=1 and STUDIO_STEMS_FAKE=1 (the stand-ins; real Claude, ElevenLabs and the stems server are never called from tests)')
+
   // Import from CapCut, from a CapCut project made here (STUDIO_CAPCUT_DIR): the test clips with a
   // White Flash between them, a title with an outline, two caption lines, and a file that's gone.
   if (clips.length >= 2 && (!only || only.test('Import from CapCut'))) {

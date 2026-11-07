@@ -276,8 +276,9 @@ impl Engine {
         self.snapshot()
     }
 
-    /// Files are added as they are; folders are linked (see `link_or_sync`).
-    fn import(&self, paths: Vec<String>) -> Result<Value, RpcError> {
+    /// Files are added as they are; folders are linked (see `link_or_sync`). `step`: the undo
+    /// step's label and merge key, when the files are part of a bigger edit (a dub's new take).
+    fn import(&self, paths: Vec<String>, step: Option<(&str, &str)>) -> Result<Value, RpcError> {
         let _one_at_a_time = self.imports.lock().unwrap_or_else(|e| e.into_inner());
         let m = self.services()?;
         let (dirs, files): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| Path::new(p).is_dir());
@@ -299,7 +300,8 @@ impl Engine {
         }
         if !probed.is_empty() {
             let count = probed.len();
-            let added: Vec<Media> = self.edit_inner(&format!("Import {count} file{}", if count == 1 { "" } else { "s" }), |project| {
+            let label = step.map_or_else(|| format!("Import {count} file{}", if count == 1 { "" } else { "s" }), |(l, _)| l.to_string());
+            let added: Vec<Media> = self.edit_inner_merging(&label, step.map(|(_, merge)| merge), |project| {
                 Ok(probed
                     .into_iter()
                     .map(|mut media| {
@@ -739,6 +741,11 @@ fn us(params: &Value, key: &str) -> Option<Us> {
 fn strings(params: &Value, key: &str) -> Vec<String> {
     params.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default()
 }
+/// The merge key of an edit sent with `gesture`: edits that share one (whatever their command:
+/// captions set and drawn, a clip's file swapped with its captions) are one undo step.
+fn gesture(params: &Value) -> Option<String> {
+    params.get("gesture").and_then(Value::as_str).map(|g| format!("gesture {g}"))
+}
 fn io_err(e: std::io::Error) -> RpcError {
     RpcError::new(EDIT_FAILED, e.to_string())
 }
@@ -972,15 +979,13 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
             let track = params.get("trackId").and_then(Value::as_str).map(str::to_string);
             let above = params.get("aboveTrackId").and_then(Value::as_str).map(str::to_string);
             // Lines set at once and their drawings sent after (`captions.draw`) are one undo step.
-            let merge = params.get("gesture").and_then(Value::as_str).map(|g| format!("captions {g}"));
-            let (track, ids) = engine.edit_inner_merging("Captions", merge.as_deref(), |p| p.set_captions(track.as_deref(), above.as_deref(), lines, style))?;
+            let (track, ids) = engine.edit_inner_merging("Captions", gesture(&params).as_deref(), |p| p.set_captions(track.as_deref(), above.as_deref(), lines, style))?;
             engine.changed();
             Ok(json!({ "trackId": track, "clipIds": ids }))
         }
         "captions.draw" => {
             let drawings: Vec<CaptionDrawing> = field(&params, "drawings")?.unwrap_or_default();
-            let merge = params.get("gesture").and_then(Value::as_str).map(|g| format!("captions {g}"));
-            engine.edit_merging("Captions", merge.as_deref(), |p| Ok(p.set_caption_drawings(&drawings)))
+            engine.edit_merging("Captions", gesture(&params).as_deref(), |p| Ok(p.set_caption_drawings(&drawings)))
         }
         "audio.crossfade" => {
             let ids = strings(&params, "clipIds");
@@ -1035,7 +1040,12 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
         }
 
         // Media and timeline edits
-        "media.import" => engine.import(strings(&params, "paths")),
+        "media.import" => {
+            // With `gesture`: part of a bigger edit, one undo step with it (under `label`).
+            let merge = gesture(&params);
+            let label = params.get("label").and_then(Value::as_str).unwrap_or("Import");
+            engine.import(strings(&params, "paths"), merge.as_deref().map(|m| (label, m)))
+        }
         "media.syncFolder" => {
             let _one_at_a_time = engine.imports.lock().unwrap_or_else(|e| e.into_inner());
             let id = s(&params, "folderId")?;
@@ -1054,7 +1064,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
         "timeline.insert" => {
             let media_id = s(&params, "mediaId")?;
             let at = us(&params, "atUs");
-            let r = engine.edit("Add to timeline", |p| {
+            let r = engine.edit_merging("Add to timeline", gesture(&params).as_deref(), |p| {
                 let at = at.unwrap_or_else(|| p.duration_us());
                 p.insert(&media_id, at)
             })?;
@@ -1200,6 +1210,7 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
         "clip.replaceMedia" => {
             let (clip, media) = (s(&params, "clipId")?, s(&params, "mediaId")?);
             let label = params.get("label").and_then(Value::as_str).unwrap_or("Replace clip media").to_string();
+            let whole = params.get("whole").and_then(Value::as_bool).unwrap_or(false);
             // With `job`: the result of the work the clip is busy with, which ends its busy state.
             let r = match params.get("job").and_then(Value::as_str) {
                 Some(job) => {
@@ -1207,12 +1218,12 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
                     let r = {
                         let mut g = engine.doc.lock().unwrap();
                         let d = g.as_mut().ok_or_else(no_project)?;
-                        d.release(&actor(), &label, &clip, job, |p| p.replace_media(&clip, &media)).map_err(|e| RpcError::new(EDIT_FAILED, e.0))?
+                        d.release(&actor(), &label, &clip, job, |p| p.replace_media(&clip, &media, false)).map_err(|e| RpcError::new(EDIT_FAILED, e.0))?
                     };
                     engine.changed();
                     json!(r)
                 }
-                None => engine.edit(&label, |p| p.replace_media(&clip, &media))?,
+                None => engine.edit_merging(&label, gesture(&params).as_deref(), |p| p.replace_media(&clip, &media, whole))?,
             };
             engine.ensure_proxy(&media);
             Ok(r)
@@ -1788,6 +1799,43 @@ mod tests {
         assert_eq!(dispatch_on(&e, 1, "clip.release", json!({ "clipId": id, "job": "j2" })).unwrap()["released"], true);
         assert_eq!(dispatch_on(&e, 1, "history.list", Value::Null).unwrap()["steps"].as_array().unwrap().len(), steps);
         dispatch_on(&e, 1, "clip.set", json!({ "clipId": id, "scale": 150 })).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_sentence_said_again_takes_its_whole_length_and_one_undo_step_with_its_captions() {
+        let (e, dir) = engine("reroll");
+        dispatch(&e, "project.openLatest", Value::Null).unwrap();
+        let sound = |id: &str, secs: i64| Media { id: id.into(), path: format!("line-{id}.wav"), name: format!("line-{id}.wav"), kind: MediaKind::Audio, duration_us: secs * 1_000_000, has_audio: true, ..Default::default() };
+        let id = e
+            .edit_inner("Import", |p| {
+                p.media.extend([sound("m1", 2), sound("m2", 3), sound("m3", 1)]);
+                p.insert("m1", 1_000_000)
+            })
+            .unwrap();
+        dispatch(&e, "clip.set", json!({ "clipId": id, "volume": 0.5, "fadeInUs": 100_000 })).unwrap();
+        let clip = || e.snapshot()["project"]["tracks"].as_array().unwrap().iter().flat_map(|t| t["clips"].as_array().unwrap().clone()).find(|c| c["id"] == id).unwrap();
+        let captions = || e.snapshot()["project"]["tracks"].as_array().unwrap().iter().filter(|t| t["role"] == "captions").flat_map(|t| t["clips"].as_array().unwrap().clone()).map(|c| c["text"]["content"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>();
+        let steps = || dispatch(&e, "history.list", Value::Null).unwrap()["steps"].as_array().unwrap().len();
+        dispatch(&e, "captions.set", json!({ "lines": [{ "startUs": 1_000_000, "endUs": 3_000_000, "text": "old words", "png": "a.png" }], "style": {} })).unwrap();
+        let before = steps();
+
+        // A longer take: the whole of it plays, from the same place, with the clip's settings.
+        dispatch(&e, "clip.replaceMedia", json!({ "clipId": id, "mediaId": "m2", "whole": true, "gesture": "g1", "label": "Reroll voice" })).unwrap();
+        dispatch(&e, "captions.set", json!({ "trackId": e.snapshot()["project"]["tracks"].as_array().unwrap().iter().find(|t| t["role"] == "captions").unwrap()["id"], "lines": [{ "startUs": 1_000_000, "endUs": 4_000_000, "text": "new words", "png": "b.png" }], "style": {}, "gesture": "g1" })).unwrap();
+        assert_eq!((clip()["mediaId"].as_str(), clip()["startUs"].as_i64(), clip()["durationUs"].as_i64(), clip()["volume"].as_f64(), clip()["fadeInUs"].as_i64()), (Some("m2"), Some(1_000_000), Some(3_000_000), Some(0.5), Some(100_000)));
+        assert_eq!(captions(), ["new words"]);
+        assert_eq!(steps(), before + 1, "the swap and its captions are one step");
+        dispatch(&e, "edit.undo", Value::Null).unwrap();
+        assert_eq!((clip()["mediaId"].as_str(), clip()["durationUs"].as_i64()), (Some("m1"), Some(2_000_000)));
+        assert_eq!(captions(), ["old words"]);
+        dispatch(&e, "edit.redo", Value::Null).unwrap();
+
+        // A shorter take is shorter; without `whole` a clip keeps its length, at most the file's.
+        dispatch(&e, "clip.replaceMedia", json!({ "clipId": id, "mediaId": "m3", "whole": true, "gesture": "g2" })).unwrap();
+        assert_eq!(clip()["durationUs"].as_i64(), Some(1_000_000));
+        dispatch(&e, "clip.replaceMedia", json!({ "clipId": id, "mediaId": "m2" })).unwrap();
+        assert_eq!(clip()["durationUs"].as_i64(), Some(1_000_000));
         let _ = std::fs::remove_dir_all(dir);
     }
 

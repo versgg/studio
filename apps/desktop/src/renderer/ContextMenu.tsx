@@ -1,6 +1,6 @@
 // Right-click menus for timeline clips, empty timeline space and library items.
 
-import { cancelDub, openDub, retryDub } from './dub'
+import { cancelDub, dubbedLines, openDub, rerollClips, retryDub } from './dub'
 import { keysFor } from './keymap'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { changeVoice } from './audio'
@@ -79,6 +79,8 @@ export function clipMenu(): MenuEntry[] {
     return c && t > c.startUs && t < c.startUs + c.durationUs
   })
   const soundOnMain = one?.track.main && media?.kind === 'video' && media.hasAudio
+  // Sentences a voice dub spoke (each its own sound clip): Reroll voice says them again.
+  const dubbed = dubbedLines(s.snap, sel).reduce((n, d) => n + d.lineIds.length, 0)
   // Text is being removed from it: nothing else until that's done.
   const busy = one?.clip.busy
   if (busy && s.dubJobs[busy]) return [{ label: 'Show the dub', run: () => openDub({ mediaId: one!.clip.mediaId, clipId: one!.clip.id }) }, { label: 'Cancel dub', run: () => cancelDub(busy) }, ...(s.dubJobs[busy].needsClaude ? [{ label: 'Try again', run: () => void retryDub(busy) }] : [])]
@@ -106,6 +108,7 @@ export function clipMenu(): MenuEntry[] {
     ...(one && (media?.kind === 'audio' || (media?.hasAudio && !one.clip.detached))
       ? [{ label: s.voice ? `Change voice to ${s.voice.name}` : 'Change voice (choose a voice in Audio first)', run: () => s.voice && changeVoice({ mediaId: media!.id, clipId: one.clip.id }, s.voice), disabled: !s.voice || s.voice.category === 'library' }]
       : []),
+    ...(dubbed ? [{ label: dubbed === 1 ? 'Reroll voice' : `Reroll voice (${dubbed} sentences)`, run: () => void rerollClips(sel) }] : []),
     ...(sel.some(isCompound) ? [{ label: 'Break compound clip', keys: keysFor('breakCompound'), run: breakCompound }] : []),
     'sep',
     { label: `Export ${sel.length === 1 ? 'this clip' : `these ${sel.length} clips`}…`, run: exportSelection },

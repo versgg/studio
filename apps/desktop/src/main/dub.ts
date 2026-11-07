@@ -27,7 +27,7 @@
 import { BrowserWindow } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
-import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubText, type DubVoiceLine } from '../shared/dub'
+import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubTake, type DubText, type DubVoiceLine } from '../shared/dub'
 import { buildBase, measureLooks } from './dub-look'
 import { ClaudeSignedOut, langName, readTexts, translateSpeech, type SpeechText } from './dub-read'
 import { scanText } from './dub-scan'
@@ -434,26 +434,41 @@ async function dubVoice(job: DubJob, o: { part: string; partEnd: number; speech:
   patch(job, { ...(fs.existsSync(file('bed.m4a')) ? { bed: file('bed.m4a') } : {}) })
 }
 
+type VoiceFile = { voiceId: string; model: string; speed: number; lines: DubVoiceLine[] }
+
+const takeOf = (l: DubTake): DubTake => ({ file: l.file, dur: l.dur, tempo: l.tempo, text: l.text, words: l.words })
+
+/** The translation the dub keeps for each sentence (the review's, and the next take's words). */
+function keepWords(job: DubJob, words: Record<string, string>) {
+  const sf = path.join(job.dir, `speech-${job.lang}.json`)
+  if (!fs.existsSync(sf)) return
+  const s = readJson<{ lines: SpeechText[] }>(sf)
+  for (const x of s.lines) if (words[x.id] != null) x.translation = words[x.id]
+  fs.writeFileSync(sf, JSON.stringify(s, null, 1))
+}
+
 /**
- * Say it again: dubbed sentences with new words (`edits`, by sentence id), spoken by the same
- * voice with the same seed, together with the unchanged sentence before them so the voice runs
- * on as one performance; only the changed sentences are cut out and swapped in, each at its
- * place (a little faster, up to 12 %, if it no longer fits before the next). Returns them as
- * they'll play, for the page to put on the timeline.
+ * Reroll: dubbed sentences (`ids`) spoken again by the same voice as a new take (a new seed),
+ * with new words where `edits` has them, else their own, together with the sentence before
+ * them so the voice runs on as one performance (neighbouring ones are one take). Only those
+ * sentences are cut out, each at its place (a little faster, up to 12 %, if it no longer fits
+ * before the next). Every take is kept (`takes`), so an earlier one can be played again
+ * (`pickTake`) at no cost. Returns them as they'll play, for the page to swap in.
  */
-export async function respeak(id: string, edits: Record<string, string>): Promise<DubVoiceLine[]> {
+export async function reroll(id: string, ids: string[], edits: Record<string, string> = {}): Promise<DubVoiceLine[]> {
   const job = jobs.get(id)
   if (!job) throw new Error('That dub is gone.')
   if (!job.voiceId) throw new Error('This dub has no voice of its own to speak with.')
   const file = (f: string) => path.join(job.dir, f)
-  const voice = readJson<{ voiceId: string; model: string; speed: number; lines: DubVoiceLine[] }>(file('voice.json'))
+  const voice = readJson<VoiceFile>(file('voice.json'))
   const lines = voice.lines
-  const changed = lines.filter((l) => !l.own && edits[l.id] != null && edits[l.id].trim() && edits[l.id].trim() !== l.text.trim()).map((l) => l.id)
+  const words = (l: DubVoiceLine) => edits[l.id]?.trim() || l.text
+  const changed = lines.filter((l) => !l.own && ids.includes(l.id)).map((l) => l.id)
   if (!changed.length) return []
   const el = eleven()
   const tag = `r${Date.now().toString(36)}`
   const out: DubVoiceLine[] = []
-  // Runs of neighbouring changed sentences, each spoken with the sentence before it.
+  // Runs of neighbouring sentences, each spoken with the sentence before it.
   const runs: string[][] = []
   for (const cid of changed) {
     const i = lines.findIndex((l) => l.id === cid)
@@ -464,8 +479,10 @@ export async function respeak(id: string, edits: Record<string, string>): Promis
   for (const run of runs) {
     const first = lines.findIndex((l) => l.id === run[0])
     const before = lines.slice(0, first).reverse().find((l) => !l.own)
-    const script = [...(before ? [{ id: before.id, translation: before.text }] : []), ...run.map((rid) => ({ id: rid, translation: edits[rid].trim() }))]
-    const take = await speakTake(el, { voiceId: job.voiceId, lines: script, lang: job.lang, model: voice.model ?? VOICE_MODEL, seed: 4242, speed: voice.speed ?? 1, out: file(`take-${tag}-${run[0]}.mp3`) })
+    const script = [...(before ? [{ id: before.id, translation: before.text }] : []), ...run.map((rid) => ({ id: rid, translation: words(lines.find((l) => l.id === rid)!) }))]
+    // A new seed each time: the same words with the same seed come back as the same take.
+    const seed = Math.floor(Math.random() * 2 ** 32)
+    const take = await speakTake(el, { voiceId: job.voiceId, lines: script, lang: job.lang, model: voice.model ?? VOICE_MODEL, seed, speed: voice.speed ?? 1, out: file(`take-${tag}-${run[0]}.mp3`) })
     const cut = await cutTake(take, script.map((s) => s.id), job.dir, tag)
     for (const rid of run) {
       const c = cut.find((x) => x.id === rid)!
@@ -474,19 +491,30 @@ export async function respeak(id: string, edits: Record<string, string>): Promis
       const room = next ? next.at - old.at - 0.04 : job.spanUs / 1e6 - old.at
       const tempo = Math.min(1.12, Math.max(1, c.dur / Math.max(0.1, room)))
       const f = await retime(c.file, tempo, file(`line-${rid}-${tag}-fit.wav`))
-      const line: DubVoiceLine = { ...old, file: f, dur: c.dur / tempo, tempo, text: edits[rid].trim(), words: c.words.map((w) => ({ text: w.text, start: w.start / tempo, end: w.end / tempo })) }
-      Object.assign(old, line)
-      out.push(line)
+      const made: DubTake = { file: f, dur: c.dur / tempo, tempo, text: words(old), words: c.words.map((w) => ({ text: w.text, start: w.start / tempo, end: w.end / tempo })) }
+      const takes = [...(old.takes ?? [takeOf(old)]), made]
+      Object.assign(old, made, { takes, take: takes.length - 1 })
+      out.push({ ...old })
     }
   }
   fs.writeFileSync(file('voice.json'), JSON.stringify(voice, null, 1))
-  const sf = file(`speech-${job.lang}.json`)
-  if (fs.existsSync(sf)) {
-    const s = readJson<{ lines: SpeechText[] }>(sf)
-    for (const x of s.lines) if (changed.includes(x.id)) x.translation = edits[x.id].trim()
-    fs.writeFileSync(sf, JSON.stringify(s, null, 1))
-  }
+  keepWords(job, Object.fromEntries(out.map((l) => [l.id, l.text])))
   return out
+}
+
+/** An earlier take of a dubbed sentence played again: nothing is spoken, it was kept. */
+export function pickTake(id: string, lineId: string, index: number): DubVoiceLine {
+  const job = jobs.get(id)
+  if (!job) throw new Error('That dub is gone.')
+  const file = path.join(job.dir, 'voice.json')
+  const voice = readJson<VoiceFile>(file)
+  const line = voice.lines.find((l) => l.id === lineId)
+  const take = line?.takes?.[index]
+  if (!line || !take || !fs.existsSync(take.file)) throw new Error('That take is gone.')
+  Object.assign(line, takeOf(take), { take: index })
+  fs.writeFileSync(file, JSON.stringify(voice, null, 1))
+  keepWords(job, { [line.id]: line.text })
+  return line
 }
 
 /** The Dub tab's picks (and any translation changed there): the paid steps start. */

@@ -9,11 +9,12 @@ import './dub.css'
 import { useEffect, useMemo, useState } from 'react'
 import type { VmakeAccount } from '../shared/api'
 import { vmakeCheck, vmakeKnown } from './vmakeAccount'
-import { dubRunning, unchanged, type DubJob, type DubScan, type DubText, type DubVoice } from '../shared/dub'
+import { dubRunning, unchanged, type DubJob, type DubScan, type DubText, type DubVoice, type DubVoiceLine } from '../shared/dub'
 import { Buttons, Note, Sec, SegRow, SelectRow } from './InspectorBlocks'
 import { BusyBar } from './LibraryBlocks'
-import { LANG_NAMES, cancelDub, cleanFor, dubText, goDub, removeAgain, retryDub, sayAgain } from './dub'
-import { fileUrl, taskElapsed, toast, useStore, type Clip, type Media, type Task } from './store'
+import { LANG_NAMES, cancelDub, cleanFor, dubText, goDub, lineClip, pickLineTake, removeAgain, rerollLines, retryDub } from './dub'
+import { Icon } from './icons'
+import { call, fileUrl, mediaById, seek, taskElapsed, toast, useStore, type Clip, type Media, type Task } from './store'
 import { useUi } from './ui-state'
 
 const LANGS = ['sv', 'no', 'da', 'fi', 'de', 'en', 'nl', 'fr', 'es', 'it', 'pt', 'pl']
@@ -116,7 +117,7 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
       )}
       {last && last.state !== 'applied' && last.text && <Removal job={last} />}
       {last?.state === 'applied' && <Note>Dubbed into {LANG_NAMES[last.lang] ?? last.lang}: the new text and sound are on the timeline as their own clips.</Note>}
-      {last?.state === 'applied' && last.voice !== 'keep' && last.voiceId && <SayAgain key={last.id} job={last} />}
+      {last?.state === 'applied' && last.voice !== 'keep' && last.voiceId && <WhatSheSays key={last.id} job={last} />}
       <Sec title="Dub" first />
       <SelectRow label="Into" value={lang} options={LANGS.map((l) => [l, LANG_NAMES[l]] as [string, string])} onChange={setLang} />
       <SegRow label="On-screen text" value={onScreen} items={[['translate', 'Translate'], ['remove', 'Remove'], ['leave', 'Leave']]} onPick={(v) => setOnScreen(v as typeof onScreen)} />
@@ -156,38 +157,91 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
   )
 }
 
-/** After a voice dub: what's said, sentence by sentence, to change and have said again in the same voice. */
-function SayAgain({ job }: { job: DubJob }) {
-  const [lines, setLines] = useState<{ id: string; at: number; text: string }[] | null>(null)
+/**
+ * After a voice dub: what's said, sentence by sentence. ↻ rerolls one (a new take in the same
+ * voice, with your words if you changed them), ‹ › goes back to a take kept from before (free),
+ * ▶ plays it where it is on the timeline.
+ */
+function WhatSheSays({ job }: { job: DubJob }) {
+  const snap = useStore((s) => s.snap)
+  const [lines, setLines] = useState<DubVoiceLine[] | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    window.studio.services.dubResult(job.id).then((r) => !('error' in r) && setLines((r.voice?.lines ?? []).filter((l) => !l.own).map((l) => ({ id: l.id, at: l.at, text: l.text }))))
-  }, [job.id])
+  const [busy, setBusy] = useState<string[]>([])
+  const load = () => window.studio.services.dubResult(job.id).then((r) => void (!('error' in r) && setLines((r.voice?.lines ?? []).filter((l) => !l.own))))
+  useEffect(() => void load(), [job.id])
   if (!lines?.length) return null
-  const changed = lines.filter((l) => edits[l.id] != null && edits[l.id].trim() && edits[l.id].trim() !== l.text.trim())
-  const chars = changed.reduce((a, l) => a + edits[l.id].length, 0)
-  const go = async () => {
-    setBusy(true)
-    await sayAgain(job, Object.fromEntries(changed.map((l) => [l.id, edits[l.id]])))
-    const r = await window.studio.services.dubResult(job.id)
-    if (!('error' in r)) setLines((r.voice?.lines ?? []).filter((l) => !l.own).map((l) => ({ id: l.id, at: l.at, text: l.text })))
-    setEdits({})
-    setBusy(false)
+  // The take a sentence's clip plays now (Ctrl+Z can put an earlier one back), else the dub's record.
+  const playing = (l: DubVoiceLine) => {
+    const c = lineClip(snap, job, l)
+    const path = c && mediaById(snap, c.mediaId)?.path
+    const i = l.takes?.findIndex((t) => t.file === path) ?? -1
+    return i >= 0 ? i : (l.take ?? 0)
   }
+  const said = (l: DubVoiceLine) => l.takes?.[playing(l)]?.text ?? l.text
+  const words = (l: DubVoiceLine) => edits[l.id]?.trim() || said(l)
+  const changed = lines.filter((l) => edits[l.id]?.trim() && edits[l.id].trim() !== said(l).trim())
+  const settle = async (ids: string[], done: unknown) => {
+    if (done) setEdits((e) => Object.fromEntries(Object.entries(e).filter(([id]) => !ids.includes(id))))
+    await load()
+    setBusy([])
+  }
+  const reroll = async (ids: string[]) => {
+    setBusy(ids)
+    // Each sentence's words as the tab shows them: changed, or the take playing now.
+    await settle(ids, await rerollLines(job, ids, Object.fromEntries(ids.map((id) => [id, words(lines.find((l) => l.id === id)!)]))))
+  }
+  const pick = async (l: DubVoiceLine, take: number) => {
+    setBusy([l.id])
+    await settle([l.id], await pickLineTake(job, l.id, take))
+  }
+  const play = (l: DubVoiceLine) => {
+    const c = lineClip(snap, job, l)
+    if (!c) return toast('That sentence isn’t on the timeline any more.')
+    seek(c.startUs)
+    void call('playback.play', { fromUs: c.startUs })
+  }
+  const chars = (ls: DubVoiceLine[]) => ls.reduce((a, l) => a + words(l).length, 0)
   return (
     <>
       <Sec title="What she says" />
       <div className="dub-list">
-        {lines.map((l) => (
-          <div key={l.id} className={`dub-item line${edits[l.id] != null && edits[l.id] !== l.text ? ' on' : ''}`}>
-            <span className="dub-when">{time(l.at)}</span>
-            <textarea className="dub-edit" rows={2} value={edits[l.id] ?? l.text} disabled={busy} onChange={(e) => setEdits({ ...edits, [l.id]: e.target.value })} />
-          </div>
-        ))}
+        {lines.map((l) => {
+          const on = busy.includes(l.id)
+          const take = playing(l)
+          const count = l.takes?.length ?? 1
+          return (
+            <div key={l.id} className={`dub-item line${changed.includes(l) ? ' on' : ''}`} data-line={l.id}>
+              <span className="dub-when">{time(l.at)}</span>
+              <textarea className="dub-edit" rows={2} value={edits[l.id] ?? said(l)} disabled={busy.length > 0} onChange={(e) => setEdits({ ...edits, [l.id]: e.target.value })} />
+              <div className="dub-takes">
+                <button className="dub-btn icon" title="Play it on the timeline" aria-label="Play it on the timeline" onClick={() => play(l)}>
+                  <Icon name="play" size={12} />
+                </button>
+                <button className="dub-btn reroll" title={`Say it again in the same voice, as a new take${changed.includes(l) ? ', with your words' : ''} (about ${words(l).length} ElevenLabs characters, plus the sentence before)`} disabled={busy.length > 0} onClick={() => void reroll([l.id])}>
+                  <Icon name="refresh" size={12} />
+                  {on ? 'Rerolling…' : 'Reroll'}
+                </button>
+                {count > 1 && (
+                  <span className="dub-take">
+                    <button className="dub-btn icon" aria-label="The take before" title="The take before (kept, free)" disabled={busy.length > 0 || take === 0} onClick={() => void pick(l, take - 1)}>
+                      <Icon name="chevronRight" size={12} />
+                    </button>
+                    <span className="dub-take-n">Take {take + 1} of {count}</span>
+                    <button className="dub-btn icon" aria-label="The take after" title="The take after (kept, free)" disabled={busy.length > 0 || take === count - 1} onClick={() => void pick(l, take + 1)}>
+                      <Icon name="chevronRight" size={12} />
+                    </button>
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        })}
       </div>
-      <Note>Change a sentence and it’s said again in the same voice, spoken on from the sentence before so it sounds like one take, then swapped in where its clip is.{changed.length ? ` About ${chars} ElevenLabs characters, plus the sentence before.` : ''}</Note>
-      <Buttons items={[{ label: busy ? 'Saying it again…' : changed.length > 1 ? `Say ${changed.length} sentences again` : 'Say it again', onClick: () => void go(), disabled: busy || !changed.length }]} />
+      <Note>
+        Reroll says a sentence again in the same voice, a new take each time (with your words if you change them), spoken on from the sentence before so it flows, and swaps it in where its clip is; its captions follow. Every take is kept: ‹ › goes back to one you liked better, free. Ctrl+Z undoes it.
+        {changed.length > 1 ? ` The ${changed.length} changed sentences together: about ${chars(changed)} ElevenLabs characters.` : ''}
+      </Note>
+      {changed.length > 1 && <Buttons items={[{ label: busy.length ? 'Rerolling…' : `Reroll the ${changed.length} changed sentences`, onClick: () => void reroll(changed.map((l) => l.id)), disabled: busy.length > 0 }]} />}
     </>
   )
 }

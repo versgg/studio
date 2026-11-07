@@ -11,14 +11,14 @@
 // wide as the original's, drawn over the original's letter mask (dub-look.ts) and scored by how
 // well they cover it (an earlier dubbing tool's fontfit round 3).
 
-import type { DubJob, DubLook, DubScan, DubText, DubVoice } from '../shared/dub'
+import type { DubJob, DubLook, DubScan, DubText, DubVoice, DubVoiceLine } from '../shared/dub'
 import { dubRunning, unchanged } from '../shared/dub'
-import { cuesOf, placeCaptions } from './captions'
+import { cuesOf, placeCaptions, recaption } from './captions'
 import { FONTS } from './textFonts'
 import { loadFont } from './textFonts'
 import { layoutText, renderTextClip, type TextLook } from './textRender'
 import { getUi, setUi } from './ui-state'
-import { call, fileUrl, findClip, getState, mediaById, setState, subscribeStore as subscribe, toast, type Clip } from './store'
+import { call, fileUrl, findClip, getState, mediaById, setState, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
 
 const EMOJI = /\p{Extended_Pictographic}|‍|️/gu
 const noEmoji = (s: string) => s.replace(EMOJI, '').trim()
@@ -29,29 +29,112 @@ export function openDub(target: { mediaId: string; clipId: string }) {
   setUi('insp.tab', 'dub')
 }
 
-/**
- * Say it again: dubbed sentences with new words, spoken by the same voice (main: `respeak`), each
- * swapped in where its clip is now (so a sentence you've moved stays where you put it).
- */
-export async function sayAgain(job: DubJob, edits: Record<string, string>) {
-  const engine = window.studio.engine
-  const r = await window.studio.services.dubRespeak(job.id, edits)
-  if ('error' in r) return void toast(`Couldn’t say it again: ${r.error}`, 'error')
-  if (!r.length) return void toast('Nothing was changed.')
-  const video = findClip(getState().snap, job.clipId)?.clip
-  // Sentences said again one after another: each starts no sooner than a short pause after the last.
-  let lastEnd = -Infinity
-  for (const l of [...r].sort((a, b) => a.at - b.at)) {
-    const snap = getState().snap
-    const name = (p: string) => p.split(/[\\/]/).pop() ?? ''
-    const old = snap?.project.tracks.flatMap((t) => t.clips).find((c) => new RegExp(`^line-${l.id}([-.])`).test(name(mediaById(snap, c.mediaId)?.path ?? '')))
-    const at = Math.max(old ? old.startUs : (video?.startUs ?? 0) + Math.round((l.at * 1e6) / (video?.speed ?? 1)), lastEnd + 300_000)
-    if (old) await engine.call('timeline.delete', { clipIds: [old.id] })
-    const imp = await engine.call('media.import', { paths: [l.file] })
-    await engine.call('timeline.insert', { mediaId: imp.imported[0], atUs: at })
-    lastEnd = at + Math.round(l.dur * 1e6)
+const fileName = (p: string) => p.split(/[\\/]/).pop() ?? ''
+const folderOf = (p: string) => p.slice(0, Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')))
+/** A dub's sentence files: `line-L03.wav`, its rerolls `line-L03-r<tag>-fit.wav`. */
+const LINE_FILE = /^line-([A-Za-z0-9]+)[-.]/
+
+/** The timeline clip that plays a dubbed sentence: any take of it, else a file of the dub named for it. */
+export function lineClip(snap: Snapshot | null, job: DubJob, line: DubVoiceLine): Clip | undefined {
+  const takes = new Set([line.file, ...(line.takes ?? []).map((t) => t.file)])
+  const clips = snap?.project.tracks.flatMap((t) => t.clips) ?? []
+  const path = (c: Clip) => mediaById(snap, c.mediaId)?.path ?? ''
+  return clips.find((c) => takes.has(path(c))) ?? clips.find((c) => folderOf(path(c)) === job.dir && LINE_FILE.exec(fileName(path(c)))?.[1] === line.id)
+}
+
+/** The dubbed sentences among `clipIds` (sound clips a voice dub put on the timeline), by dub. */
+export function dubbedLines(snap: Snapshot | null, clipIds: string[]): { job: DubJob; lineIds: string[] }[] {
+  const jobs = Object.values(getState().dubJobs)
+  const out = new Map<string, { job: DubJob; lineIds: string[] }>()
+  for (const id of clipIds) {
+    const c = findClip(snap, id)?.clip
+    const path = (c && mediaById(snap, c.mediaId)?.path) ?? ''
+    const line = LINE_FILE.exec(fileName(path))?.[1]
+    const job = line && jobs.find((j) => j.dir === folderOf(path) && j.voiceId)
+    if (!job) continue
+    const entry = out.get(job.id) ?? { job, lineIds: [] }
+    if (!entry.lineIds.includes(line)) entry.lineIds.push(line)
+    out.set(job.id, entry)
   }
-  toast(`${r.length} sentence${r.length === 1 ? '' : 's'} said again in the same voice.${r.some((l) => l.tempo > 1.001) ? ' One runs a little faster to fit before the next.' : ''}`)
+  return [...out.values()]
+}
+
+/**
+ * Takes put where their sentences' clips are (a sentence you've moved stays where you put it),
+ * each clip taking its take's whole length, and the dub's captions there made again from the
+ * take's words: all one undo step. A sentence whose clip is gone goes back at its moment.
+ */
+async function swapIn(job: DubJob, lines: DubVoiceLine[], label: string) {
+  const engine = window.studio.engine
+  const gesture = `${label} ${job.id} ${Date.now().toString(36)}`
+  const imp = await engine.call('media.import', { paths: lines.map((l) => l.file), gesture, label })
+  if (imp.failed?.length || imp.imported?.length !== lines.length) throw new Error(imp.failed?.[0]?.error ?? 'the new take couldn’t be imported')
+  const snap = getState().snap
+  const video = findClip(snap, job.clipId)?.clip
+  const spans: { fromUs: number; toUs: number; words: { text: string; start: number; end: number }[] }[] = []
+  let lastEnd = -Infinity
+  for (const { l, mediaId } of lines.map((l, i) => ({ l, mediaId: imp.imported[i] as string })).sort((a, b) => a.l.at - b.l.at)) {
+    const old = lineClip(snap, job, l)
+    const speed = old?.speed ?? 1
+    // Sentences put back one after another: each starts no sooner than a short pause after the last.
+    const at = old ? old.startUs : Math.max((video?.startUs ?? 0) + Math.round((l.at * 1e6) / (video?.speed ?? 1)), lastEnd + 300_000)
+    if (old) await engine.call('clip.replaceMedia', { clipId: old.id, mediaId, whole: true, gesture, label })
+    else await engine.call('timeline.insert', { mediaId, atUs: at, gesture })
+    const dur = Math.round((l.dur * 1e6) / speed)
+    lastEnd = at + dur
+    const time = (s: number) => at + Math.round((s * 1e6) / speed)
+    spans.push({ fromUs: at, toUs: Math.max(lastEnd, old ? old.startUs + old.durationUs : 0), words: l.words.map((w) => ({ text: w.text, start: time(w.start), end: time(w.end) })) })
+  }
+  await recaption(job.lang, spans, gesture)
+}
+
+/**
+ * Reroll: dubbed sentences spoken again by the same voice as a new take (main: `reroll`; with
+ * `edits`' words where given, else their own), swapped in where their clips are.
+ */
+export async function rerollLines(job: DubJob, lineIds: string[], edits: Record<string, string> = {}): Promise<DubVoiceLine[] | undefined> {
+  const r = await window.studio.services.dubReroll(job.id, lineIds, edits)
+  if ('error' in r) return void toast(`Couldn’t reroll: ${r.error}`, 'error')
+  if (!r.length) return void toast('Nothing to reroll: only sentences the dub spoke can be said again.')
+  try {
+    await swapIn(job, r, 'Reroll voice')
+  } catch (e) {
+    return void toast(`Couldn’t put the new take in: ${(e as Error).message}`, 'error')
+  }
+  const faster = r.some((l) => l.tempo > 1.001) ? ' It runs a little faster to fit before the next.' : ''
+  toast(r.length === 1 ? `Take ${r[0].takes?.length ?? 2} of that sentence is in.${faster} The Dub tab keeps every take.` : `${r.length} sentences said again, as one take.${faster}`)
+  return r
+}
+
+/** Right-click › Reroll voice: the dubbed sentences among `clipIds`, each dub's as one reroll. */
+export async function rerollClips(clipIds: string[]) {
+  const snap = getState().snap
+  for (const { job, lineIds } of dubbedLines(snap, clipIds)) {
+    // Each with the words of the take its clip plays (Ctrl+Z may have put an earlier one back).
+    const r = await window.studio.services.dubResult(job.id)
+    const lines = 'error' in r ? [] : (r.voice?.lines ?? [])
+    const words: Record<string, string> = {}
+    for (const id of lineIds) {
+      const l = lines.find((x) => x.id === id)
+      const c = l && lineClip(snap, job, l)
+      const path = c && mediaById(snap, c.mediaId)?.path
+      const text = l?.takes?.find((t) => t.file === path)?.text ?? l?.text
+      if (text) words[id] = text
+    }
+    await rerollLines(job, lineIds, words)
+  }
+}
+
+/** An earlier take of a sentence played again (it was kept, so it's free), where its clip is. */
+export async function pickLineTake(job: DubJob, lineId: string, take: number): Promise<DubVoiceLine | undefined> {
+  const r = await window.studio.services.dubPickTake(job.id, lineId, take)
+  if ('error' in r) return void toast(`Couldn’t play that take: ${r.error}`, 'error')
+  try {
+    await swapIn(job, [r], `Take ${take + 1}`)
+  } catch (e) {
+    return void toast(`Couldn’t put that take in: ${(e as Error).message}`, 'error')
+  }
+  return r
 }
 
 /** The Dub tab's picks and changed translations: the paid steps start. */
@@ -213,7 +296,7 @@ function sameDir(a: string, b: string) {
 export function initDub() {
   window.studio.services.onDubJob(onDubJob)
   // For the UI check and for Claude driving the app: start a dub, fit a ready one's fonts.
-  Object.assign((window as unknown as { __studio: object }).__studio ?? {}, { dubText, fitDub, cancelDub, retryDub, sayAgain })
+  Object.assign((window as unknown as { __studio: object }).__studio ?? {}, { dubText, fitDub, cancelDub, retryDub, rerollLines, rerollClips, pickLineTake, dubbedLines })
   let jobsFor = ''
   subscribe(() => {
     const s = getState()

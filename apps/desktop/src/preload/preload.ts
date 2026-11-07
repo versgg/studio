@@ -86,7 +86,8 @@ const api: StudioApi = {
     dubCancel: (id) => ipcRenderer.invoke('dub:cancel', id),
     dubResult: (id) => ipcRenderer.invoke('dub:result', id),
     dubApplied: (id) => ipcRenderer.invoke('dub:applied', id),
-    dubRespeak: (id, edits) => ipcRenderer.invoke('dub:respeak', id, edits),
+    dubReroll: (id, lineIds, edits) => ipcRenderer.invoke('dub:reroll', id, lineIds, edits),
+    dubPickTake: (id, lineId, take) => ipcRenderer.invoke('dub:pickTake', id, lineId, take),
     dubFailed: (id, reason) => ipcRenderer.invoke('dub:failed', id, reason),
     onDubJob(cb) {
       const listener = (_e: unknown, job: DubJob) => cb(job)

@@ -102,7 +102,7 @@ export function captionSources(snap: Snapshot | null): [id: string, label: strin
 
 // Words to lines
 
-interface Word {
+export interface Word {
   text: string
   start: Us
   end: Us
@@ -527,6 +527,35 @@ export async function setCaptionLines(trackId: string, cues: Cue[], lang: string
   const look = { ...lookOf(info), preset: presetOf(info.style, lang, info.centerY) }
   const lines = await drawLines(cues.map((c) => (c.posX == null ? { ...c, ...placeOf(info.lines[0]) } : c)), look, info.centerY)
   return setLines(trackId, lines, look)
+}
+
+/**
+ * Stretches of a language's captions said again (a dub's sentence rerolled): on every row of
+ * the language, the lines whose middle is inside a stretch give way to its new words (times on
+ * the timeline), split as that row splits, in its look and where its first line sat. A stretch
+ * with no line of the language in it is left alone. `gesture` makes it one undo step with the
+ * sound swapped before it.
+ */
+export async function recaption(lang: string, spans: { fromUs: Us; toUs: Us; words: Word[] }[], gesture?: string) {
+  const rows = captionTracks(await latest()).filter((t) => t.lang === lang)
+  const within = (c: Clip, s: (typeof spans)[number]) => s.words.length > 0 && c.startUs + c.durationUs / 2 >= s.fromUs && c.startUs + c.durationUs / 2 < s.toUs
+  const inside = (c: Clip) => spans.some((s) => within(c, s))
+  const added = new Map<string, Drawable[]>()
+  for (const s of spans) {
+    const first = rows.flatMap((r) => r.lines.filter((c) => within(c, s)).map((c) => ({ c, r }))).sort((a, b) => a.c.startUs - b.c.startUs)[0]
+    if (!first) continue
+    const id = first.r.track.id
+    added.set(id, [...(added.get(id) ?? []), ...cuesOf(s.words, wordsPerCaptionOf(first.r)).map((c) => ({ ...c, ...placeOf(first.c) }))])
+  }
+  for (const r of rows) {
+    const add = added.get(r.track.id) ?? []
+    if (!add.length && !r.lines.some(inside)) continue
+    const cues = [...cuesFrom(r, true).filter((_, i) => !inside(r.lines[i])), ...add].sort((a, b) => a.startUs - b.startUs)
+    // A new line never runs into the one after it.
+    for (let i = 0; i < cues.length - 1; i++) cues[i].endUs = Math.min(cues[i].endUs, cues[i + 1].startUs)
+    const look = lookOf(r)
+    await setLines(r.track.id, await drawLines(cues, look, r.centerY, undefined, -1), look, undefined, gesture)
+  }
 }
 
 /** Words per caption the way a row was split: the usual number of words in its lines (0 for whole sentences). */
