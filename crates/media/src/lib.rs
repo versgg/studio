@@ -43,6 +43,11 @@ fn find_tool(name: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));
     }
+    // Started from the Dock or Finder (or by another app, as MCP clients start studio-mcp), a Mac
+    // gives launchd's short PATH: Homebrew's folders (Apple silicon, then Intel) are looked in too.
+    if cfg!(target_os = "macos") {
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    }
     dirs.into_iter().map(|d| d.join(&file)).find(|p| p.is_file())
 }
 

@@ -1,3 +1,5 @@
+// First: on a Mac, the PATH Terminal has, before the engine or any tool starts (shell-path.ts).
+import './shell-path'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
