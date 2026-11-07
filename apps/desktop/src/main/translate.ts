@@ -104,7 +104,7 @@ function place(from: string, to: string) {
 }
 
 /** The folder a project copy goes in: "Name.studio", else "Name 2.studio" and on. */
-function freeDir(parent: string, name: string) {
+export function freeDir(parent: string, name: string) {
   const clean = name.replace(/[<>:"/\\|?*]/g, '-').trim() || 'Untitled'
   for (let n = 1; ; n++) {
     const dir = path.join(parent, `${clean}${n > 1 ? ` ${n}` : ''}.studio`)
@@ -117,9 +117,12 @@ function freeDir(parent: string, name: string) {
  * folder pointing into the copy, each such file (and a voiceover's script and voice beside it)
  * copied or hard-linked there, and the caches hard-linked. Its history starts fresh.
  */
-export function copyProject(from: string, to: string, name: string) {
+/**
+ * Every path in `v` to a file inside the folder `from`, as the same file inside `to`: hard-linked
+ * (or copied) over there the first time, with a voiceover's script and voice beside it.
+ */
+export function relocate<T>(v: T, from: string, to: string): T {
   const inside = insideOf(from)
-  const p = readJson<Record<string, unknown>>(path.join(from, 'project.json'))
   const moved = (s: string) => path.join(to, path.relative(from, s))
   const walk = (v: unknown): unknown => {
     if (typeof v === 'string') {
@@ -135,8 +138,14 @@ export function copyProject(from: string, to: string, name: string) {
     if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]))
     return v
   }
+  return walk(v) as T
+}
+
+export function copyProject(from: string, to: string, name: string) {
+  const p = readJson<Record<string, unknown>>(path.join(from, 'project.json'))
+  const moved = (s: string) => path.join(to, path.relative(from, s))
   fs.mkdirSync(to, { recursive: true })
-  const copy = walk(p) as Record<string, unknown>
+  const copy = relocate(p, from, to)
   copy.name = name
   const cache = path.join(from, 'cache')
   const linkAll = (d: string) => {

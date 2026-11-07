@@ -66,7 +66,8 @@ export type DubLook = {
   maskRect: { x: number; y: number; w: number; h: number }
 }
 
-export type DubState = 'preparing' | 'scanning' | 'listening' | 'reading' | 'review' | 'removing' | 'voicing' | 'matching' | 'ready' | 'applied' | 'failed' | 'cancelled'
+/** `landed`: done, and put in a new project of its own (`landed`), where its copy is applied. */
+export type DubState = 'preparing' | 'scanning' | 'listening' | 'reading' | 'review' | 'removing' | 'voicing' | 'matching' | 'ready' | 'applied' | 'landed' | 'failed' | 'cancelled'
 
 /** What the new voice is: her own, cloned (an instant clone); another voice; or none (her voice stays). */
 export type DubVoice = 'clone' | 'voice' | 'keep'
@@ -114,6 +115,12 @@ export interface DubJob {
    * use (the dub, a Reroll) and made again from the sample kept in the dub's folder when needed.
    */
   keepClone?: boolean
+  /** Put on this project's own timeline (Claude, tests), not in a new project of its own. */
+  inPlace?: boolean
+  /** Done and put in a new project of its own: that project, its name, and the dub's copy there. */
+  landed?: { project: string; name: string; id: string }
+  /** This dub is the copy of one done in another project (`landed` there), which it came from. */
+  from?: { project: string; id: string }
   captions: boolean
   /** Vmake's removal model (vmake.ts MODELS), or 'skip'. */
   model: string
@@ -148,7 +155,7 @@ export interface DubJob {
   startedAt: number
 }
 
-export const dubRunning = (j: DubJob) => !['ready', 'applied', 'failed', 'cancelled'].includes(j.state)
+export const dubRunning = (j: DubJob) => !['ready', 'applied', 'landed', 'failed', 'cancelled'].includes(j.state)
 
 export type DubScan = {
   version: 1

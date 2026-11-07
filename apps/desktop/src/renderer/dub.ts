@@ -19,7 +19,7 @@ import { FONTS } from './textFonts'
 import { loadFont } from './textFonts'
 import { layoutText, renderTextClip, type TextLook } from './textRender'
 import { getUi, setUi } from './ui-state'
-import { call, fileUrl, findClip, getState, mediaById, setState, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
+import { call, fileUrl, findClip, getState, mediaById, openProjectAt, setState, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
 
 const EMOJI = /\p{Extended_Pictographic}|‍|️/gu
 const noEmoji = (s: string) => s.replace(EMOJI, '').trim()
@@ -167,7 +167,7 @@ export async function pickLineTake(job: DubJob, lineId: string, take: number): P
 export const goDub = (id: string, o: { texts: string[]; lines: string[]; edits?: Record<string, string> }) => window.studio.services.dubGo(id, o)
 
 /** Starts a dub of a clip; the clip is busy until it's on the timeline (or cancelled). */
-export type DubOptions = { lang: string; model: string; text: boolean; removeText?: boolean; voice: DubVoice; voiceId?: string; voiceName?: string; keepClone?: boolean; captions: boolean; review: boolean }
+export type DubOptions = { lang: string; model: string; text: boolean; removeText?: boolean; voice: DubVoice; voiceId?: string; voiceName?: string; keepClone?: boolean; inPlace?: boolean; captions: boolean; review: boolean }
 
 export async function dubText(target: { mediaId: string; clipId: string }, o: DubOptions | string, model?: string) {
   // (target, lang, model): the on-screen text only, everything dubbed (the UI check and Claude's old call).
@@ -286,7 +286,14 @@ function showTask(job: DubJob) {
 /** A dub changed (any project's): the open project's are shown, and a ready one goes on the timeline. */
 export function onDubJob(job: DubJob, loading = false) {
   const s = getState()
-  if (!s.snap || !sameDir(job.project, s.snap.dir)) return
+  if (!s.snap || !sameDir(job.project, s.snap.dir)) {
+    // Done while its project isn't open: said once (its new project is in Home).
+    if (job.state === 'landed' && job.landed && !loading && !told.has(`${job.id}:end`)) {
+      told.add(`${job.id}:end`)
+      toast(`The ${LANG_NAMES[job.lang] ?? job.lang} dub of ${job.name} is done, in its own project: ${job.landed.name} (Home).`)
+    }
+    return
+  }
   setState({ dubJobs: { ...getState().dubJobs, [job.id]: job } })
   showTask(job)
   // One that stopped before this session is only offered again (Dub text… on its clip), not announced.
@@ -297,7 +304,20 @@ export function onDubJob(job: DubJob, loading = false) {
   }
   if (dubRunning(job) || job.state === 'ready') void holdClip(job)
   if (job.state === 'ready') void applyDub(job)
+  else if (job.state === 'landed') void landedDub(job, loading)
   else if (job.state === 'failed' || job.state === 'cancelled') void freeClip(job)
+}
+
+/**
+ * A dub done in its own new project (main/dub.ts `land`): this project's clip is free and as it
+ * was, and the new project opens here, where the dub goes on its timeline (the user's rule).
+ */
+async function landedDub(job: DubJob, loading: boolean) {
+  const c = findClip(getState().snap, job.clipId)?.clip
+  if (c?.busy === job.id) await call('clip.release', { clipId: c.id, job: job.id })
+  if (loading || !job.landed || told.has(`${job.id}:end`)) return
+  told.add(`${job.id}:end`)
+  await openProjectAt(job.landed.project)
 }
 
 /** A dub still going keeps its clip busy (its mark may have been taken off while the project was closed). */
@@ -655,7 +675,7 @@ async function applyDub(job: DubJob) {
     const dubbed = voice.filter((l) => !l.own).length
     toast(
       [ready.length ? `${ready.length} text${ready.length === 1 ? '' : 's'}` : '', job.removeText && job.base ? 'on-screen text removed' : '', dubbed ? `${dubbed} sentence${dubbed === 1 ? '' : 's'}` : '', job.captions ? 'captions' : ''].filter(Boolean).join(', ').replace(/^./, (c) => c.toUpperCase()) +
-        ` in ${lang}. Each is its own clip you can change; Ctrl+Z takes them off.${job.notes?.length ? ` Note: ${job.notes.join(' ')}` : ''}`,
+        ` in ${lang}${job.from ? ', in this new project (the original is as it was)' : ''}. Each is its own clip you can change; Ctrl+Z takes them off.${job.notes?.length ? ` Note: ${job.notes.join(' ')}` : ''}`,
     )
   } catch (e) {
     // Ends failed (the main process tells us, and the clip is freed then); Try again puts it on again.

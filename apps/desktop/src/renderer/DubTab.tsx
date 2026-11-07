@@ -15,7 +15,7 @@ import { Buttons, Note, Sec, SegRow, SelectRow } from './InspectorBlocks'
 import { BusyBar } from './LibraryBlocks'
 import { LANG_NAMES, cancelDub, cleanFor, dubOf, dubText, goDub, lineClip, pickLineTake, removeAgain, rerollLines, retryDub } from './dub'
 import { Icon } from './icons'
-import { call, fileUrl, mediaById, seek, taskElapsed, toast, useStore, type Clip, type Media, type Task } from './store'
+import { call, fileUrl, mediaById, openProjectAt, seek, taskElapsed, toast, useStore, type Clip, type Media, type Task } from './store'
 import { useUi } from './ui-state'
 
 const LANGS = ['sv', 'no', 'da', 'fi', 'de', 'en', 'nl', 'fr', 'es', 'it', 'pt', 'pl']
@@ -144,7 +144,13 @@ function Setup({ clip, media, last, onAgain }: { clip: Clip; media?: Media; last
           <Buttons items={[{ label: 'Try again', onClick: again, title: changed.length ? 'Carries on from where it stopped with what’s set below, keeping what still holds' : 'Carries on from where it stopped, keeping what it found and translated' }]} />
         </div>
       )}
-      {last && last.state !== 'applied' && last.text && <Removal job={last} />}
+      {last && last.state !== 'applied' && last.state !== 'landed' && last.text && <Removal job={last} />}
+      {last?.state === 'landed' && last.landed && (
+        <>
+          <Note>Dubbed into {LANG_NAMES[last.lang] ?? last.lang} in its own project, {last.landed.name}. This clip is as it was.</Note>
+          <Buttons items={[{ label: `Open ${last.landed.name}`, onClick: () => void openProjectAt(last.landed!.project) }]} />
+        </>
+      )}
       {last?.state === 'applied' && <Note>Dubbed into {LANG_NAMES[last.lang] ?? last.lang}: the new text and sound are on the timeline as their own clips.</Note>}
       {last?.state === 'applied' && last.voice !== 'keep' && (last.voiceId || last.voice === 'clone') && <WhatSheSays key={last.id} job={last} />}
       {last?.state === 'applied' && last.voice === 'clone' && <HerClone job={last} />}

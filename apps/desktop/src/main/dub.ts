@@ -40,6 +40,8 @@ import { ffmpeg, probeVideo } from './ffmpeg'
 import { getSecret } from './secrets'
 import * as stems from './stems'
 import * as vmakeJobs from './vmake-jobs'
+import { trProjectName } from '../shared/translate'
+import { copyProject, freeDir, relocate } from './translate'
 
 const jobs = new Map<string, DubJob>()
 const live = new Map<string, AbortController>()
@@ -67,7 +69,7 @@ const safeName = (s: string) => s.replace(/[<>:"/\\|?*\x00-\x1f]+/g, ' ').replac
 const readJson = <T>(f: string): T => JSON.parse(fs.readFileSync(f, 'utf8'))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export type DubStart = Pick<DubJob, 'project' | 'clipId' | 'mediaId' | 'name' | 'source' | 'inUs' | 'spanUs' | 'lang' | 'model' | 'text' | 'removeText' | 'voice' | 'voiceId' | 'voiceName' | 'keepClone' | 'captions' | 'review'>
+export type DubStart = Pick<DubJob, 'project' | 'clipId' | 'mediaId' | 'name' | 'source' | 'inUs' | 'spanUs' | 'lang' | 'model' | 'text' | 'removeText' | 'voice' | 'voiceId' | 'voiceName' | 'keepClone' | 'inPlace' | 'captions' | 'review'>
 
 /** A new dub of a clip, started at once. */
 export function start(o: DubStart): DubJob {
@@ -317,12 +319,67 @@ async function run(job: DubJob, again = false) {
       if (gone()) return
       patch(job, { base, redraw })
     }
-    patch(job, { state: 'ready', stage: 'Ready to go on the timeline', fraction: 0.97, notes: [...(job.notes ?? []), ...notes] })
+    patch(job, { notes: [...(job.notes ?? []), ...notes] })
+    // The user's rule: a finished dub opens as a new project of its own; the original stays as it was.
+    if (!job.inPlace && !job.from) land(job)
+    else patch(job, { state: 'ready', stage: 'Ready to go on the timeline', fraction: 0.97 })
   } catch (e) {
     if (jobs.get(job.id) === job && !signal.aborted) patch(job, { state: 'failed', stage: 'Failed', reason: (e as Error).message })
   } finally {
     if (live.get(job.id) === stop) live.delete(job.id)
   }
+}
+
+/**
+ * The user's rule (2026-11-07): "after you have dubbed a normal video … it opens from that same
+ * Studio session into a new Studio project as dubbed". A finished dub becomes a new project,
+ * "<project> · <language>": a copy of the project as it is now, with the dub's folder copied in
+ * (hard links) and every path in it pointed there, Vmake's clean copy too, so the new project
+ * stands on its own (deleting the original takes nothing from it). The dub's copy there (`from`)
+ * is ready, and the page puts it on that project's timeline when it opens it; Reroll, What she
+ * says, Her clone and translations work there. This dub becomes a record (`landed`): its clean
+ * copy stays this project's, so a dub of the same clip into another language never pays Vmake again.
+ */
+function land(job: DubJob) {
+  patch(job, { state: 'matching', stage: 'Making its own project', fraction: 0.98 })
+  const own = readJson<{ name?: string }>(path.join(job.project, 'project.json')).name
+  const name = trProjectName(own || path.basename(job.project).replace(/\.studio$/i, ''), job.lang)
+  const to = freeDir(path.dirname(job.project), name)
+  copyProject(job.project, to, name)
+  const id = `${job.id}${job.lang}`
+  const dir = path.join(to, 'dubs', path.basename(job.dir))
+  // Every file of the dub, then its records pointed at the new folder (and the clean copy).
+  const linkAll = (from: string, into: string) => {
+    fs.mkdirSync(into, { recursive: true })
+    for (const e of fs.readdirSync(from, { withFileTypes: true })) {
+      const f = path.join(from, e.name)
+      const t = path.join(into, e.name)
+      if (e.isDirectory()) linkAll(f, t)
+      else if (!fs.existsSync(t))
+        try {
+          fs.linkSync(f, t)
+        } catch {
+          fs.copyFileSync(f, t)
+        }
+    }
+  }
+  linkAll(job.dir, dir)
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.json') && x !== 'job.json')) {
+    const p = path.join(dir, f)
+    fs.writeFileSync(p, JSON.stringify(relocate(readJson<unknown>(p), job.project, to), null, 1))
+  }
+  const { vmakeJob: _removal, landed: _landed, ...rest } = relocate(job, job.project, to)
+  const copy: DubJob = { ...rest, id, project: to, dir, state: 'ready', stage: 'Ready to go on the timeline', fraction: 0.97, from: { project: job.project, id: job.id } }
+  // Its clip in the new project is the copy's while it's put on the timeline.
+  const pj = path.join(to, 'project.json')
+  const mark = (v: unknown): unknown => (Array.isArray(v) ? v.map(mark) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === 'busy' && x === job.id ? id : mark(x)])) : v)
+  fs.writeFileSync(pj + '.tmp', JSON.stringify(mark(readJson<unknown>(pj)), null, 2))
+  fs.renameSync(pj + '.tmp', pj)
+  jobs.set(id, copy)
+  save(copy)
+  send(copy)
+  // Her clone (if kept) goes with the dub: this record holds none.
+  patch(job, { state: 'landed', stage: `In its own project, ${name}`, fraction: 1, landed: { project: to, name, id }, ...(job.voice === 'clone' ? { voiceId: undefined } : {}) })
 }
 
 /** Waits for the dub's removal to bring its clean copy (false if the dub stopped meanwhile). */
@@ -725,7 +782,7 @@ export function summary(projects: string[]): Record<string, DubJob[]> {
   for (const p of projects) {
     const latest = new Map<string, DubJob>()
     for (const j of list(p)) if (!latest.has(j.clipId) || latest.get(j.clipId)!.startedAt < j.startedAt) latest.set(j.clipId, j)
-    const open = [...latest.values()].filter((j) => j.state !== 'applied' && j.state !== 'cancelled')
+    const open = [...latest.values()].filter((j) => j.state !== 'applied' && j.state !== 'landed' && j.state !== 'cancelled')
     if (open.length) out[p] = open
   }
   return out

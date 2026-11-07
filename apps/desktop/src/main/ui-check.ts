@@ -2620,7 +2620,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab')).click()
        const seen = []
        const off = window.studio.services.onDubJob((j) => seen.push([j.id, j.state, !!j.vmakeJob]))
-       await S.dubText({ mediaId, clipId: clip.id }, { lang: 'da', model: 'pro', text: true, voice: 'keep', captions: false, review: true })
+       await S.dubText({ mediaId, clipId: clip.id }, { lang: 'da', model: 'pro', text: true, voice: 'keep', captions: false, review: true, inPlace: true })
        const id = await __t.until(() => Object.values(st().dubJobs).find((j) => j.clipId === clip.id)?.id, 5000, 'the dub')
        const line = await __t.until(() => __t.q('.inspector .dub-removal')?.textContent, 8000, 'the Dub tab’s Vmake line while the dub works')
        const job = await __t.until(() => st().dubJobs[id]?.state === 'review' && st().dubJobs[id], 60000, 'the review')
@@ -2650,7 +2650,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await __t.until(async () => { const c = __t.main(await __t.snap()).find((x) => x.id === clipId); return c && !c.busy }, 5000, 'the clip freed')
        // The Dub tab says it carries on, and a new dub (Norwegian) uses it.
        const setup = await __t.until(() => __t.q('.inspector .dub-removal')?.textContent, 5000, 'the Vmake line after cancelling')
-       await S.dubText({ mediaId, clipId }, { lang: 'no', model: 'pro', text: true, voice: 'keep', captions: false, review: true })
+       await S.dubText({ mediaId, clipId }, { lang: 'no', model: 'pro', text: true, voice: 'keep', captions: false, review: true, inPlace: true })
        const second = await __t.until(() => Object.values(st().dubJobs).find((j) => j.clipId === clipId && j.lang === 'no' && j.vmakeJob), 10000, 'the Norwegian dub to take a removal')
        if (second.vmakeJob !== first.vmakeJob) throw new Error('a second Vmake job was started')
        const removals = (await window.studio.services.vmakeJobs(dir)).filter((j) => j.dub)
@@ -2716,6 +2716,13 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        off()
        if (job.state !== 'applied') throw new Error('it ' + job.state + ': ' + job.reason)
        if (!job.removeText) throw new Error('the tab didn’t ask for Remove')
+       // In a new project of its own, opened here, that holds everything it plays.
+       const landed = await __t.snap()
+       if (landed.dir === dir || !job.from || job.from.project !== dir) throw new Error('it was dubbed in ' + landed.dir + ', from ' + JSON.stringify(job.from))
+       if (!/ · /.test(landed.project.name ?? '')) throw new Error('the new project is called ' + landed.project.name)
+       const within = (p) => (p ?? '').startsWith(landed.dir + '/') || (p ?? '').startsWith(landed.dir + '\\\\')
+       if (!within(job.dir) || !within(job.clean) || !within(job.base)) throw new Error('it plays files of the original: ' + JSON.stringify({ dir: job.dir, clean: job.clean, base: job.base }))
+       window.__dub.landed = landed.dir
        if (seen.some((x) => ['scanning', 'reading', 'review'].includes(x))) throw new Error('it read the text or asked for picks: ' + seen.join(', '))
        if (await window.studio.files.exists(job.dir + '/scan.json')) throw new Error('it looked for the text')
        const s = await __t.snap()
@@ -2737,9 +2744,21 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await window.studio.engine.call('edit.undo')
        await window.studio.services.clearKey('vmake')
        window.dispatchEvent(new Event('studio-keys'))
+       // The original: its clip as it was (its own picture, free), and its Dub tab says where the dub went.
+       await S.openProjectAt(dir)
+       await __t.until(async () => (await __t.snap()).dir === dir, 8000, 'the original project')
+       const o = await __t.snap()
+       const orig = __t.main(o).find((c) => c.id === removeClip)
+       const origPlays = o.project.media.find((m) => m.id === orig?.mediaId)?.name ?? ''
+       if (!orig || orig.busy || /\\(no text\\)/.test(origPlays)) throw new Error('the original clip: ' + JSON.stringify({ busy: orig?.busy, plays: origPlays }))
+       await __t.until(() => __t.clipEl(removeClip), 3000, 'the original clip')
+       __t.click(__t.clipEl(removeClip))
+       ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'its Dub tab')).click()
+       const there = await __t.until(() => __t.qa('.inspector .insp-note').map((n) => n.textContent).find((t) => /in its own project/.test(t)), 3000, 'where the dub went')
+       if (!__t.qa('.inspector button').some((b) => b.textContent === 'Open ' + landed.project.name)) throw new Error('no button to open ' + landed.project.name)
        await S.openProjectAt(back)
        await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
-       return { states: seen.filter((x, i, a) => x !== a[i - 1]), plays: plays.split(/[\\\\/]/).pop(), piece: pieceSays }`,
+       return { states: seen.filter((x, i, a) => x !== a[i - 1]), project: landed.project.name, plays: plays.split(/[\\\\/]/).pop(), piece: pieceSays, original: there }`,
     )
     const dubTab = `const seg = (label) => __t.until(() => __t.q('.inspector [role="group"][aria-label="' + label + '"]'), 3000, 'the ' + label + ' choices')
        const pick = async (label, choice) => { const b = [...(await seg(label)).querySelectorAll('button')].find((x) => x.textContent === choice); if (!b) throw new Error('no ' + choice + ' under ' + label); b.click(); await __t.sleep(120) }
@@ -2753,8 +2772,10 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const land = async (clipId, known) => {
          const st = () => window.__studio.getState()
          const job = await __t.until(() => Object.values(st().dubJobs).find((j) => j.clipId === clipId && !known.has(j.id) && ['review', 'applied', 'failed'].includes(j.state)), 60000, 'the review')
+         if (job.state === 'applied') return job
          if (job.state === 'review') await window.studio.services.dubGo(job.id, { texts: (await window.studio.services.dubResult(job.id)).texts.filter((t) => t.kind === 'edit').map((t) => t.id), lines: [] })
-         const done = await __t.until(() => ['applied', 'failed'].includes(st().dubJobs[job.id]?.state) && st().dubJobs[job.id], 60000, 'the dub on the timeline')
+         // It lands in a project of its own, which opens here: its copy there is the one applied.
+         const done = await __t.until(() => (st().dubJobs[job.id]?.state === 'failed' && st().dubJobs[job.id]) || Object.values(st().dubJobs).find((j) => j.clipId === clipId && !known.has(j.id) && j.id !== job.id && ['applied', 'failed'].includes(j.state)), 60000, 'the dub in its own project')
          if (done.state !== 'applied') throw new Error('the dub ' + done.state + ': ' + done.reason)
          return done
        }`
@@ -2762,9 +2783,11 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
       'Dub: Translate on a clip that plays an earlier dub’s clean copy, with Vmake None, dubs it from the original and uses that copy at no cost',
       `${dubTab}
        const S = window.__studio
-       const { back, dir, removeClip } = window.__dub
+       const { back, removeClip } = window.__dub
+       // The Remove dub's own project, where the clip plays Vmake's clean copy.
+       const dir = window.__dub.landed
        await S.openProjectAt(dir)
-       await __t.until(async () => (await __t.snap()).dir === dir, 8000, 'the dub project')
+       await __t.until(async () => (await __t.snap()).dir === dir, 8000, 'the Remove dub’s project')
        let s = await __t.snap()
        const plays = s.project.media.find((m) => m.id === __t.main(s).find((x) => x.id === removeClip).mediaId)
        if (!/\\(no text\\)/.test(plays.name)) throw new Error('the clip plays ' + plays.name + ', not the clean copy')
@@ -2774,11 +2797,12 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await pick('Vmake', 'None')
        const note = await __t.until(() => __t.qa('.inspector .insp-note').map((n) => n.textContent).find((t) => /already took this clip’s text out/.test(t)), 3000, 'the note that the clean copy is used again')
        const done = await land(removeClip, await find())
-       if (!/dub-text\\.mp4$/.test(done.source) || done.clean !== plays.path || !done.redraw) throw new Error('the dub: ' + JSON.stringify({ source: done.source, clean: done.clean, redraw: done.redraw }))
+       const base = (p) => (p ?? '').split(/[\\\\/]/).pop()
+       if (!/dub-text\\.mp4$/.test(done.source) || base(done.clean) !== base(plays.path) || !done.redraw) throw new Error('the dub: ' + JSON.stringify({ source: done.source, clean: done.clean, redraw: done.redraw }))
        s = await __t.snap()
        const words = s.project.tracks.flatMap((t) => t.clips).filter((c) => c.text).map((c) => c.text.content)
        if (words.length !== before + 1 || !words.some((w) => /^[A-Z]{2}: Only 9 days left/.test(w))) throw new Error('the text clips: ' + words.join(' | '))
-       if (s.project.media.find((m) => m.id === __t.main(s).find((x) => x.id === removeClip).mediaId)?.path !== plays.path) throw new Error('the clip no longer plays the clean copy')
+       if (base(s.project.media.find((m) => m.id === __t.main(s).find((x) => x.id === removeClip).mediaId)?.path) !== base(plays.path)) throw new Error('the clip no longer plays the clean copy')
        if ((await window.studio.services.vmakeJobs(dir)).some((j) => j.dub)) throw new Error('a Vmake job was started')
        await S.openProjectAt(back)
        await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
@@ -3164,7 +3188,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const dubOnce = async (label) => {
          const known = new Set(Object.keys(st().dubJobs))
          const clip = __t.main(await __t.snap())[0]
-         await S.dubText({ mediaId: clip.mediaId, clipId: clip.id }, { lang: 'da', model: 'skip', text: false, voice: 'clone', captions: false, review: false })
+         await S.dubText({ mediaId: clip.mediaId, clipId: clip.id }, { lang: 'da', model: 'skip', text: false, voice: 'clone', captions: false, review: false, inPlace: true })
          const dub = await __t.until(() => Object.values(st().dubJobs).find((j) => !known.has(j.id) && j.clipId === clip.id)?.id, 5000, 'the dub')
          await __t.until(() => ['applied', 'failed'].includes(st().dubJobs[dub]?.state), 90000, label)
          return { clip, job: st().dubJobs[dub], result: await window.studio.services.dubResult(dub) }
@@ -3255,7 +3279,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await __t.until(async () => !(await __t.snap()).processing.length, 30000, 'the clip to be read')
        await window.studio.engine.call('timeline.insert', { mediaId })
        const clip = __t.main(await __t.snap()).find((c) => c.mediaId === mediaId)
-       await S.dubText({ mediaId, clipId: clip.id }, { lang: 'da', model: 'skip', text: false, voice: 'clone', captions: true, review: false })
+       await S.dubText({ mediaId, clipId: clip.id }, { lang: 'da', model: 'skip', text: false, voice: 'clone', captions: true, review: false, inPlace: true })
        const dub = await __t.until(() => Object.values(st().dubJobs).find((j) => j.clipId === clip.id)?.id, 5000, 'the dub')
        await __t.until(() => st().dubJobs[dub]?.state === 'applied' || (st().dubJobs[dub]?.state === 'failed' && Promise.reject(new Error(st().dubJobs[dub].reason))), 90000, 'the dub on the timeline')
        window.__reroll = { back, id: dub, clipId: clip.id }
@@ -3427,6 +3451,53 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     if (her?.ok && elevenTest.live() !== 0) {
       Object.assign(her, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account` })
       console.log(`[ui-check] FAIL ${herClone}: ${elevenTest.live()} clone(s) left in the account`)
+    }
+    // The user's rule: a dub opens as a new project of its own, where it's edited; the original stays.
+    const landsVoice = 'Dub: a voice dub opens as its own new project (the original as it was), and its sentences reroll there'
+    await step(
+      landsVoice,
+      `const S = window.__studio, st = () => S.getState()
+       const back = (await __t.snap()).dir
+       await S.newProject('Land voice', '9:16')
+       await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+       const from = (await __t.snap()).dir
+       const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(dubVoice)}] })
+       await __t.until(async () => !(await __t.snap()).processing.length, 30000, 'the clip to be read')
+       await window.studio.engine.call('timeline.insert', { mediaId: r.imported[0] })
+       const clip = __t.main(await __t.snap())[0]
+       await S.dubText({ mediaId: clip.mediaId, clipId: clip.id }, { lang: 'sv', model: 'skip', text: false, voice: 'clone', captions: true, review: false })
+       const done = await __t.until(async () => (await __t.snap()).dir !== from && Object.values(st().dubJobs).find((j) => j.clipId === clip.id && j.state === 'applied'), 90000, 'the dub in its own project')
+       const here = await __t.snap()
+       if (here.project.name !== 'Land voice · Svenska') throw new Error('the new project is called ' + here.project.name)
+       const said = async () => (await window.studio.services.dubResult(done.id)).voice.lines.filter((l) => !l.own)
+       const lines = await said()
+       const inside = (f) => f.startsWith(here.dir + '/') || f.startsWith(here.dir + '\\\\')
+       if (!lines.length || !lines.every((l) => inside(l.file))) throw new Error('its sentences play files of the original: ' + lines.map((l) => l.file).join(', '))
+       if (!here.project.tracks.some((t) => t.role === 'captions' && t.clips.length)) throw new Error('no captions')
+       // What she says, and a Reroll, in the new project.
+       await __t.until(() => __t.clipEl(clip.id), 3000, 'the clip')
+       __t.click(__t.clipEl(clip.id))
+       ;(await __t.until(() => __t.qa('.insp-tabs button').find((b) => b.textContent.trim() === 'Dub'), 3000, 'the Dub tab')).click()
+       const row = (l) => __t.q('.inspector .dub-item.line[data-line="' + l.id + '"]')
+       await __t.until(() => lines.every((l) => row(l)), 3000, 'What she says')
+       ;(await __t.until(() => { const b = row(lines[0])?.querySelector('.dub-btn.reroll'); return b && !b.disabled && b }, 3000, 'Reroll')).click()
+       await __t.until(async () => ((await said()).find((l) => l.id === lines[0].id).takes?.length ?? 1) === 2, 20000, 'a new take')
+       await __t.until(() => { const b = row(lines[0])?.querySelector('.dub-btn.reroll'); return b && !b.disabled }, 10000, 'the reroll to finish')
+       const take = (await said()).find((l) => l.id === lines[0].id).file
+       if (!inside(take)) throw new Error('the new take is outside the new project: ' + take)
+       // The original: its clip as it was, its own sound on, free.
+       await S.openProjectAt(from)
+       await __t.until(async () => (await __t.snap()).dir === from, 8000, 'the original')
+       const o = __t.main(await __t.snap())[0]
+       if (o.busy || o.detached) throw new Error('the original clip changed: ' + JSON.stringify({ busy: o.busy, detached: o.detached }))
+       await S.openProjectAt(back)
+       await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+       return { project: here.project.name, take: take.split(/[\\\\/]/).pop() }`,
+    )
+    const lv = results.find((x) => x.step === landsVoice)
+    if (lv?.ok && elevenTest.live() !== 0) {
+      Object.assign(lv, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account` })
+      console.log(`[ui-check] FAIL ${landsVoice}: ${elevenTest.live()} clone(s) left in the account`)
     }
   } else console.log('[ui-check] skip Reroll: set STUDIO_CLAUDE_FAKE=1, STUDIO_ELEVEN_FAKE=1 and STUDIO_STEMS_FAKE=1 (the stand-ins; real Claude, ElevenLabs and the stems server are never called from tests)')
 
