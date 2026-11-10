@@ -15,6 +15,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { CcAnim, CcClip, CcDraft, CcFilter, CcKeys, CcPlace, CcProject, CcSticker, CcStyle, CcText, CcTrack } from '../shared/capcut'
+import { findCapcutRoot, timelineOf, userDataDirs } from './capcut-find'
 import { ffmpeg } from './ffmpeg'
 
 /** The folder chosen in From CapCut (CapCut isn't on Linux; its projects can be a copy anywhere), kept in the app's settings. */
@@ -28,13 +29,19 @@ function chosenRoot(): string | null {
   }
 }
 
-/** CapCut's projects folder: STUDIO_CAPCUT_DIR (tests), else the one chosen in Studio, else CapCut's own. */
+let found: { at: number; root: string } | null = null
+/**
+ * CapCut's projects folder: STUDIO_CAPCUT_DIR (tests), else one chosen in Studio (a copy of
+ * CapCut's projects, as on Linux) while it's there, else CapCut's own, found as CapCut finds it
+ * (its settings, then its default folder; capcut-find.ts).
+ */
 export function capcutRoot() {
   if (process.env.STUDIO_CAPCUT_DIR) return process.env.STUDIO_CAPCUT_DIR
   const chosen = chosenRoot()
-  if (chosen) return chosen
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Movies', 'CapCut', 'User Data', 'Projects', 'com.lveditor.draft')
-  return path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'CapCut', 'User Data', 'Projects', 'com.lveditor.draft')
+  if (chosen && fs.existsSync(chosen)) return chosen
+  // Looked up again after a few seconds (every cover in the list asks).
+  if (!found || Date.now() - found.at > 5000) found = { at: Date.now(), root: findCapcutRoot().root }
+  return found.root
 }
 
 /**
@@ -46,7 +53,7 @@ export function chooseRoot(dir: string): string | null {
   const tries = [dir, path.join(dir, 'com.lveditor.draft'), path.join(dir, 'Projects', 'com.lveditor.draft'), path.join(dir, 'User Data', 'Projects', 'com.lveditor.draft'), path.join(dir, 'CapCut', 'User Data', 'Projects', 'com.lveditor.draft')]
   const root = tries.find((d) => {
     try {
-      return fs.readdirSync(d, { withFileTypes: true }).some((e) => e.isDirectory() && fs.existsSync(path.join(d, e.name, 'draft_content.json')))
+      return fs.readdirSync(d, { withFileTypes: true }).some((e) => e.isDirectory() && !!timelineOf(path.join(d, e.name)))
     } catch {
       return false
     }
@@ -61,13 +68,13 @@ const readJson = <T>(f: string): T => JSON.parse(fs.readFileSync(f, 'utf8'))
 /** CapCut's projects, newest first. A project CapCut saved locked (newer versions encrypt) is listed as not readable. */
 export function list(): CcDraft[] {
   const root = capcutRoot()
-  if (!fs.existsSync(root)) return []
+  if (!root || !fs.existsSync(root)) return []
   const out: CcDraft[] = []
   for (const d of fs.readdirSync(root, { withFileTypes: true })) {
     if (!d.isDirectory()) continue
     const dir = path.join(root, d.name)
-    const content = path.join(dir, 'draft_content.json')
-    if (!fs.existsSync(content)) continue
+    const content = timelineOf(dir)
+    if (!content) continue
     let meta: Record<string, unknown> = {}
     try {
       meta = readJson(path.join(dir, 'draft_meta_info.json'))
@@ -213,16 +220,48 @@ function lineRatio(file: string): number {
   return 1.2
 }
 
-/** CapCut's System font (en.ttf) in the newest CapCut installed. */
-function systemFont(): string | undefined {
-  const apps = path.join(path.dirname(path.dirname(path.dirname(capcutRoot()))), 'Apps')
+/** Font/SystemFont/en.ttf somewhere inside `dir`, a few folders down at most. */
+function findSystemFont(dir: string, depth: number): string | undefined {
+  const f = path.join(dir, 'Font', 'SystemFont', 'en.ttf')
+  if (fs.existsSync(f)) return f
+  if (depth <= 0) return undefined
   try {
-    const versions = fs.readdirSync(apps).filter((v) => /^\d/.test(v)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
-    for (const v of versions) {
-      const f = path.join(apps, v, 'Resources', 'Font', 'SystemFont', 'en.ttf')
-      if (fs.existsSync(f)) return f
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!e.isDirectory() || e.name.startsWith('.') || /^(Frameworks|_CodeSignature|MacOS|PlugIns|.*\.lproj)$/.test(e.name)) continue
+      const hit = findSystemFont(path.join(dir, e.name), depth - 1)
+      if (hit) return hit
     }
   } catch {}
+  return undefined
+}
+
+let systemFontFound: { root: string; font?: string } | undefined
+/**
+ * CapCut's System font (en.ttf) in the newest CapCut installed: under CapCut/Apps/<version>/Resources
+ * (Windows, and a packed copy beside its projects), else inside CapCut.app on a Mac.
+ */
+function systemFont(): string | undefined {
+  const root = capcutRoot()
+  if (systemFontFound?.root !== root) systemFontFound = { root, font: lookForSystemFont(root) }
+  return systemFontFound.font
+}
+function lookForSystemFont(root: string): string | undefined {
+  const homes = [...(root ? [path.dirname(path.dirname(path.dirname(root)))] : []), ...userDataDirs().map((ud) => path.dirname(ud))]
+  for (const home of homes) {
+    const apps = path.join(home, 'Apps')
+    try {
+      const versions = fs.readdirSync(apps).filter((v) => /^\d/.test(v)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+      for (const v of versions) {
+        const f = path.join(apps, v, 'Resources', 'Font', 'SystemFont', 'en.ttf')
+        if (fs.existsSync(f)) return f
+      }
+    } catch {}
+  }
+  if (process.platform === 'darwin')
+    for (const app of ['/Applications/CapCut.app', path.join(os.homedir(), 'Applications', 'CapCut.app')]) {
+      const f = findSystemFont(path.join(app, 'Contents', 'Resources'), 4)
+      if (f) return f
+    }
   return undefined
 }
 
@@ -353,7 +392,9 @@ function separatedOf(file: string, into: string): string | null {
  * (the new Studio project's folder).
  */
 export async function read(dir: string, into: string): Promise<CcProject> {
-  const j = readJson<Json>(path.join(dir, 'draft_content.json'))
+  const timeline = timelineOf(dir)
+  if (!timeline) throw new Error('That CapCut project has no timeline file (draft_content.json or draft_info.json).')
+  const j = readJson<Json>(timeline)
   let meta: Json = {}
   try {
     meta = readJson(path.join(dir, 'draft_meta_info.json'))

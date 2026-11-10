@@ -3574,17 +3574,24 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     )
     fs.writeFileSync(path.join(draft, 'draft_meta_info.json'), JSON.stringify({ draft_name: 'UI check CapCut', tm_duration: 3_000_000, draft_timeline_materials_size_: 12_400_000, tm_draft_modified: Date.now() * 1000 }))
     fs.writeFileSync(path.join(draft, 'draft_cover.jpg'), (await win.webContents.capturePage()).resize({ width: 180 }).toJPEG(80))
+    // CapCut for Mac keeps the timeline as draft_info.json (Windows: draft_content.json).
+    const mac = path.join(root, 'UI check Mac draft')
+    fs.mkdirSync(mac)
+    fs.copyFileSync(path.join(draft, 'draft_content.json'), path.join(mac, 'draft_info.json'))
+    fs.writeFileSync(path.join(mac, 'draft_meta_info.json'), JSON.stringify({ draft_name: 'UI check Mac project', tm_duration: 3_000_000, draft_timeline_materials_size_: 12_400_000, tm_draft_modified: (Date.now() - 60_000) * 1000 }))
     const was = process.env.STUDIO_CAPCUT_DIR
     process.env.STUDIO_CAPCUT_DIR = root
     try {
       await step(
-        'Import from CapCut: Home’s tile lists CapCut’s projects with their covers',
+        'Import from CapCut: Home’s tile lists CapCut’s projects with their covers, those saved on a Mac too',
         `window.__studioDev.store.setState({ page: 'home' })
          const tile = await __t.until(() => __t.qa('.home-tile').find((b) => /From CapCut/.test(b.textContent)), 5000, 'the From CapCut tile')
          tile.click()
          const card = await __t.until(() => __t.qa('.cc-card').find((c) => /UI check CapCut/.test(c.textContent)), 5000, 'the project in the list')
          const img = card.querySelector('.cc-cover img')
          await __t.until(() => img && img.complete && img.naturalWidth > 0, 5000, 'its cover')
+         const mac = __t.qa('.cc-card').find((c) => /UI check Mac project/.test(c.textContent))
+         if (!mac || mac.disabled) throw new Error('the project saved the Mac way (draft_info.json) isn’t listed as one to open')
          return { cards: __t.qa('.cc-card').length, cover: img.naturalWidth + '×' + img.naturalHeight, sub: card.querySelector('.cc-sub').textContent, length: card.querySelector('.cc-dur')?.textContent }`,
       )
       await shot('23-capcut-list')
@@ -3617,6 +3624,20 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
          await __t.until(() => !__t.q('.cc-dialog'), 2000, 'the list to close')
          window.__studioDev.store.setState({ page: 'edit' })
          return { tag }`,
+      )
+      await step(
+        'Import from CapCut: a project saved by CapCut for Mac (draft_info.json) imports the same',
+        `window.__studioDev.store.setState({ page: 'home' })
+         const tile = await __t.until(() => __t.qa('.home-tile').find((b) => /From CapCut/.test(b.textContent)), 5000, 'the From CapCut tile')
+         tile.click()
+         ;(await __t.until(() => __t.qa('.cc-card').find((c) => /UI check Mac project/.test(c.textContent)), 5000, 'the Mac project')).click()
+         await __t.until(() => /Imported from CapCut/.test(__t.q('.cc-dialog h2')?.textContent ?? ''), 60000, 'the import to finish')
+         const s = await __t.snap()
+         if (s.project.name !== 'UI check Mac project') throw new Error('the open project is ' + s.project.name)
+         if (__t.main(s).length !== 2) throw new Error(__t.main(s).length + ' clips on the main track')
+         __t.qa('.cc-dialog .pd-btn').find((b) => b.textContent === 'Done').click()
+         await __t.until(() => !__t.q('.cc-dialog'), 2000, 'the window to close')
+         return { tracks: s.project.tracks.map((t) => (t.main ? 'main' : t.role ?? t.kind) + ':' + t.clips.length) }`,
       )
     } finally {
       if (was === undefined) delete process.env.STUDIO_CAPCUT_DIR

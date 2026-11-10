@@ -1,6 +1,7 @@
 // CapCut projects, as Studio imports them. CapCut keeps each project as a folder of JSON
-// (draft_content.json: the timeline; draft_meta_info.json: its name and size; draft_cover.jpg)
-// under %LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft (on a Mac, ~/Movies/CapCut/…).
+// (draft_content.json, or draft_info.json on a Mac: the timeline; draft_meta_info.json: its name and
+// size; draft_cover.jpg) under %LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft (on a Mac,
+// ~/Movies/CapCut/…), or wherever CapCut's settings moved them (main/capcut-find.ts).
 // The main process reads one into this shape (src/main/capcut.ts), with CapCut's own resources
 // (fonts, stickers, filter colour tables) copied into the new Studio project; the page builds the
 // timeline from it (renderer/capcutImport.ts). Times are µs; positions are CapCut's: x and y in

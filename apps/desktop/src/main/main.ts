@@ -274,7 +274,8 @@ app.whenReady().then(() => {
     // A project's own fonts (brought from CapCut), drawn with on the page.
     const font = /\.studio[\\/]fonts[\\/][^\\/]+\.(ttf|otf|woff2?)$/i.test(file)
     // CapCut projects' covers, for Import from CapCut.
-    const capcutCover = path.basename(file) === 'draft_cover.jpg' && path.relative(capcutRoot(), path.dirname(path.dirname(file))) === ''
+    const ccRoot = path.basename(file) === 'draft_cover.jpg' ? capcutRoot() : ''
+    const capcutCover = !!ccRoot && path.relative(ccRoot, path.dirname(path.dirname(file))) === ''
     if (!inProjects && !inCache && !cover && !dubbed && !font && !capcutCover) return new Response('Not allowed', { status: 403 })
     const res = await net.fetch(pathToFileURL(file).toString())
     const headers = new Headers(res.headers)

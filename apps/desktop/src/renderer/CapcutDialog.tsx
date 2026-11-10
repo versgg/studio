@@ -159,7 +159,11 @@ function Picker() {
         {!error && drafts === null && <p className="pd-note">Looking for CapCut’s projects…</p>}
         {drafts?.length === 0 && (
           <div className="cc-empty">
-            <p className="pd-text">No CapCut projects in {root || 'CapCut’s folder'}. Choose the folder they’re in: CapCut’s projects folder (CapCut › Settings › Projects), or a copy of it.</p>
+            <p className="pd-text">
+              {root
+                ? `No CapCut projects in ${root}, where CapCut keeps them on this computer. If they’re somewhere else, choose that folder, or a copy of CapCut’s projects.`
+                : 'CapCut isn’t made for this system, so there’s no CapCut folder here. Choose a copy of CapCut’s projects folder.'}
+            </p>
             <button type="button" className="pd-btn primary" onClick={choose}>
               Choose folder…
             </button>
