@@ -6,15 +6,18 @@
 // (src/main/translate.ts), so it carries on in any project.
 // With Same voice, every sound that could speak is heard first (voiceovers, and the video clips'
 // own sound), and the check above Translate says what would still be spoken in the old language
-// and why, so nothing stays in it unnoticed.
+// and why, so nothing stays in it unnoticed. Each voice found has its own settings: what speaks
+// it (an ElevenLabs voice, a clone, or its old sound), what a clone is made from (its own sound
+// or the dub's sample, the speech on another track, or a file), and whether the clone is deleted
+// after or kept in ElevenLabs.
 
 import './dub.css'
 import './translations.css'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { TR_LANGS, trLangName, trProjectName, trRunning, type TrItem, type TrJob, type TrText, type TrVoice } from '../shared/translate'
+import { TR_LANGS, trLangName, trProjectName, trRunning, type TrItem, type TrJob, type TrText, type TrVoice, type TrVoiceChoice } from '../shared/translate'
 import { Pills, Select } from './controls'
 import { Head, Note, Setting, Settings } from './LibraryBlocks'
-import { collect, cancelTranslation, goTranslation, openTranslation, pickVoiceover, readVoiceover, retryTranslation, startTranslation, useTrJobs, type Voiceover } from './translate'
+import { chooseVoice, collect, cancelTranslation, goTranslation, openTranslation, readVoiceover, retryTranslation, startTranslation, useTrJobs, type TrVoiceRow } from './translate'
 import { toast, useStore } from './store'
 import { getUi, useUi } from './ui-state'
 
@@ -104,18 +107,13 @@ function Setup({ done, own }: { done: TrJob[]; own?: string }) {
   const [noKey, setNoKey] = useState('')
   const speaks = !!found?.items.some((i) => i.kind === 'line')
   useEffect(() => {
-    if (accountVoices || voice !== 'same' || (!found?.voiceovers.length && !speaks)) return
+    if (accountVoices || voice !== 'same' || (!found?.voices.length && !speaks)) return
     void window.studio.services.translateVoices().then((v) => {
       setAccountVoices('error' in v ? [] : v)
       setNoKey('error' in v ? v.error : '')
     })
   }, [found, voice])
   if (!snap) return null
-  const pick = async (vo: Voiceover, id: string) => {
-    const v = accountVoices?.find((x) => x.id === id)
-    await pickVoiceover(snap.dir, vo.path, id === CLONE ? 'clone' : id ? { voiceId: id, name: v?.name ?? id } : null)
-    setHeard((n) => n + 1)
-  }
   const from = found?.from || fromPicked
   const into = langs.filter((l) => l !== from)
   // Sounds still to be heard (each once); Translate waits for them, so nothing spoken is missed.
@@ -144,18 +142,8 @@ function Setup({ done, own }: { done: TrJob[]; own?: string }) {
         <Setting label="Voice">
           <Pills label="Voice" variant="seg" value={voice} items={[['same', 'Same voice'], ['text', 'Text only']]} onPick={(v) => setVoice(v as TrVoice)} />
         </Setting>
-        {voice === 'same' &&
-          found?.voiceovers.map((vo) => {
-            const known = vo.voice && !vo.cloned ? [{ id: vo.voice.voiceId, name: vo.voice.name }] : []
-            const options: [string, string][] = (accountVoices?.length ? accountVoices : known).map((v) => [v.id, v.name])
-            return (
-              <Setting key={vo.path} label={vo.name.replace(/\.[^.]+$/, '')}>
-                <Select label={`The voice of ${vo.name}`} value={vo.cloned ? CLONE : (vo.voice?.voiceId ?? '')} options={[...options, [CLONE, 'Clone it from this sound'], ['', 'Keep its own sound']]} onChange={(id) => void pick(vo, id)} />
-              </Setting>
-            )
-          })}
       </Settings>
-      {voice === 'same' && found?.voiceovers.map((vo) => <Note key={vo.path}>{voiceoverNote(vo)}</Note>)}
+      {voice === 'same' && found?.voices.map((vo) => <VoicePick key={vo.key} vo={vo} sources={found.sources} accountVoices={accountVoices} lang={trLangName(found.from || fromPicked)} project={snap.dir} onChange={() => setHeard((n) => n + 1)} />)}
       {voice === 'same' && hearing && <Note>Listening to {hearing.split(/[\\/]/).pop()} for what it says and whose voice it is…</Note>}
       <Head text={`Into · ${into.length ? into.map(trLangName).join(', ') : 'pick one or more'}`} />
       <div className="chips tr-langs" role="group" aria-label="Languages">
@@ -360,21 +348,87 @@ function Review({ jobs }: { jobs: TrJob[] }) {
 }
 
 const CLONE = '__clone__'
+const KEEP = '__keep__'
+const FILE = '__file__'
+const CLONE_CHOICES: [string, string][] = [['delete', 'Delete after use'], ['keep', 'Keep in ElevenLabs']]
+const SOUND_FILES = ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'mp4', 'mov', 'm4v', 'webm', 'mkv']
+const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p
 
-/** What the tab found for a sound it heard: how many sentences, whose voice (or that it's cloned), and whether it's over music. */
-function voiceoverNote(vo: Voiceover) {
-  const n = `${vo.sentences} sentence${vo.sentences === 1 ? '' : 's'}`
-  const name = vo.clip ? `${vo.name} (the clip’s own sound)` : vo.name
-  const music = vo.mixed ? ' Its voice is over music, so it’s taken out of the music first and the music stays under the new voice.' : ''
-  if (!vo.voice && vo.note === 'kept') return `${name}: ${n}, kept in its own sound.`
-  if (vo.cloned) {
-    // The usual reason says the same as this line; another one (the history couldn't be read) is worth showing.
-    const other = vo.note && vo.note !== 'clone' && !/^No voice in your ElevenLabs account/.test(vo.note) ? ` (${vo.note.replace(/\.$/, '')})` : ''
-    const why = vo.note === 'clone' ? 'as you picked' : `no voice in your ElevenLabs account said it${other}`
-    return `${name}: ${n}, ${why}, so its voice is cloned from these sentences for the translation and deleted from ElevenLabs after.${music}`
+/**
+ * One voice in the project: what speaks it in the translation (an ElevenLabs voice, a clone, or
+ * its old sound), what the clone is made from (its own sound or the dub's sample, the speech on
+ * another track, a file on this computer), and whether the clone is deleted after or kept.
+ */
+function VoicePick({ vo, sources, accountVoices, lang, project, onChange }: { vo: TrVoiceRow; sources: Collected['sources']; accountVoices: { id: string; name: string }[] | null; lang: string; project: string; onChange: () => void }) {
+  const [listening, setListening] = useState('')
+  const set = async (choice: TrVoiceChoice) => {
+    await chooseVoice(project, vo.key, choice)
+    onChange()
   }
-  const how = vo.how === 'history' ? 'found in your ElevenLabs history' : vo.how === 'name' ? 'named in the file’s name' : vo.how === 'studio' ? 'made in Studio' : 'picked by you'
-  return `${name}: ${n}, spoken again by ${vo.voice!.name} (${how}). No new voice is cloned.${music}`
+  const c = vo.choice
+  const voices: [string, string][] = (accountVoices?.length ? accountVoices : vo.known ? [{ id: vo.known.voiceId, name: vo.known.name }] : []).map((v) => [v.id, v.name])
+  // A voice picked before that's no longer in the account still shows by its name.
+  if (c.use === 'voice' && !voices.some((v) => v[0] === c.voiceId)) voices.push([c.voiceId, c.name])
+  const own: [string, string] = ['auto', vo.dub ? 'The dub’s sample of the original voice' : vo.before ? 'The sample it was cloned from before' : `Its own sound (${vo.where})`]
+  // Another track that speaks; one that's just this voice's own sound is already "its own sound".
+  const same = (s: { paths: string[] }) => s.paths.length === vo.paths.length && s.paths.every((x) => vo.paths.includes(x))
+  const tracks = sources.filter((s) => vo.dub || vo.before || !same(s)).map((s) => [s.id, s.label] as [string, string])
+  const from: [string, string][] = [own, ...tracks, ...(vo.file ? [[`file:${vo.file}`, fileName(vo.file)] as [string, string]] : []), [FILE, 'A file on this computer…']]
+  const fromLabel = from.find((f) => c.use === 'clone' && f[0] === c.from)?.[1] ?? own[1]
+  const speaker = (id: string) => {
+    if (id === KEEP) return set({ use: 'keep' })
+    if (id === CLONE) return set({ use: 'clone', from: 'auto', keep: false })
+    return set({ use: 'voice', voiceId: id, name: voices.find((v) => v[0] === id)?.[1] ?? id })
+  }
+  const source = async (id: string) => {
+    if (c.use !== 'clone') return
+    if (id !== FILE) return set({ ...c, from: id })
+    const f = await window.studio.app.chooseFile({ title: 'A sound or video with this voice', filters: [{ name: 'Sound or video', extensions: SOUND_FILES }] })
+    if (!f) return
+    setListening(fileName(f))
+    const r = await readVoiceover(project, f)
+    setListening('')
+    if ('error' in r) return void toast(`${fileName(f)} couldn’t be heard: ${r.error}`, 'error')
+    if (!r.sentences) return void toast(`${fileName(f)} has no speech to clone the voice from.`, 'error')
+    await set({ ...c, from: `file:${f}` })
+  }
+  return (
+    <>
+      <Head text={`${vo.where}${vo.clip ? ' (the clip’s own sound)' : ''} · ${plural(vo.sentences, 'sentence')}`} />
+      <Settings>
+        <Setting label="Spoken by">
+          <Select label={`What speaks ${vo.where}`} value={c.use === 'voice' ? c.voiceId : c.use === 'clone' ? CLONE : KEEP} options={[...voices, [CLONE, 'A clone of this voice'], [KEEP, `Keep the ${lang} sound`]]} onChange={(id) => void speaker(id)} />
+        </Setting>
+        {c.use === 'clone' && (
+          <>
+            <Setting label="Clone from">
+              <Select label={`What ${vo.where} is cloned from`} value={c.from} options={from} onChange={(id) => void source(id)} />
+            </Setting>
+            <Setting label="The clone">
+              <Pills label={`The clone of ${vo.where}`} variant="seg" value={c.keep ? 'keep' : 'delete'} items={CLONE_CHOICES} onPick={(k) => void set({ ...c, keep: k === 'keep' })} />
+            </Setting>
+          </>
+        )}
+      </Settings>
+      <Note>{listening ? `Listening to ${listening} for the voice…` : voiceNote(vo, fromLabel, lang)}</Note>
+    </>
+  )
+}
+
+/** What a voice's settings come to: who speaks it and how it was found, or what it's cloned from and what happens to the clone. */
+function voiceNote(vo: TrVoiceRow, from: string, lang: string) {
+  const c = vo.choice
+  const music = vo.mixed && c.use !== 'keep' ? ' Its voice is over music, so it’s taken out of the music first and the music stays under the new voice.' : ''
+  if (c.use === 'keep') return `Its ${lang} sound stays as it is.`
+  if (c.use === 'voice') {
+    const how = vo.chosen ? '' : vo.how === 'history' ? ' (found in your ElevenLabs history)' : vo.how === 'name' ? ' (named in the file’s name)' : vo.how === 'studio' ? ' (made in Studio)' : ''
+    return `${c.name} speaks it again${how}. No clone is made.${music}`
+  }
+  // Why it's cloned when nobody picked that: the dub's clone isn't in the account, or no voice there said it.
+  const other = vo.note && !/^No voice in your ElevenLabs account/.test(vo.note) && vo.note !== 'kept' && vo.note !== 'clone' ? ` (${vo.note.replace(/\.$/, '')})` : ''
+  const why = vo.chosen ? 'Cloned' : vo.dub ? 'The dub’s clone isn’t in your ElevenLabs voices, so it’s cloned again' : vo.before ? 'Its clone isn’t in your ElevenLabs voices, so it’s cloned again' : `No voice in your ElevenLabs account said it${other}, so it’s cloned`
+  const after = c.keep ? ', and the clone stays in your ElevenLabs voices to speak it from then on' : ' for this translation, then deleted from ElevenLabs'
+  return `${why} from ${from.replace(/^The /, 'the ').replace(/^Its /, 'its ')}${after}.${music}`
 }
 
 type Collected = Awaited<ReturnType<typeof collect>>
@@ -389,14 +443,14 @@ function SpeechCheck({ found, voice, from, listening, unheard, noKey }: { found:
   const lines = found.items.filter((i) => i.kind === 'line')
   const stays: string[] = []
   if (voice === 'text') {
-    if (lines.length || found.voiceovers.length) stays.push(`Text only: everything spoken (${plural(lines.length, 'sentence')}) keeps its ${lang} sound. Pick Same voice to say it again.`)
+    if (lines.length || found.voices.length) stays.push(`Text only: everything spoken (${plural(lines.length, 'sentence')}) keeps its ${lang} sound. Pick Same voice to say it again.`)
   } else {
     if (noKey && lines.length) stays.push(`No ElevenLabs key works (${noKey.replace(/\.$/, '')}), so nothing can be spoken. Add the key in Audio › Voice.`)
-    for (const vo of found.voiceovers) if (!vo.voice && vo.note === 'kept') stays.push(`${vo.name}: set to keep its own sound (${plural(vo.sentences, 'sentence')}).`)
+    for (const vo of found.voices) if (vo.choice.use === 'keep') stays.push(`${vo.where}: set to keep its own sound (${plural(vo.sentences, 'sentence')}).`)
     for (const [p, why] of Object.entries(unheard)) stays.push(`${p.split(/[\\/]/).pop()} couldn’t be heard (${why.replace(/\.$/, '')}), so whatever it says stays ${lang}.`)
   }
-  const cloned = found.voiceovers.filter((v) => v.cloned).length
-  const mixed = found.voiceovers.filter((v) => v.mixed && v.voice).length
+  const cloned = found.voices.filter((v) => v.choice.use === 'clone').length
+  const mixed = found.voices.filter((v) => v.mixed && v.voice).length
   return (
     <div className={`tr-check${stays.length ? ' stays' : ''}`} role="status">
       {voice === 'same' && listening > 0 ? (

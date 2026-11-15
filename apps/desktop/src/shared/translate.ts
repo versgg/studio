@@ -14,8 +14,14 @@ export type TrItem = {
   /** On the timeline. */
   startUs: number
   endUs: number
-  /** A spoken sentence's voice: the dub's clone or a voiceover's voice, with how it was spoken. */
-  voice?: { voiceId: string; model: string; speed: number; name: string; clone?: { sample: string; name: string } }
+  /**
+   * A spoken sentence's voice: an ElevenLabs voice, or a clone made for the takes (`clone`): from
+   * `sample` (the dub's), else cut from `parts` (the sound picked to clone from), else from the
+   * sentences heard in its own sound. `keep`: the clone stays in the account (made once for all
+   * the languages started together, and that voice is used from then on); else it's deleted
+   * after. `key`: the voice's key in the Translations tab's choices.
+   */
+  voice?: { voiceId: string; model: string; speed: number; name: string; clone?: { sample: string; name: string; parts?: TrClonePart[]; keep?: boolean; key?: string } }
   /** A `v:<clipId>` sound cut into pieces (the pauses taken out): the clips after the first, which go with it when it's spoken again. */
   pieces?: string[]
   /**
@@ -26,6 +32,19 @@ export type TrItem = {
    */
   heard?: { path: string; mediaId: string; start: number; end: number; mixed: boolean; fromUs: number; spanUs: number }
 }
+
+/**
+ * Stretches of a sound to clone a voice from (seconds into the file). `mixed`: the voice is over
+ * music, so it's taken out of it first (the stems server, from `fromUs` for `spanUs`).
+ */
+export type TrClonePart = { path: string; spans: { start: number; end: number }[]; mixed?: boolean; mediaId?: string; clipId?: string; fromUs?: number; spanUs?: number }
+
+/**
+ * What's chosen for a voice in the Translations tab, kept in the project by the voice's key: an
+ * ElevenLabs voice, a clone (`from`: 'auto' its own sound or the dub's sample, `track:<id>` the
+ * speech on a track, `file:<path>` a file), or keeping the old sound.
+ */
+export type TrVoiceChoice = { use: 'voice'; voiceId: string; name: string } | { use: 'clone'; from: string; keep: boolean } | { use: 'keep' }
 
 /** A sound whose voice was taken out of its music for a translation: the voice and the rest, from `fromUs` in the file. */
 export type TrStems = { voice?: string; bed: string[]; fromUs: number }
@@ -65,6 +84,8 @@ export type TrJob = {
   copied?: number
   /** This job's folder in the copy: items.json, translation.json, the takes and voice.json. */
   dir: string
+  /** Counts its changes, so an older copy of it (Start's answer, arriving late) never replaces a newer one on the page. */
+  rev?: number
 }
 
 /** A finished sentence as it plays in the copy, with its words' times for captions. */

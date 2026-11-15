@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { stemsTest } from './stems'
 import { vmakeTest } from './vmake-jobs'
-import { elevenTest } from './dub-voice'
+import { elevenTest, removeClone } from './dub-voice'
 import { MIN_WINDOW } from '../shared/window'
 
 const HELPERS = `
@@ -3062,8 +3062,10 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
       `${cat('Translations')}
        const same = __t.qa('.lib-setting button').find((b) => b.textContent === 'Same voice')
        if (same && same.getAttribute('aria-pressed') !== 'true') same.click()
-       const found = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^voiceover\.wav: .*found in your ElevenLabs history/.test(t)), 15000, 'the voiceover heard and its voice found')
-       if (!/Test Voice/.test(found) || !/2 sentences/.test(found)) throw new Error('found: ' + found)
+       const found = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^Test Voice speaks it again \\(found in your ElevenLabs history\\)/.test(t)), 15000, 'the voiceover heard and its voice found')
+       // One heading for the voice (other sounds the stand-in hears in Test Voice, like a stem of the voiceover, join it).
+       const head = __t.qa('.lib-head h3').map((h) => h.textContent).find((t) => /^voiceover\\.wav( \\+ \\d+ more)? · \\d+ sentences$/.test(t))
+       if (!head) throw new Error('no heading for its voice: ' + __t.qa('.lib-head h3').map((h) => h.textContent).join(' | '))
        // The voiceover's own lines (earlier steps may have left other sounds the stand-in "hears" too).
        const s0 = await __t.snap()
        const vo = s0.project.tracks.flatMap((t) => t.clips).filter((c) => /voiceover.wav$/.test(s0.project.media.find((m) => m.id === c.mediaId)?.path ?? '')).map((c) => c.id)
@@ -3071,18 +3073,19 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const items = ofVo((await window.__studio.collectTranslation()).items)
        if (items.length !== 2 || !items.every((i) => /~[0-9]$/.test(i.id) && i.voice?.voiceId === 'fake-voice')) throw new Error('lines: ' + JSON.stringify(items))
        if (!(items[0].endUs <= items[1].startUs)) throw new Error('the sentences overlap: ' + JSON.stringify(items.map((i) => [i.startUs, i.endUs])))
-       // Keep its own sound, then Test Voice again: the pick is kept.
+       // Keep its sound, then Test Voice again: the pick is kept.
        const choose = async (name) => {
-         const sel = await __t.until(() => __t.q('select[aria-label="The voice of voiceover.wav"]'), 5000, 'the voiceover’s voice')
-         const opt = await __t.until(() => [...sel.options].find((o) => o.textContent === name), 5000, 'the option ' + name)
+         const sel = await __t.until(() => __t.q('select[aria-label^="What speaks voiceover.wav"]'), 5000, 'what speaks the voiceover')
+         const opt = await __t.until(() => [...sel.options].find((o) => typeof name === 'string' ? o.textContent === name : name.test(o.textContent)), 5000, 'the option ' + name)
          Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, opt.value)
          sel.dispatchEvent(new Event('change', { bubbles: true }))
        }
-       await choose('Keep its own sound')
-       const kept = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^voiceover.wav: .*kept in its own sound/.test(t)), 5000, 'the voiceover kept as it is')
+       await choose(/^Keep the .+ sound$/)
+       const kept = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^Its .+ sound stays as it is\\.$/.test(t)), 5000, 'the voiceover kept as it is')
        if (ofVo((await window.__studio.collectTranslation()).items).some((i) => i.voice)) throw new Error('a kept voiceover still has a voice')
        await choose('Test Voice')
-       const picked = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^voiceover.wav: .*picked by you/.test(t)), 5000, 'Test Voice picked again')
+       const picked = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^Test Voice speaks it again\\. No clone is made\\./.test(t)), 5000, 'Test Voice picked again')
+       if (!ofVo((await window.__studio.collectTranslation()).items).every((i) => i.voice?.voiceId === 'fake-voice')) throw new Error('Test Voice isn’t on its lines')
        return { found, kept, picked, sentences: items.map((i) => i.text) }`,
     )
     await shot('23-translations-voice')
@@ -3112,7 +3115,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     // A clip whose own sound speaks Swedish over music, in a voice the (stand-in) account doesn't
     // have: heard, its voice cloned for the takes and taken out of its music (STUDIO_STEMS_FAKE).
     const speaks = path.join(path.dirname(exportDir), 'speaks-with-music.mp4')
-    const speaksStep = 'Translations: a clip that speaks over music, in a voice no ElevenLabs voice matches, is heard, cloned for the translation and taken out of its music; set to keep its sound, the check says it’s still spoken'
+    const speaksStep = 'Translations: a clip that speaks over music, in a voice no ElevenLabs voice matches, is heard, cloned for the translation and taken out of its music; set to keep its sound, the check says it’s still spoken; it can be cloned from another track and its clone kept'
     if (process.env.STUDIO_STEMS_FAKE === '1' && fs.existsSync(speaks))
       await step(
         speaksStep,
@@ -3125,22 +3128,36 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
          const mediaId = imp.imported?.[0]
          if (!mediaId) throw new Error('not imported: ' + JSON.stringify(imp))
          await engine.call('timeline.insert', { mediaId, atUs: s0.durationUs })
-         const note = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^speaks-with-music\\.mp4 \\(the clip’s own sound\\): 2 sentences, .*cloned from these sentences.*over music/.test(t)), 15000, 'the clip heard, its voice to be cloned and taken out of its music')
-         const items = (await window.__studio.collectTranslation()).items.filter((i) => i.heard?.mediaId === mediaId)
-         if (items.length !== 2 || !items.every((i) => i.heard.mixed && i.voice?.clone && i.voice.voiceId.startsWith('clone:'))) throw new Error('its lines: ' + JSON.stringify(items))
+         const note = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^No voice in your ElevenLabs account said it, so it’s cloned from its own sound \\(speaks-with-music\\.mp4\\) for this translation, then deleted from ElevenLabs\\..*over music/.test(t)), 15000, 'the clip heard, its voice to be cloned and taken out of its music')
+         if (!__t.qa('.lib-head h3').some((h) => h.textContent === 'speaks-with-music.mp4 (the clip’s own sound) · 2 sentences')) throw new Error('no heading for the clip’s voice: ' + __t.qa('.lib-head h3').map((h) => h.textContent).join(' | '))
+         const lines = async () => (await window.__studio.collectTranslation()).items.filter((i) => i.heard?.mediaId === mediaId)
+         const items = await lines()
+         if (items.length !== 2 || !items.every((i) => i.heard.mixed && i.voice?.clone && i.voice.voiceId.startsWith('clone:') && i.voice.clone.parts?.[0]?.path.endsWith('speaks-with-music.mp4') && i.voice.clone.parts[0].mixed && !i.voice.clone.keep)) throw new Error('its lines: ' + JSON.stringify(items))
          const clear = await __t.until(() => __t.q('.tr-check:not(.stays)')?.textContent, 5000, 'the check saying everything is said again')
-         const choose = async (name) => {
-           const sel = await __t.until(() => __t.q('select[aria-label="The voice of speaks-with-music.mp4"]'), 5000, 'the clip’s voice')
-           const opt = await __t.until(() => [...sel.options].find((o) => o.textContent === name), 5000, 'the option ' + name)
+         const pick = async (label, name) => {
+           const sel = await __t.until(() => __t.q('select[aria-label="' + label + '"]'), 5000, label)
+           const opt = await __t.until(() => [...sel.options].find((o) => typeof name === 'string' ? o.textContent === name : name.test(o.textContent)), 5000, 'the option ' + name + ' (there are: ' + [...sel.options].map((o) => o.textContent).join(', ') + ')')
            Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, opt.value)
            sel.dispatchEvent(new Event('change', { bubbles: true }))
          }
-         await choose('Keep its own sound')
+         const choose = (name) => pick('What speaks speaks-with-music.mp4', name)
+         await choose(/^Keep the .+ sound$/)
          const stays = await __t.until(() => __t.q('.tr-check.stays')?.textContent, 5000, 'the check to say it’s still spoken')
          if (!/Still spoken in/.test(stays) || !/speaks-with-music\\.mp4: set to keep its own sound \\(2 sentences\\)/.test(stays)) throw new Error('the check: ' + stays)
-         await choose('Clone it from this sound')
+         await choose('A clone of this voice')
          await __t.until(() => __t.q('.tr-check:not(.stays)'), 5000, 'the check clear again')
-         return { note, clear, stays }`,
+         // Cloned from the voiceover's track instead: its sentences are the sample; then its own sound again.
+         await pick('What speaks-with-music.mp4 is cloned from', /^voiceover\\.wav/)
+         const fromTrack = await __t.until(async () => { const l = await lines(); return l.every((i) => i.voice?.clone?.parts?.some((p) => /[\\\\/]voiceover\\.wav$/.test(p.path)) && !i.voice.clone.parts.some((p) => /speaks-with-music/.test(p.path))) && l }, 5000, 'the clone made from the voiceover’s track')
+         const said = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^Cloned from voiceover\\.wav( \\+ \\d+ more)? for this translation/.test(t)), 5000, 'the note saying so')
+         await pick('What speaks-with-music.mp4 is cloned from', /^Its own sound/)
+         await __t.until(async () => (await lines()).every((i) => i.voice?.clone?.parts?.[0]?.path.endsWith('speaks-with-music.mp4')), 5000, 'its own sound again')
+         // Its clone kept in ElevenLabs (one for both languages; the lands step counts it).
+         ;(await __t.until(() => __t.qa('[role=group][aria-label="The clone of speaks-with-music.mp4"] button').find((b) => b.textContent === 'Keep in ElevenLabs'), 5000, 'Keep in ElevenLabs')).click()
+         await __t.until(async () => (await lines()).every((i) => i.voice?.clone?.keep === true), 5000, 'the clone set to be kept')
+         const keepNote = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /, and the clone stays in your ElevenLabs voices to speak it from then on\\./.test(t)), 5000, 'the note saying it stays')
+         window.__keptKey = (await lines())[0].voice.clone.key
+         return { note, clear, stays, fromTrack: fromTrack[0].voice.clone.parts.map((p) => p.path.split(/[\\\\/]/).pop() + ' ' + p.spans.length).join(', '), said, keepNote }`,
       )
     if (process.env.STUDIO_STEMS_FAKE === '1' && fs.existsSync(speaks)) await shot('23a-translations-check')
     else console.log('[ui-check] skip ' + speaksStep + ': it needs STUDIO_STEMS_FAKE=1 (the stems server is never called from tests)')
@@ -3198,11 +3215,21 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        }
        return { project: s.project.name, texts, said: said.length, music }`,
     )
-    // The clone made for the clip's voice is gone from the (stand-in) account.
+    // The clip's voice was set to keep its clone: one clone for both languages stays in the
+    // (stand-in) account, and it's the voice picked for it from then on; every other is gone.
     const landed = results.find((x) => x.step === 'Translations: the review shows each line with its back-translation, and Translate lands the language in its own project')
-    if (landed?.ok && elevenTest.live() !== 0) {
-      Object.assign(landed, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account` })
-      console.log(`[ui-check] FAIL ${landed.step}: ${elevenTest.live()} clone(s) left in the account`)
+    const keptOne = process.env.STUDIO_STEMS_FAKE === '1' && fs.existsSync(speaks) ? 1 : 0
+    if (landed?.ok && elevenTest.live() !== keptOne) {
+      Object.assign(landed, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account, not ${keptOne}` })
+      console.log(`[ui-check] FAIL ${landed.step}: ${elevenTest.live()} clone(s) left in the account, not ${keptOne}`)
+    }
+    if (landed?.ok && keptOne) {
+      const choice = (await js(`const r = await window.studio.services.translateContext(window.__tr.dir, []); return r.choices?.[window.__keptKey] ?? null`)) as { use: string; voiceId?: string } | null
+      if (choice?.use !== 'voice' || choice.voiceId !== 'fake-voice') {
+        Object.assign(landed, { ok: false, detail: `the kept clone isn’t the voice picked for it: ${JSON.stringify(choice)}` })
+        console.log(`[ui-check] FAIL ${landed.step}: the kept clone isn’t the voice picked for it: ${JSON.stringify(choice)}`)
+      }
+      await removeClone(null, 'fake-voice')
     }
     await shot('23b-translations-copy')
     await step(
@@ -3215,7 +3242,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        ;(await button(/^Translate into German$/)).click()
        const job = await __t.until(async () => (await window.studio.services.translateJobs(s.dir)).find((j) => j.source === s.dir && j.state === 'review'), 20000, 'the German review')
        if (job.from !== 'no') throw new Error('it translates from ' + job.from)
-       await __t.until(() => __t.q('.tr-item'), 20000, 'its lines')
+       await __t.until(() => __t.q('.tr-item'), 20000, 'its lines').catch((e) => { throw new Error(e.message + '; the tab says: ' + (__t.q('.library')?.textContent ?? '').slice(0, 600)) })
        ;(await button(/^Cancel$/)).click()
        const gone = await __t.until(async () => !(await window.studio.services.translateJobs(s.dir)).some((j) => j.id === job.id) && job.project, 5000, 'the job to go')
        const projects = await window.studio.app.projects([])
@@ -3564,6 +3591,7 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const done = await __t.until(async () => (await __t.snap()).dir !== from && Object.values(st().dubJobs).find((j) => j.clipId === clip.id && j.state === 'applied'), 90000, 'the dub in its own project')
        const here = await __t.snap()
        if (here.project.name !== 'Land voice · Svenska') throw new Error('the new project is called ' + here.project.name)
+       window.__landDir = here.dir
        const said = async () => (await window.studio.services.dubResult(done.id)).voice.lines.filter((l) => !l.own)
        const lines = await said()
        const inside = (f) => f.startsWith(here.dir + '/') || f.startsWith(here.dir + '\\\\')
@@ -3593,6 +3621,41 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     if (lv?.ok && elevenTest.live() !== 0) {
       Object.assign(lv, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account` })
       console.log(`[ui-check] FAIL ${landsVoice}: ${elevenTest.live()} clone(s) left in the account`)
+    }
+    // A dubbed project translated: the dub's voice is found, cloned again
+    // from the dub's sample unless something else is picked, and the dub's bed isn't speech.
+    if (lv?.ok) {
+      await step(
+        'Translations: in a voice dub, the dub’s voice is one voice, cloned from the dub’s sample by default, with what speaks it, what it’s cloned from and the clone’s fate to pick; the dub’s bed isn’t taken for speech',
+        `const S = window.__studio
+         const back = (await __t.snap()).dir
+         window.__trBack = back
+         await S.openProjectAt(window.__landDir)
+         await __t.until(async () => (await __t.snap()).dir === window.__landDir, 8000, 'the dubbed project')
+         ${cat('Translations')}
+         const same = __t.qa('.lib-setting button').find((b) => b.textContent === 'Same voice')
+         if (same && same.getAttribute('aria-pressed') !== 'true') same.click()
+         const sel = (label) => __t.qa('select').find((x) => x.getAttribute('aria-label')?.startsWith(label))
+         const who = await __t.until(() => sel('What speaks '), 10000, 'what speaks the dub’s voice')
+         const shown = (x) => x.closest('.dsel')?.querySelector('.dsel-value')?.textContent
+         if (shown(who) !== 'A clone of this voice') throw new Error('it’s spoken by ' + shown(who))
+         const src = await __t.until(() => __t.qa('select').find((x) => / is cloned from$/.test(x.getAttribute('aria-label') ?? '')), 5000, 'what it’s cloned from')
+         const from = shown(src)
+         if (from !== 'The dub’s sample of the original voice') throw new Error('cloned from ' + from)
+         const fate = __t.qa('[role=group]').find((g) => /^The clone of /.test(g.getAttribute('aria-label') ?? ''))?.querySelector('button[aria-pressed="true"]')?.textContent
+         if (fate !== 'Delete after use') throw new Error('the clone: ' + fate)
+         const tr = await S.collectTranslation()
+         const dv = tr.voices.find((v) => v.dub)
+         if (!dv || dv.choice.use !== 'clone' || dv.choice.from !== 'auto' || dv.choice.keep) throw new Error('the dub’s voice: ' + JSON.stringify(dv))
+         const dl = tr.items.filter((i) => i.kind === 'line')
+         if (!dl.length || !dl.every((i) => /[\\/]clone-[^\\/]+\.mp3$/.test(i.voice?.clone?.sample ?? ''))) throw new Error('its lines don’t clone from the dub’s sample: ' + JSON.stringify(dl.map((i) => i.voice)))
+         if (tr.unread.some((p) => /bed\.m4a$/.test(p))) throw new Error('the dub’s bed is heard for speech')
+         const check = await __t.until(() => __t.q('.tr-check')?.textContent, 5000, 'the check')
+         if (/Still spoken/.test(check)) throw new Error('the check: ' + check)
+         return { voice: dv.title, where: dv.where, sentences: dv.sentences, check }`,
+      )
+      await shot('23c-translations-dub-voice')
+      await step('Translations: back to the test project after the dub’s', `await window.__studio.openProjectAt(window.__trBack); await __t.until(async () => (await __t.snap()).dir === window.__trBack, 8000, 'the test project'); return 'back'`)
     }
   } else console.log('[ui-check] skip Reroll: set STUDIO_CLAUDE_FAKE=1, STUDIO_ELEVEN_FAKE=1 and STUDIO_STEMS_FAKE=1 (the stand-ins; real Claude, ElevenLabs and the stems server are never called from tests)')
 

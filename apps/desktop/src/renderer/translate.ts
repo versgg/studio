@@ -7,7 +7,8 @@
 // the new one at its moment.
 
 import { useSyncExternalStore } from 'react'
-import { TR_LANGS, trLangName, trRunning, type TrItem, type TrJob, type TrStems, type TrVoice } from '../shared/translate'
+import { TR_LANGS, trLangName, trRunning, type TrClonePart, type TrItem, type TrJob, type TrStems, type TrVoice, type TrVoiceChoice } from '../shared/translate'
+import type { TrSound } from '../shared/api'
 import { captionTracks, cuesOf, setCaptionLines, wordsPerCaptionOf } from './captions'
 import { loadFont } from './textFonts'
 import { fontOf, layoutText, renderTextClip, textPlaceOf, type TextLook } from './textRender'
@@ -60,11 +61,15 @@ const HEARD = 0.01
  * Everything the project says, in time order: text clips (not stickers, which have no letters),
  * caption lines, and everything spoken: sound clips Studio knows the words of (a dub's sentence,
  * a voiceover with its script), and sounds heard sentence by sentence (a voiceover Studio didn't
- * make, a video clip's own sound), each with the voice that spoke it: the one Studio knows, else
- * a clone of it made from its own sentences for the translation (deleted after), unless it was set
- * to keep its sound. `from` is the project's language: its dub's, else its captions', else none.
- * Speech heard in another language than that (else `lang`, the one picked to translate from) is
- * left out (a song on a clip, an English voiceover in a Swedish ad) and listed in `other`.
+ * make, a video clip's own sound). `from` is the project's language: its dub's, else its
+ * captions', else none. Speech heard in another language than that (else `lang`, the one picked
+ * to translate from) is left out (a song on a clip, an English voiceover in a Swedish ad) and
+ * listed in `other`.
+ * The sentences are grouped by the voice that speaks them (`voices`, one row each in the tab),
+ * and each gets that voice as it's picked in the tab, else as it's found: an ElevenLabs voice
+ * Studio knows; the dub's clone, made again from the dub's sample; else a clone of it made from
+ * its own sentences (deleted after). `sources`: the sounds with speech on each track, to clone a
+ * voice from instead.
  */
 export async function collect(snap: Snapshot, lang?: string) {
   const p = snap.project
@@ -78,6 +83,7 @@ export async function collect(snap: Snapshot, lang?: string) {
       return m?.kind === 'video' && m.hasAudio && !c.detached && c.volume > HEARD
     })
   const ownIds = new Set(own.map((c) => c.id))
+  const trackOf = new Map(p.tracks.flatMap((t) => t.clips.map((c) => [c.id, t.id] as const)))
   const paths = [...new Set([...sounds, ...own].map((c) => mediaById(snap, c.mediaId)?.path).filter((x): x is string => !!x))]
   // The stretch of each file the clips play (in its own time), for taking its voice out of the music.
   const played = new Map<string, [number, number]>()
@@ -92,6 +98,13 @@ export async function collect(snap: Snapshot, lang?: string) {
   const other: { name: string; language: string }[] = []
   const ctx = await window.studio.services.translateContext(snap.dir, paths)
   if ('error' in ctx) throw new Error(ctx.error)
+  // Files picked to clone a voice from, as they were heard.
+  const picked = [...new Set(Object.values(ctx.choices ?? {}).flatMap((c) => (c.use === 'clone' && c.from.startsWith('file:') ? [c.from.slice(5)] : [])))].filter((f) => !paths.includes(f))
+  if (picked.length) {
+    const more = await window.studio.services.translateContext(snap.dir, picked)
+    if (!('error' in more)) Object.assign(ctx.sounds, more.sounds)
+  }
+  const choices = ctx.choices ?? {}
   const from = ctx.lang || (captionTracks(snap).find((t) => t.lang)?.lang ?? '')
   const said = from || lang
   const items: TrItem[] = []
@@ -105,7 +118,33 @@ export async function collect(snap: Snapshot, lang?: string) {
       items.push({ id: `${caption ? 'c' : 't'}:${c.id}`, kind: caption ? 'caption' : 'text', text: content, ...(original ? { original } : {}), startUs: c.startUs, endUs: c.startUs + c.durationUs })
     }
   }
-  const voiceovers = new Map<string, Voiceover>()
+  const groups = new Map<string, Group>()
+  const keyOf = new Map<TrItem, string>()
+  const onTrack = new Map<string, Map<string, TrClonePart>>()
+  /** A stretch of a file (seconds into it) that speaks, kept for cloning from: by file. */
+  const addPart = (to: Map<string, TrClonePart>, base: Omit<TrClonePart, 'spans'>, span: { start: number; end: number }) => {
+    const x = to.get(base.path) ?? { ...base, spans: [] }
+    if (!x.spans.some((q) => Math.abs(q.start - span.start) < 0.01 && Math.abs(q.end - span.end) < 0.01)) x.spans.push(span)
+    to.set(base.path, x)
+  }
+  /** A sentence of a voice: grouped by the voice it was found to be, else by its own sound. */
+  const addLine = (it: TrItem, s: TrSound, m: { path: string; name: string }, clipId: string, base: Omit<TrClonePart, 'spans'>, span: { start: number; end: number }, more: Partial<Group>) => {
+    const k = s.voiceId || `clone:${m.path}`
+    const g = groups.get(k) ?? { key: k, files: [], sentences: 0, parts: new Map(), title: s.name ?? stem(m.name), ...(s.voiceId && !s.clone ? { known: { voiceId: s.voiceId, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, name: s.name ?? 'The voice' } } : {}), ...(s.clone?.sample ? { dub: { sample: s.clone.sample, name: s.clone.name, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, translation: !!s.clone.translation } } : {}), cloneName: s.clone?.name ?? stem(m.name), ...more }
+    if (!g.files.includes(m.name)) g.files.push(m.name)
+    g.sentences++
+    g.mixed ||= !!base.mixed
+    g.clip ||= ownIds.has(clipId)
+    addPart(g.parts, base, span)
+    const tr = trackOf.get(clipId)
+    if (tr) {
+      if (!onTrack.has(tr)) onTrack.set(tr, new Map())
+      addPart(onTrack.get(tr)!, base, span)
+    }
+    groups.set(k, g)
+    keyOf.set(it, k)
+    items.push(it)
+  }
   const unread = new Set<string>()
   // A sound cut into pieces (the pauses taken out) is said once: its pieces in time order, each on
   // from the one before in the file, are one line from the first to the last (a piece that goes
@@ -116,8 +155,6 @@ export async function collect(snap: Snapshot, lang?: string) {
     if (run) run.push(c)
     else runs.set(c.id, [c])
   }
-  /** A voice Studio doesn't know: cloned from the sound's own sentences for the takes, then deleted. */
-  const cloneOf = (path: string, name: string): NonNullable<TrItem['voice']> => ({ voiceId: `clone:${path}`, model: 'eleven_v4', speed: 1, name: `${name.replace(/\.[^.]+$/, '')} (cloned)`, clone: { sample: '', name: name.replace(/\.[^.]+$/, '') } })
   for (const c of [...sounds, ...own]) {
     const m = mediaById(snap, c.mediaId)
     const s = ctx.sounds[m?.path ?? '']
@@ -129,29 +166,25 @@ export async function collect(snap: Snapshot, lang?: string) {
         if (!other.some((o) => o.name === m.name)) other.push({ name: m.name, language })
         continue
       }
-      const kept = s.read.note === 'kept'
-      const voice = s.voiceId ? { voiceId: s.voiceId, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, name: s.name ?? 'The voice' } : kept ? undefined : cloneOf(m.path, m.name)
       const mixed = !!s.read.mixed
       const [fromUs, toUs] = played.get(m.path) ?? [0, m.durationUs]
-      const vo = voiceovers.get(m.path) ?? { path: m.path, name: m.name, sentences: 0, voice, how: s.voiceId ? s.read.how : undefined, note: s.read.note, clip: ownIds.has(c.id), mixed, cloned: !s.voiceId && !kept }
+      const base = { path: m.path, mediaId: m.id, clipId: c.id, mixed, fromUs, spanUs: toUs - fromUs }
       for (const [n, sn] of s.read.sentences.entries()) {
         const at = placeIn(c, sn.start, sn.end)
         if (!at) continue
-        items.push({ id: `v:${c.id}~${n}`, kind: 'line', text: sn.text, startUs: at[0], endUs: at[1], ...(voice ? { voice } : {}), heard: { path: m.path, mediaId: m.id, start: sn.start, end: sn.end, mixed, fromUs, spanUs: toUs - fromUs } })
-        vo.sentences++
+        const it: TrItem = { id: `v:${c.id}~${n}`, kind: 'line', text: sn.text, startUs: at[0], endUs: at[1], heard: { path: m.path, mediaId: m.id, start: sn.start, end: sn.end, mixed, fromUs, spanUs: toUs - fromUs } }
+        addLine(it, s, m, c.id, base, { start: sn.start, end: sn.end }, { how: s.voiceId ? s.read.how : undefined, note: s.read.note, keptOld: s.read.note === 'kept' })
       }
-      voiceovers.set(m.path, vo)
       continue
     }
     if (m && !s && maybeVoice(m, ownIds.has(c.id))) unread.add(m.path)
     if (ownIds.has(c.id) || !s?.text || !letters.test(s.text)) continue
     const run = runs.get(c.id)
-    if (!run) continue
+    if (!run || !m) continue
     const last = run[run.length - 1]
-    // A Studio voiceover whose voice wasn't kept beside it is cloned from the file it plays.
+    // A dub's sentence or a voiceover with its script: one line, from its first piece to its last.
     const span = { start: run[0].inUs / 1e6, end: (last.inUs + last.durationUs * (last.speed || 1)) / 1e6 }
-    const voice = s.voiceId ? { voiceId: s.voiceId, model: s.model ?? 'eleven_v4', speed: s.speed ?? 1, name: s.name ?? 'The voice', ...(s.clone ? { clone: s.clone } : {}) } : m ? cloneOf(m.path, m.name) : undefined
-    items.push({
+    const it: TrItem = {
       id: `v:${c.id}`,
       kind: 'line',
       text: s.text,
@@ -159,20 +192,75 @@ export async function collect(snap: Snapshot, lang?: string) {
       startUs: c.startUs,
       endUs: last.startUs + last.durationUs,
       ...(run.length > 1 ? { pieces: run.slice(1).map((x) => x.id) } : {}),
-      ...(voice ? { voice } : {}),
-      ...(m && !s.voiceId ? { heard: { path: m.path, mediaId: m.id, ...span, mixed: false, fromUs: run[0].inUs, spanUs: (span.end - span.start) * 1e6 } } : {}),
-    })
+      ...(!s.voiceId ? { heard: { path: m.path, mediaId: m.id, ...span, mixed: false, fromUs: run[0].inUs, spanUs: (span.end - span.start) * 1e6 } } : {}),
+    }
+    addLine(it, s, m, c.id, { path: m.path, mediaId: m.id, clipId: c.id }, span, { how: s.voiceId && !s.clone ? 'studio' : undefined })
   }
+  // Each voice as it's picked, else as it's found.
+  const voices: TrVoiceRow[] = []
+  for (const g of groups.values()) {
+    const ch = choices[g.key]
+    const file = ch?.use === 'clone' && ch.from.startsWith('file:') ? ch.from.slice(5) : ''
+    const read = file ? ctx.sounds[file]?.read : undefined
+    // A picked track or file that no longer speaks (gone, moved, emptied) falls back to its own sound.
+    const usable = (f: string) => f === 'auto' || (f.startsWith('track:') && onTrack.has(f.slice(6))) || (f === `file:${file}` && !!read?.sentences.length)
+    const choice: TrVoiceChoice = ch ? (ch.use === 'clone' && !usable(ch.from) ? { ...ch, from: 'auto' } : ch) : g.keptOld ? { use: 'keep' } : g.known ? { use: 'voice', voiceId: g.known.voiceId, name: g.known.name } : { use: 'clone', from: 'auto', keep: false }
+    let voice: TrItem['voice'] | undefined
+    if (choice.use === 'voice') voice = g.known?.voiceId === choice.voiceId ? g.known : { voiceId: choice.voiceId, model: 'eleven_v4', speed: 1, name: choice.name }
+    else if (choice.use === 'clone') {
+      const sample = choice.from === 'auto' && g.dub ? g.dub.sample : ''
+      const parts = sample ? undefined : choice.from === 'auto' ? [...g.parts.values()] : choice.from.startsWith('track:') ? [...onTrack.get(choice.from.slice(6))!.values()] : [{ path: file, spans: read!.sentences.map((x) => ({ start: x.start, end: x.end })), mixed: !!read!.mixed }]
+      const like = g.dub ?? g.known
+      voice = { voiceId: g.key.startsWith('clone:') ? g.key : `clone:${g.key}`, model: like?.model ?? 'eleven_v4', speed: like?.speed ?? 1, name: g.dub ? g.title : `${g.title} (cloned)`, clone: { sample, name: g.cloneName, ...(parts ? { parts } : {}), keep: choice.keep, key: g.key } }
+    }
+    for (const [it, k] of keyOf) if (k === g.key && voice) it.voice = voice
+    voices.push({ key: g.key, title: g.title, where: filesLabel(g.files), paths: [...g.parts.keys()], sentences: g.sentences, choice, chosen: !!ch, voice, known: g.known ? { voiceId: g.known.voiceId, name: g.known.name } : undefined, dub: !!g.dub && !g.dub.translation, before: !!g.dub?.translation, how: g.how, note: g.note, clip: g.clip, mixed: g.mixed, file: file && choice.use === 'clone' && choice.from === `file:${file}` ? file : undefined })
+  }
+  const sources = [...onTrack.entries()].map(([id, parts]) => {
+    const t = p.tracks.find((x) => x.id === id)
+    const names = [...new Set([...parts.values()].map((x) => mediaById(snap, x.mediaId ?? '')?.name ?? x.path.split(/[\\/]/).pop()!))]
+    return { id: `track:${id}`, label: `${filesLabel(names)}${t?.kind === 'video' ? ' (the clip’s own sound)' : ''}`, paths: [...parts.keys()] }
+  })
   items.sort((a, b) => a.startUs - b.startUs || a.kind.localeCompare(b.kind))
-  return { items, from, durationUs: snap.durationUs, voiceovers: [...voiceovers.values()], unread: [...unread], other }
+  return { items, from, durationUs: snap.durationUs, voices, sources, unread: [...unread], other }
+}
+
+const stem = (name: string) => name.replace(/\.[^.]+$/, '')
+/** Files by name: "voiceover.wav", or "line-L01.wav + 8 more". */
+const filesLabel = (names: string[]) => (names.length > 1 ? `${names[0]} + ${names.length - 1} more` : (names[0] ?? ''))
+
+/** The sentences one voice speaks, as `collect` gathers them. */
+type Group = {
+  key: string
+  title: string
+  files: string[]
+  sentences: number
+  /** Their stretches of sound, by file: what the voice is cloned from by default. */
+  parts: Map<string, TrClonePart>
+  cloneName: string
+  /** An ElevenLabs voice Studio knows speaks it. */
+  known?: NonNullable<TrItem['voice']>
+  /** The dub's clone, not kept in the account: made again from the dub's sample (or the sample an earlier translation cloned it from, `translation`). */
+  dub?: { sample: string; name: string; model: string; speed: number; translation: boolean }
+  how?: VoiceHow
+  note?: string
+  /** Set to keep its own sound in an earlier Studio. */
+  keptOld?: boolean
+  clip?: boolean
+  mixed?: boolean
 }
 
 /**
- * A sound the Translations tab heard (a voiceover Studio didn't make, a video clip's own sound),
- * and the voice it found for it. `clip`: a video clip's own sound; `mixed`: the voice is over
- * music; `cloned`: no voice was found or picked, so it's cloned from its own sentences.
+ * A voice in the project, as the Translations tab shows it: where it speaks (`where`), what
+ * speaks it in the translation (`choice`, picked in the tab when `chosen`, else as found) and
+ * the voice that comes to (`voice`; none: its old sound stays). `paths`: the files it speaks in. `known`: the ElevenLabs voice
+ * found for it (`how`), else `note` says why none was; `dub`: the dub's clone, made again from
+ * the dub's sample (`before`: the sample a translation cloned it from); `clip`: a video clip's own sound; `mixed`: its voice is over music; `file`:
+ * the file picked to clone it from.
  */
-export type Voiceover = { path: string; name: string; sentences: number; voice?: TrItem['voice']; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; clip?: boolean; mixed?: boolean; cloned?: boolean }
+export type TrVoiceRow = { key: string; title: string; where: string; paths: string[]; sentences: number; choice: TrVoiceChoice; chosen: boolean; voice?: TrItem['voice']; known?: { voiceId: string; name: string }; dub: boolean; before: boolean; how?: VoiceHow; note?: string; clip?: boolean; mixed?: boolean; file?: string }
+/** How a voice was found: made in Studio, the ElevenLabs history, the file's name, picked in an earlier Studio. */
+type VoiceHow = 'studio' | 'history' | 'name' | 'picked'
 
 /**
  * A sound worth hearing for speech: long enough to say something, and (a sound file) not named as
@@ -193,7 +281,8 @@ function placeIn(c: { startUs: number; inUs: number; durationUs: number; speed?:
 
 /** Hears a voiceover once (what it says, which voice speaks it). */
 export const readVoiceover = (project: string, file: string) => window.studio.services.translateReadVoice(project, file)
-export const pickVoiceover = (project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null) => window.studio.services.translatePickVoice(project, file, voice)
+/** What speaks a voice in the translations (null: the one found). */
+export const chooseVoice = (project: string, key: string, choice: TrVoiceChoice | null) => window.studio.services.translateChooseVoice(project, key, choice)
 
 /** Starts a translation of the open project into `langs`, one copy each. */
 export async function startTranslation(o: { langs: string[]; voice: TrVoice; from: string }) {
@@ -224,6 +313,8 @@ const applying = new Set<string>()
 export function onTranslateJob(job: TrJob, loading = false) {
   const dir = getState().snap?.dir
   if (!dir || !(same(job.source, dir) || same(job.project, dir))) return
+  // Start's answer can come after the job has moved on (its updates come another way): the newer one stays.
+  if ((jobs[job.id]?.rev ?? 0) > (job.rev ?? 0)) return
   setJobs({ ...jobs, [job.id]: job })
   if (same(job.project, dir) && job.state === 'ready') void applyTranslation(job)
   if (loading) told.add(job.id)

@@ -108,11 +108,12 @@ export async function cloneVoice(el: ElevenLabs | null, voiceFile: string, lines
 }
 
 /**
- * A clone sample: up to two minutes of the sentences (seconds into `voiceFile`, longest first),
- * in their order, each with a little air, joined by short silences (never hard-joined).
+ * A clone sample: up to two minutes of the sentences (seconds into `voiceFile`, or into a span's
+ * own `file`; longest first), in their order, each with a little air, joined by short silences
+ * (never hard-joined).
  */
-export async function cutSample(voiceFile: string, spans: { start: number; end: number }[], out: string) {
-  const picked: { start: number; end: number }[] = []
+export async function cutSample(voiceFile: string, spans: { start: number; end: number; file?: string }[], out: string) {
+  const picked: { start: number; end: number; file?: string }[] = []
   let total = 0
   for (const l of [...spans].sort((a, b) => b.end - b.start - (a.end - a.start))) {
     if (total >= 120) break
@@ -120,18 +121,20 @@ export async function cutSample(voiceFile: string, spans: { start: number; end: 
     total += l.end - l.start
   }
   if (!picked.length) throw new Error('There’s no speech to clone the voice from.')
-  picked.sort((a, b) => a.start - b.start)
-  const inputs = picked.flatMap((l) => ['-ss', Math.max(0, l.start - 0.08).toFixed(3), '-t', (l.end - l.start + 0.25).toFixed(3), '-i', voiceFile])
+  // In the order they're said: file by file as given, by time within each.
+  const files = [...new Set(spans.map((l) => l.file ?? voiceFile))]
+  picked.sort((a, b) => files.indexOf(a.file ?? voiceFile) - files.indexOf(b.file ?? voiceFile) || a.start - b.start)
+  const inputs = picked.flatMap((l) => ['-ss', Math.max(0, l.start - 0.08).toFixed(3), '-t', (l.end - l.start + 0.25).toFixed(3), '-i', l.file ?? voiceFile])
   const chain = picked.map((_, i) => `[${i}:a]aresample=44100,aformat=channel_layouts=mono,apad=pad_dur=0.3[a${i}]`).join(';')
   fs.mkdirSync(path.dirname(out), { recursive: true })
   await ffmpeg(['-y', ...inputs, '-filter_complex', `${chain};${picked.map((_, i) => `[a${i}]`).join('')}concat=n=${picked.length}:v=0:a=1[out]`, '-map', '[out]', '-c:a', 'libmp3lame', '-b:a', '192k', out])
   return out
 }
 
-/** An instant clone named "<name> (Studio dub)" from a sample `cloneVoice` made (kept in the dub's folder). */
-export async function cloneFrom(el: ElevenLabs | null, sample: string, name: string): Promise<string> {
+/** An instant clone named "<name> (Studio dub)" (or `label`) from a sample `cloneVoice` made (kept in the dub's folder). */
+export async function cloneFrom(el: ElevenLabs | null, sample: string, name: string, label = `${name} (Studio dub)`): Promise<string> {
   if (FAKE) return fakeClone()
-  return el!.clone({ name: `${name} (Studio dub)`, files: [sample], removeNoise: true, description: 'Made by Studio for a dub of this clip.' })
+  return el!.clone({ name: label, files: [sample], removeNoise: true, description: 'Made by Studio for a dub or translation.' })
 }
 
 /** Deletes a clone Studio made from the account. */

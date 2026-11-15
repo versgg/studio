@@ -9,7 +9,7 @@
 //      (what was generated with the same words tells the voice, its model and speed), else a
 //      voice whose name the file is named after ("Ad 1 Anna v2.wav" → "Anna …"); else none,
 //      and the translation clones it from these sentences for its takes (deleted after), unless
-//      the Translations tab is told which voice it is, or to keep the sound as it is;
+//      another voice, sound to clone from or keeping its sound is picked in the Translations tab;
 //   3. whether the voice is over music or other sound (`mixed`, shared/voice-mix.ts): then a
 //      translation takes it out of the music first, so the music stays under the new voice.
 // A file with no speech in it (music) is kept as that, so it isn't sent again. A video clip's own
@@ -41,7 +41,7 @@ export interface VoiceRead {
   sentences: { text: string; start: number; end: number }[]
   language: string
   voice: ReadVoice | null
-  /** Why no voice was found, when none was; 'kept': the user chose to keep its sound as it is. */
+  /** Why no voice was found, when none was ('kept', from an earlier Studio: the user chose to keep its sound as it is). */
   note?: string
   /** The voice is over music or other sound (measured outside its words). */
   mixed?: boolean
@@ -95,18 +95,6 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
   return job
 }
 
-/** The voice the user picked for a file: an account voice, 'clone' (cloned from it), or null (the old sound stays). */
-export function pickVoice(project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null): VoiceRead | null {
-  const r = knownVoice(project, file)
-  if (!r) return null
-  r.voice = voice && voice !== 'clone' ? { voiceId: voice.voiceId, name: voice.name, model: DEFAULT_MODEL, speed: 1, how: 'picked' } : null
-  // 'kept': chosen to keep its own sound (not "none found"); 'clone': chosen to clone it.
-  r.note = voice === null ? 'kept' : voice === 'clone' ? 'clone' : undefined
-  if (!r.note) delete r.note
-  keep(project, r)
-  return r
-}
-
 /** Whether the voice in `file` is over music or other sound (shared/voice-mix.ts), from its sound at 8 kHz. */
 async function overMusic(file: string, words: { start: number; end: number }[]): Promise<boolean> {
   try {
@@ -121,7 +109,14 @@ async function overMusic(file: string, words: { start: number; end: number }[]):
 /** The file's words through the transcript server (its sound as 16 kHz mono FLAC). */
 async function heard(file: string): Promise<{ language: string; words: { text: string; start: number; end: number }[] }> {
   const audio = await ffmpeg(['-i', file, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'flac', '-f', 'flac', 'pipe:1'])
-  const r = await transcribe({ audio, fileName: 'voiceover.flac' })
+  let r: Awaited<ReturnType<typeof transcribe>>
+  try {
+    r = await transcribe({ audio, fileName: 'voiceover.flac' })
+  } catch (e) {
+    // The server says so when there's no speech at all (music, a sound bed): that's an answer, not a failure.
+    if (/no speech/i.test((e as Error).message)) return { language: '', words: [] }
+    throw e
+  }
   return { language: r.language, words: r.words.map((w) => ({ text: w.word.trim(), start: w.start, end: w.end })).filter((w) => w.text) }
 }
 

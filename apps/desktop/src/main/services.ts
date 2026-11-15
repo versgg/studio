@@ -18,7 +18,7 @@ import { registerSounds } from './sounds'
 import * as dub from './dub'
 import * as stems from './stems'
 import * as translate from './translate'
-import { accountVoices, pickVoice, readVoice } from './voice-read'
+import { accountVoices, readVoice } from './voice-read'
 import * as capcut from './capcut'
 import { Vmake, VmakeAuthError } from './vmake'
 import { known as vmakeKnown, learn as vmakeLearn } from './vmake-catalog'
@@ -152,8 +152,7 @@ export function registerServices() {
   ipcMain.handle('translate:start', (_e, o: translate.TrStart) => tried(() => translate.start(o)))
   ipcMain.handle('translate:readVoice', async (_e, project: string, file: string) => {
     try {
-      await readVoice(project, file)
-      return { ok: true as const }
+      return { ok: true as const, sentences: (await readVoice(project, file)).sentences.length }
     } catch (e) {
       return failure(e)
     }
@@ -165,7 +164,7 @@ export function registerServices() {
       return failure(e)
     }
   })
-  ipcMain.handle('translate:pickVoice', (_e, project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null) => void pickVoice(project, file, voice))
+  ipcMain.handle('translate:chooseVoice', (_e, project: string, key: string, choice: Parameters<typeof translate.chooseVoice>[2]) => translate.chooseVoice(project, key, choice))
   ipcMain.handle('translate:jobs', (_e, project: string) => translate.list(project))
   ipcMain.handle('translate:summary', (_e, projects: string[]) => translate.summary(projects))
   ipcMain.handle('translate:go', (_e, id: string, o: Parameters<typeof translate.go>[1]) => translate.go(id, o))

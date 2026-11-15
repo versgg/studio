@@ -3,7 +3,7 @@
 import type { DubJob, DubLook, DubScan, DubSpoken, DubText, DubVoice, DubVoiceLine } from './dub'
 import type { DubChange } from './dub-retry'
 import type { StemsJob } from './stems'
-import type { TrItem, TrJob, TrLine, TrStems, TrText, TrVoice } from './translate'
+import type { TrItem, TrJob, TrLine, TrStems, TrText, TrVoice, TrVoiceChoice } from './translate'
 import type { CcDraft, CcProject } from './capcut'
 export type { Stem, StemsJob } from './stems'
 
@@ -16,8 +16,8 @@ export type TrSound = {
   text?: string
   original?: string
   lang?: string
-  /** A dub's clone that isn't kept: cloned again from this sample for the take, then deleted. */
-  clone?: { sample: string; name: string }
+  /** A dub's clone that isn't kept (or a translation's, `translation`): cloned again from this sample for the take, then deleted. */
+  clone?: { sample: string; name: string; translation?: boolean }
   /** A voiceover Studio didn't make, as it was heard (main/voice-read.ts): its sentences in seconds into the file (none: no speech), how its voice was found, or why it wasn't. */
   read?: { sentences: { text: string; start: number; end: number }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; language?: string; mixed?: boolean }
 }
@@ -288,12 +288,12 @@ export interface StudioApi {
      * language. `translateContext`: what Studio knows about the project's sounds (the voice that
      * spoke each, what it says, the words a dub translated from) and its dubs' text translations.
      */
-    translateContext(project: string, paths: string[]): Promise<{ sounds: Record<string, TrSound>; texts: { translation: string; original: string }[]; lang: string; filmed: TrFilmed[]; heard: TrHeard[] } | ServiceError>
+    translateContext(project: string, paths: string[]): Promise<{ sounds: Record<string, TrSound>; texts: { translation: string; original: string }[]; lang: string; choices: Record<string, TrVoiceChoice>; filmed: TrFilmed[]; heard: TrHeard[] } | ServiceError>
     translateStart(o: { source: string; name: string; from: string; langs: string[]; voice: TrVoice; items: TrItem[]; durationUs: number }): Promise<TrJob[] | ServiceError>
     /** A voiceover Studio didn't make, heard once (what it says, which ElevenLabs voice speaks it); then `translateContext` knows it. */
-    translateReadVoice(project: string, file: string): Promise<{ ok: true } | ServiceError>
-    /** The voice that speaks a read voiceover, picked by hand (null: none, its old sound stays). */
-    translatePickVoice(project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null): Promise<void>
+    translateReadVoice(project: string, file: string): Promise<{ ok: true; sentences: number } | ServiceError>
+    /** What speaks a voice (by its key in the tab): an ElevenLabs voice, a clone from a sound, or its old sound; null: the one found. */
+    translateChooseVoice(project: string, key: string, choice: TrVoiceChoice | null): Promise<void>
     /** The ElevenLabs account's own voices, to pick from. */
     translateVoices(): Promise<{ id: string; name: string }[] | ServiceError>
     /** The jobs translating a project, or the project's own (it's a copy). */
