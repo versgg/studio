@@ -115,6 +115,17 @@ export function sortStems<T extends { name: string }>(items: T[]): T[] {
   return [...items].sort((a, b) => rank(a.name) - rank(b.name))
 }
 
+/**
+ * A separation's voice and the rest of the sound without it (music and effects, never a stem
+ * twice), from the stems that aren't silent. For a dub's voice and a translation's.
+ */
+export function voiceAndBed<T extends { name: string; silent: boolean; path: string }>(stems: T[]): { voice?: string; bed: string[] } {
+  const heard = stems.filter((s) => !s.silent)
+  const voice = ['dialogue', 'speech_denoise', 'vocals', 'vocals_lead'].map((n) => heard.find((s) => s.name === n)).find(Boolean)
+  const bedNames = heard.some((s) => s.name === 'music_fx') ? ['music_fx'] : heard.some((s) => s.name === 'instrumental') ? ['instrumental', 'effects'] : heard.filter((s) => !/^(vocals|dialogue|speech)/.test(s.name)).map((s) => s.name)
+  return { voice: voice?.path, bed: heard.filter((s) => bedNames.includes(s.name)).map((s) => s.path) }
+}
+
 /** Stems that hold others: picking both plays those parts twice. */
 export const NESTED: Record<string, string[]> = {
   vocals: ['vocals_lead', 'vocals_backing'],

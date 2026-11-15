@@ -3,7 +3,7 @@
 import type { DubJob, DubLook, DubScan, DubSpoken, DubText, DubVoice, DubVoiceLine } from './dub'
 import type { DubChange } from './dub-retry'
 import type { StemsJob } from './stems'
-import type { TrItem, TrJob, TrLine, TrText, TrVoice } from './translate'
+import type { TrItem, TrJob, TrLine, TrStems, TrText, TrVoice } from './translate'
 import type { CcDraft, CcProject } from './capcut'
 export type { Stem, StemsJob } from './stems'
 
@@ -19,7 +19,7 @@ export type TrSound = {
   /** A dub's clone that isn't kept: cloned again from this sample for the take, then deleted. */
   clone?: { sample: string; name: string }
   /** A voiceover Studio didn't make, as it was heard (main/voice-read.ts): its sentences in seconds into the file (none: no speech), how its voice was found, or why it wasn't. */
-  read?: { sentences: { text: string; start: number; end: number }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string }
+  read?: { sentences: { text: string; start: number; end: number }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; language?: string; mixed?: boolean }
 }
 /** Overlay text a dub left in the picture as filmed: in the dub's own time; `dir` is its folder's name. */
 export type TrFilmed = { dir: string; text: string; startUs: number; endUs: number; box: { x: number; y: number; w: number; h: number } }
@@ -293,7 +293,7 @@ export interface StudioApi {
     /** A voiceover Studio didn't make, heard once (what it says, which ElevenLabs voice speaks it); then `translateContext` knows it. */
     translateReadVoice(project: string, file: string): Promise<{ ok: true } | ServiceError>
     /** The voice that speaks a read voiceover, picked by hand (null: none, its old sound stays). */
-    translatePickVoice(project: string, file: string, voice: { voiceId: string; name: string } | null): Promise<void>
+    translatePickVoice(project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null): Promise<void>
     /** The ElevenLabs account's own voices, to pick from. */
     translateVoices(): Promise<{ id: string; name: string }[] | ServiceError>
     /** The jobs translating a project, or the project's own (it's a copy). */
@@ -302,7 +302,7 @@ export interface StudioApi {
     translateGo(id: string, o: { picks: string[]; edits?: Record<string, string> }): Promise<TrJob | null>
     translateRetry(id: string): Promise<TrJob | null>
     translateCancel(id: string): Promise<TrJob | null>
-    translateResult(id: string): Promise<{ job: TrJob; items: TrItem[]; texts: TrText[]; voice: TrLine[] | null } | ServiceError>
+    translateResult(id: string): Promise<{ job: TrJob; items: TrItem[]; texts: TrText[]; voice: TrLine[] | null; stems: Record<string, TrStems> } | ServiceError>
     translateApplied(id: string): Promise<void>
     translateFailed(id: string, reason: string): Promise<void>
     onTranslateJob(cb: (job: TrJob) => void): () => void

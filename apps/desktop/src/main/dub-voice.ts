@@ -101,22 +101,31 @@ export const iso2 = (code: string) => (code.length === 3 ? (ISO3[code.toLowerCas
 
 /** One instant clone of a speaker from up to two minutes of their own sentences (longest first). */
 export async function cloneVoice(el: ElevenLabs | null, voiceFile: string, lines: Spoken[], speaker: string, name: string, dir: string): Promise<string> {
-  const mine = lines.filter((l) => l.speaker === speaker).sort((a, b) => b.end - b.start - (a.end - a.start))
-  const picked: Spoken[] = []
+  const sample = path.join(dir, `clone-${speaker}.mp3`)
+  await cutSample(voiceFile, lines.filter((l) => l.speaker === speaker), sample)
+  // The stand-in keeps the sample too, as her clone is made again from it.
+  return cloneFrom(el, sample, name)
+}
+
+/**
+ * A clone sample: up to two minutes of the sentences (seconds into `voiceFile`, longest first),
+ * in their order, each with a little air, joined by short silences (never hard-joined).
+ */
+export async function cutSample(voiceFile: string, spans: { start: number; end: number }[], out: string) {
+  const picked: { start: number; end: number }[] = []
   let total = 0
-  for (const l of mine) {
+  for (const l of [...spans].sort((a, b) => b.end - b.start - (a.end - a.start))) {
     if (total >= 120) break
     picked.push(l)
     total += l.end - l.start
   }
+  if (!picked.length) throw new Error('There’s no speech to clone the voice from.')
   picked.sort((a, b) => a.start - b.start)
-  // Each sentence with a little air, joined by short silences (never hard-joined).
   const inputs = picked.flatMap((l) => ['-ss', Math.max(0, l.start - 0.08).toFixed(3), '-t', (l.end - l.start + 0.25).toFixed(3), '-i', voiceFile])
   const chain = picked.map((_, i) => `[${i}:a]aresample=44100,aformat=channel_layouts=mono,apad=pad_dur=0.3[a${i}]`).join(';')
-  const sample = path.join(dir, `clone-${speaker}.mp3`)
-  await ffmpeg(['-y', ...inputs, '-filter_complex', `${chain};${picked.map((_, i) => `[a${i}]`).join('')}concat=n=${picked.length}:v=0:a=1[out]`, '-map', '[out]', '-c:a', 'libmp3lame', '-b:a', '192k', sample])
-  // The stand-in keeps the sample too, as her clone is made again from it.
-  return cloneFrom(el, sample, name)
+  fs.mkdirSync(path.dirname(out), { recursive: true })
+  await ffmpeg(['-y', ...inputs, '-filter_complex', `${chain};${picked.map((_, i) => `[a${i}]`).join('')}concat=n=${picked.length}:v=0:a=1[out]`, '-map', '[out]', '-c:a', 'libmp3lame', '-b:a', '192k', out])
+  return out
 }
 
 /** An instant clone named "<name> (Studio dub)" from a sample `cloneVoice` made (kept in the dub's folder). */

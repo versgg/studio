@@ -7,8 +7,11 @@
 //   2. has Claude translate it all as one piece, with a back-translation       → translation.json
 //   3. waits for the review (the languages started together are reviewed together); nothing
 //      paid has run yet;
-//   4. with "Same voice": each voice speaks its sentences in the new language as one take
-//      (her clone from the dub, a voiceover's own voice), cut into sentences and fitted to
+//   4. with "Same voice": a voice over music (a clip's own sound) is taken out of it first by
+//      the stems server, so the music stays under the new voice                → stems.json
+//      a voice Studio doesn't know is cloned from its own sentences for the takes and deleted
+//      after; then each voice speaks its sentences in the new language as one take (her clone
+//      from the dub, a voiceover's own voice, or that clone), cut into sentences and fitted to
 //      their moments as a dub does (dub-voice.ts), up to three takes        → voice.json
 //   5. is ready: the page puts it on the copy's timeline when that project is open.
 // Jobs live in their copy (`<copy>.studio/translation/job.json`); userData's
@@ -19,12 +22,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { trProjectName, trRunning, type TrItem, type TrJob, type TrLine, type TrText, type TrVoice } from '../shared/translate'
 import { ClaudeSignedOut, translateSpeech } from './dub-read'
-import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cutTake, fitLines, iso2, removeClone, retime, speakTake, type Spoken } from './dub-voice'
+import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cutSample, cutTake, fitLines, iso2, removeClone, retime, speakTake, type Spoken } from './dub-voice'
 import { ElevenLabs } from './elevenlabs'
 import { getSecret } from './secrets'
 import { budgets, translateItems } from './translate-read'
 import { knownVoice } from './voice-read'
+import * as stems from './stems'
+import { MAX_SECONDS, voiceAndBed } from '../shared/stems'
 import type { TrSound } from '../shared/api'
+import type { TrStems } from '../shared/translate'
 
 const jobs = new Map<string, TrJob>()
 const live = new Map<string, AbortController>()
@@ -256,18 +262,91 @@ async function run(job: TrJob) {
     const said = items.filter((i) => i.kind === 'line' && i.voice && job.picks!.includes(i.id) && texts.some((t) => t.id === i.id))
     const notes: string[] = []
     if (job.voice === 'same' && said.length && !fs.existsSync(file('voice.json'))) {
+      const sep = await separate(job, said, gone, notes)
+      if (!sep) return
+      if (!(await samples(job, said, sep, notes))) return
       const lines = await speak(job, items, texts, said, durationUs, gone, notes)
       if (!lines) return
       fs.writeFileSync(file('voice.json'), JSON.stringify({ lines }, null, 1))
     }
     const unknown = items.filter((i) => i.kind === 'line' && !i.voice).length
-    if (job.voice === 'same' && unknown) notes.push(`${unknown} spoken part${unknown === 1 ? ' has' : 's have'} no voice Studio knows, so ${unknown === 1 ? 'it keeps' : 'they keep'} the old sound.`)
+    if (job.voice === 'same' && unknown) notes.push(`${unknown} spoken part${unknown === 1 ? ' was' : 's were'} set to keep ${unknown === 1 ? 'its' : 'their'} own sound, so ${unknown === 1 ? 'it stays' : 'they stay'} in the old language.`)
     patch(job, { state: 'ready', stage: 'Ready: goes on its timeline when you open it', fraction: 0.97, notes: [...(job.notes ?? []), ...notes] })
   } catch (e) {
     if (jobs.get(job.id) === job && !signal.aborted) patch(job, { state: 'failed', stage: 'Failed', reason: (e as Error).message })
   } finally {
     if (live.get(job.id) === stop) live.delete(job.id)
   }
+}
+
+/**
+ * Every sound whose voice is over music, with picked sentences in it, separated by the stems
+ * server (once; kept in stems.json, by the file's path): its voice, and the rest of the sound
+ * (the bed) that stays under the new voice. One that can't be separated is noted, and its
+ * sound is then cut where the new voice speaks, as a voiceover's is.
+ */
+async function separate(job: TrJob, said: TrItem[], gone: () => boolean, notes: string[]): Promise<Record<string, TrStems | { failed: string }> | null> {
+  const file = path.join(job.dir, 'stems.json')
+  const done: Record<string, TrStems | { failed: string }> = fs.existsSync(file) ? readJson(file) : {}
+  const todo = new Map<string, TrItem>()
+  // One that failed before is tried again (Try again).
+  for (const i of said) {
+    const d = i.heard?.mixed ? done[i.heard.path] : undefined
+    if (i.heard?.mixed && (!d || 'failed' in d) && !todo.has(i.heard.path)) todo.set(i.heard.path, i)
+  }
+  let n = 0
+  for (const [src, item] of todo) {
+    n++
+    const h = item.heard!
+    const name = path.parse(src).name
+    try {
+      if (h.spanUs / 1e6 > MAX_SECONDS) throw new Error(`the server separates up to ${MAX_SECONDS / 60} minutes and the clips play ${Math.round(h.spanUs / 1e6)} s of it`)
+      const clipId = item.id.slice(2).replace(/~\d+$/, '')
+      const sj = stems.start({ project: job.project, clipId, mediaId: h.mediaId, name, source: src, inUs: h.fromUs, spanUs: h.spanUs })
+      for (;;) {
+        if (gone()) return null
+        const now = stems.list(job.project).find((s) => s.dir === sj.dir)
+        if (!now) throw new Error('the separation went missing')
+        if (now.state === 'done' && now.stems) {
+          const vb = voiceAndBed(now.stems)
+          done[src] = { ...vb, fromUs: h.fromUs }
+          break
+        }
+        if (now.state === 'failed' || now.state === 'cancelled') throw new Error(now.reason ?? 'the separation stopped')
+        patch(job, { state: 'voicing', stage: `Taking the voice out of the music${todo.size > 1 ? ` (${n} of ${todo.size})` : ''}: ${now.stage}`, fraction: 0.32 + (0.03 * (n - 1 + now.fraction)) / todo.size })
+        await sleep(1000)
+      }
+    } catch (e) {
+      done[src] = { failed: (e as Error).message }
+    }
+    fs.writeFileSync(file, JSON.stringify(done, null, 1))
+  }
+  for (const [src, r] of Object.entries(done)) if ('failed' in r && todo.has(src)) notes.push(`The voice in ${path.basename(src)} couldn’t be taken out of its music (${r.failed}), so its sound is cut where the new voice speaks.`)
+  return done
+}
+
+/**
+ * The clone samples for voices Studio doesn't know (a CapCut voiceover, a clip's own speaker):
+ * cut from the sentences heard in that sound (its separated voice when it was over music),
+ * kept in this job's folder. The takes clone from them and delete the clone after.
+ */
+async function samples(job: TrJob, said: TrItem[], sep: Record<string, TrStems | { failed: string }>, notes: string[]): Promise<boolean> {
+  const groups = new Map<string, TrItem[]>()
+  for (const i of said) if (i.voice?.clone && !i.voice.clone.sample && i.heard) groups.set(i.voice.voiceId, [...(groups.get(i.voice.voiceId) ?? []), i])
+  let n = 0
+  for (const [, group] of groups) {
+    n++
+    const h = group[0].heard!
+    const s = sep[h.path]
+    const stem = s && !('failed' in s) && s.voice ? s : null
+    // The separated voice starts at `fromUs` in the file.
+    const shift = stem ? stem.fromUs / 1e6 : 0
+    const out = path.join(job.dir, `clone-sample-${n}.mp3`)
+    if (!fs.existsSync(out)) await cutSample(stem?.voice ?? h.path, group.map((i) => ({ start: Math.max(0, i.heard!.start - shift), end: i.heard!.end - shift })), out)
+    for (const i of group) i.voice!.clone!.sample = out
+  }
+  if (groups.size) notes.push(`${groups.size === 1 ? 'A voice' : `${groups.size} voices`} Studio didn’t know ${groups.size === 1 ? 'was' : 'were'} cloned from ${groups.size === 1 ? 'its' : 'their'} own sentences for this translation and deleted from ElevenLabs after.`)
+  return true
 }
 
 /** A file name's safe form of an item id ("v:c12" → "v_c12"). */
@@ -425,6 +504,7 @@ export function result(id: string) {
     items: opt<{ items: TrItem[] }>('items.json')?.items ?? [],
     texts: opt<{ texts: TrText[] }>('translation.json')?.texts ?? [],
     voice: opt<{ lines: TrLine[] }>('voice.json')?.lines ?? null,
+    stems: Object.fromEntries(Object.entries(opt<Record<string, TrStems | { failed: string }>>('stems.json') ?? {}).filter((e): e is [string, TrStems] => !('failed' in e[1]))),
   }
 }
 
@@ -497,7 +577,7 @@ export function context(project: string, paths: string[]) {
     if (!script) {
       // A voiceover Studio didn't make, once it's been heard (voice-read.ts).
       const r = knownVoice(project, p)
-      if (r) sounds[key(p)] = { text: r.sentences.map((x) => x.text).join(' '), ...(r.voice ? { voiceId: r.voice.voiceId, model: r.voice.model, speed: r.voice.speed, name: r.voice.name } : {}), lang: r.language, read: { sentences: r.sentences, how: r.voice?.how, note: r.note } }
+      if (r) sounds[key(p)] = { text: r.sentences.map((x) => x.text).join(' '), ...(r.voice ? { voiceId: r.voice.voiceId, model: r.voice.model, speed: r.voice.speed, name: r.voice.name } : {}), lang: r.language, read: { sentences: r.sentences, how: r.voice?.how, note: r.note, language: r.language, mixed: !!r.mixed } }
       continue
     }
     const v = fs.existsSync(`${stem}.voice.json`) ? readJson<{ voiceId: string; modelId: string; speed?: number; name?: string; languageCode?: string }>(`${stem}.voice.json`) : null

@@ -7,9 +7,13 @@
 //      (at . ! ? or a pause), each placed where it's said;
 //   2. the voice: the one Studio wrote beside the file, else the account's ElevenLabs history
 //      (what was generated with the same words tells the voice, its model and speed), else a
-//      voice whose name the file is named after ("Ad 1 Anna v2.wav" → "Anna …"); else none, and
-//      the Translations tab asks which voice it is. Nothing is ever cloned here.
-// A file with no speech in it (music) is kept as that, so it isn't sent again.
+//      voice whose name the file is named after ("Ad 1 Anna v2.wav" → "Anna …"); else none,
+//      and the translation clones it from these sentences for its takes (deleted after), unless
+//      the Translations tab is told which voice it is, or to keep the sound as it is;
+//   3. whether the voice is over music or other sound (`mixed`, shared/voice-mix.ts): then a
+//      translation takes it out of the music first, so the music stays under the new voice.
+// A file with no speech in it (music) is kept as that, so it isn't sent again. A video clip's own
+// sound is read the same way (its file's sound).
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -19,6 +23,7 @@ import { FAKE } from './dub-voice'
 import { ElevenLabs } from './elevenlabs'
 import { ffmpeg } from './ffmpeg'
 import { getSecret } from './secrets'
+import { overOtherSound } from '../shared/voice-mix'
 
 export type VoiceHow = 'studio' | 'history' | 'name' | 'picked'
 
@@ -36,8 +41,10 @@ export interface VoiceRead {
   sentences: { text: string; start: number; end: number }[]
   language: string
   voice: ReadVoice | null
-  /** Why no voice was found, when none was. */
+  /** Why no voice was found, when none was; 'kept': the user chose to keep its sound as it is. */
   note?: string
+  /** The voice is over music or other sound (measured outside its words). */
+  mixed?: boolean
 }
 
 /** The model a found voice speaks the translation with: its own when that's a v3 or newer (any language), else v4. */
@@ -76,10 +83,10 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
   if (!job) {
     job = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${path.basename(file)} is missing.`)
-      const words = FAKE ? fakeWords() : await heard(file)
+      const words = FAKE ? fakeWords(file) : await heard(file)
       const sentences = sentencesOf(words.words)
       const r: VoiceRead = { file, sentences, language: words.language, voice: null }
-      if (sentences.length) Object.assign(r, await findVoice(file, sentences.map((s) => s.text).join(' ')))
+      if (sentences.length) Object.assign(r, await findVoice(file, sentences.map((s) => s.text).join(' ')), { mixed: await overMusic(file, words.words) })
       keep(project, r)
       return r
     })().finally(() => reading.delete(k))
@@ -88,16 +95,27 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
   return job
 }
 
-/** The voice the user picked for a file (null: none, the old sound stays). */
-export function pickVoice(project: string, file: string, voice: { voiceId: string; name: string } | null): VoiceRead | null {
+/** The voice the user picked for a file: an account voice, 'clone' (cloned from it), or null (the old sound stays). */
+export function pickVoice(project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null): VoiceRead | null {
   const r = knownVoice(project, file)
   if (!r) return null
-  r.voice = voice ? { voiceId: voice.voiceId, name: voice.name, model: DEFAULT_MODEL, speed: 1, how: 'picked' } : null
-  // 'kept': chosen to keep its own sound (not "none found").
-  if (voice) delete r.note
-  else r.note = 'kept'
+  r.voice = voice && voice !== 'clone' ? { voiceId: voice.voiceId, name: voice.name, model: DEFAULT_MODEL, speed: 1, how: 'picked' } : null
+  // 'kept': chosen to keep its own sound (not "none found"); 'clone': chosen to clone it.
+  r.note = voice === null ? 'kept' : voice === 'clone' ? 'clone' : undefined
+  if (!r.note) delete r.note
   keep(project, r)
   return r
+}
+
+/** Whether the voice in `file` is over music or other sound (shared/voice-mix.ts), from its sound at 8 kHz. */
+async function overMusic(file: string, words: { start: number; end: number }[]): Promise<boolean> {
+  try {
+    const raw = await ffmpeg(['-i', file, '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'])
+    const bytes = new Uint8Array(raw)
+    return overOtherSound(new Int16Array(bytes.buffer, 0, bytes.byteLength >> 1), 8000, words)
+  } catch {
+    return false
+  }
 }
 
 /** The file's words through the transcript server (its sound as 16 kHz mono FLAC). */
@@ -204,15 +222,23 @@ export function matchName(fileName: string, voices: { id: string; name: string }
   return hits.length === 1 ? hits[0] : null
 }
 
-// The stand-in for tests (STUDIO_ELEVEN_FAKE=1): never calls the server or ElevenLabs. The file
-// "says" two Swedish sentences; the account has Test Voice, whose history holds the first of them.
+// The stand-in for tests (STUDIO_ELEVEN_FAKE=1): never calls the server or ElevenLabs. A file
+// named as a voiceover, or as one that speaks ("speaks-…"), "says" two Swedish sentences (any
+// other is heard as no speech). The account has Test Voice, whose history holds a voiceover's
+// sentences; a file that speaks says others, in a voice the account doesn't know.
 
 const FAKE_SAID = 'Det här är testet. Nu kommer den andra meningen som är lite längre.'
 
-function fakeWords() {
-  const words = FAKE_SAID.split(' ').map((text, i) => ({ text, start: 0.4 + i * 0.4 + (i > 3 ? 0.6 : 0), end: 0.7 + i * 0.4 + (i > 3 ? 0.6 : 0) }))
+function fakeWords(file: string) {
+  const name = path.basename(file)
+  if (!/voiceover|speaks/i.test(name)) return { language: 'sv', words: [] }
+  const said = /speaks/i.test(name) ? FAKE_SPEAKS : FAKE_SAID
+  const words = said.split(' ').map((text, i) => ({ text, start: 0.4 + i * 0.4 + (i > 3 ? 0.6 : 0), end: 0.7 + i * 0.4 + (i > 3 ? 0.6 : 0) }))
   return { language: 'sv', words }
 }
+
+/** What a clip that speaks says, in a voice the stand-in account doesn't have. */
+const FAKE_SPEAKS = 'Hej och välkommen hit. Det här är min favorit och jag använder den varje dag.'
 
 const fakeEleven = {
   history: async () => [{ voiceId: 'fake-voice', voiceName: 'Test Voice', model: 'eleven_v3', text: FAKE_SAID, speed: 1.05, at: 1 }],

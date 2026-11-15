@@ -37,6 +37,9 @@ const voice = join(work, 'voiceover.wav')
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-y', voice])
 // A voiceover to cut into pieces (its script and voice are written beside it by the check).
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=330:duration=9', '-y', join(work, 'cut-voiceover.wav')])
+// A clip in which someone "speaks" (a tone from 0.3 to 7 s, where the stand-in hears two Swedish
+// sentences) over music that plays all the way through: the Translations steps hear its own sound.
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=0x2a3a2a:s=540x960:d=11:r=30', '-f', 'lavfi', '-i', 'sine=f=220:d=11', '-f', 'lavfi', '-i', 'sine=f=523:d=11', '-filter_complex', "[1]volume='if(between(t,0.3,7),0.8,0)':eval=frame[v];[2]volume=0.12[m];[v][m]amix=inputs=2:normalize=0[a]", '-map', '0:v', '-map', '[a]', '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', join(work, 'speaks-with-music.mp4')])
 
 // A spoken voiceover for the captions step, with its script beside it as a voiceover made in
 // the Audio tab keeps (Windows' own speech voice; espeak-ng elsewhere). That step runs a real

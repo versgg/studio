@@ -3109,6 +3109,41 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        if (l.id !== 'v:' + ids[0] || l.text !== ${JSON.stringify(cutScript)} || JSON.stringify(l.pieces) !== JSON.stringify(ids.slice(1)) || l.startUs !== pieces[0].startUs || l.endUs !== last.startUs + last.durationUs || l.voice?.voiceId !== 'fake-voice') throw new Error('the line: ' + JSON.stringify(l))
        return { pieces: ids.length, line: { id: l.id, pieces: l.pieces.length, seconds: ((l.endUs - l.startUs) / 1e6).toFixed(1) } }`,
     )
+    // A clip whose own sound speaks Swedish over music, in a voice the (stand-in) account doesn't
+    // have: heard, its voice cloned for the takes and taken out of its music (STUDIO_STEMS_FAKE).
+    const speaks = path.join(path.dirname(exportDir), 'speaks-with-music.mp4')
+    const speaksStep = 'Translations: a clip that speaks over music, in a voice no ElevenLabs voice matches, is heard, cloned for the translation and taken out of its music; set to keep its sound, the check says it’s still spoken'
+    if (process.env.STUDIO_STEMS_FAKE === '1' && fs.existsSync(speaks))
+      await step(
+        speaksStep,
+        `${cat('Translations')}
+         const engine = window.studio.engine
+         const same = __t.qa('.lib-setting button').find((b) => b.textContent === 'Same voice')
+         if (same && same.getAttribute('aria-pressed') !== 'true') same.click()
+         const s0 = await __t.snap()
+         const imp = await engine.call('media.import', { paths: [${JSON.stringify(speaks)}] })
+         const mediaId = imp.imported?.[0]
+         if (!mediaId) throw new Error('not imported: ' + JSON.stringify(imp))
+         await engine.call('timeline.insert', { mediaId, atUs: s0.durationUs })
+         const note = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /^speaks-with-music\\.mp4 \\(the clip’s own sound\\): 2 sentences, .*cloned from these sentences.*over music/.test(t)), 15000, 'the clip heard, its voice to be cloned and taken out of its music')
+         const items = (await window.__studio.collectTranslation()).items.filter((i) => i.heard?.mediaId === mediaId)
+         if (items.length !== 2 || !items.every((i) => i.heard.mixed && i.voice?.clone && i.voice.voiceId.startsWith('clone:'))) throw new Error('its lines: ' + JSON.stringify(items))
+         const clear = await __t.until(() => __t.q('.tr-check:not(.stays)')?.textContent, 5000, 'the check saying everything is said again')
+         const choose = async (name) => {
+           const sel = await __t.until(() => __t.q('select[aria-label="The voice of speaks-with-music.mp4"]'), 5000, 'the clip’s voice')
+           const opt = await __t.until(() => [...sel.options].find((o) => o.textContent === name), 5000, 'the option ' + name)
+           Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, opt.value)
+           sel.dispatchEvent(new Event('change', { bubbles: true }))
+         }
+         await choose('Keep its own sound')
+         const stays = await __t.until(() => __t.q('.tr-check.stays')?.textContent, 5000, 'the check to say it’s still spoken')
+         if (!/Still spoken in/.test(stays) || !/speaks-with-music\\.mp4: set to keep its own sound \\(2 sentences\\)/.test(stays)) throw new Error('the check: ' + stays)
+         await choose('Clone it from this sound')
+         await __t.until(() => __t.q('.tr-check:not(.stays)'), 5000, 'the check clear again')
+         return { note, clear, stays }`,
+      )
+    if (process.env.STUDIO_STEMS_FAKE === '1' && fs.existsSync(speaks)) await shot('23a-translations-check')
+    else console.log('[ui-check] skip ' + speaksStep + ': it needs STUDIO_STEMS_FAKE=1 (the stems server is never called from tests)')
     await step(
       'Translations: the tab finds the text and starts one project per language',
       `${cat('Translations')}
@@ -3122,8 +3157,8 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        const note = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => /text clip/.test(t)), 8000, 'what the tab found')
        for (const b of __t.qa('.tr-langs button')) if ((b.getAttribute('aria-pressed') === 'true') !== ['Norwegian', 'Danish'].includes(b.textContent)) b.click()
        await __t.sleep(100)
-       const go = __t.qa('.tr-buttons button').find((b) => /Translate into 2 languages/.test(b.textContent))
-       if (!go) throw new Error('no Translate button: ' + __t.qa('.tr-buttons button').map((b) => b.textContent).join(', '))
+       // Translate waits until every sound has been heard.
+       const go = await __t.until(() => __t.qa('.tr-buttons button').find((b) => /Translate into 2 languages/.test(b.textContent) && !b.disabled), 15000, 'Translate (there are: ' + __t.qa('.tr-buttons button').map((b) => b.textContent).join(', ') + ')')
        go.click()
        await __t.until(() => __t.q('.tr-tabs'), 20000, 'the review with a tab per language')
        return { note, tabs: __t.qa('.tr-tabs button').map((b) => b.textContent), rows: __t.qa('.tr-item').length }`,
@@ -3151,8 +3186,24 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        if (sounds.some((p) => /(^|[\\\\/])voiceover.wav$/.test(p))) throw new Error('the old voiceover is still there')
        // The voiceover cut into pieces: every piece out, its script spoken once.
        if (sounds.some((p) => /cut-voiceover.wav$/.test(p))) throw new Error('a piece of the cut voiceover is still there: ' + sounds.join(' | '))
-       return { project: s.project.name, texts, said: said.length }`,
+       // The clip that spoke over music: its own sound off, its music from the separation under
+       // it, its voice gone (every sentence said again).
+       const sp = s.project.tracks.filter((t) => t.kind === 'video').flatMap((t) => t.clips).find((c) => /speaks-with-music\\.mp4$/.test(s.project.media.find((m) => m.id === c.mediaId)?.path ?? ''))
+       let music = null
+       if (sp) {
+         if (!sp.detached) throw new Error('the clip’s own Swedish sound still plays')
+         music = sounds.filter((p) => /speaks-with-music \\(Instrumental\\)\\.mp3$/.test(p)).length
+         if (!music) throw new Error('no music from the separation under it: ' + sounds.join(' | '))
+         if (sounds.some((p) => /speaks-with-music \\(Vocals\\)\\.mp3$/.test(p))) throw new Error('its Swedish voice is still there')
+       }
+       return { project: s.project.name, texts, said: said.length, music }`,
     )
+    // The clone made for the clip's voice is gone from the (stand-in) account.
+    const landed = results.find((x) => x.step === 'Translations: the review shows each line with its back-translation, and Translate lands the language in its own project')
+    if (landed?.ok && elevenTest.live() !== 0) {
+      Object.assign(landed, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account` })
+      console.log(`[ui-check] FAIL ${landed.step}: ${elevenTest.live()} clone(s) left in the account`)
+    }
     await shot('23b-translations-copy')
     await step(
       'Translations: a copy translates from its own language, and Cancel in the review removes the untouched new copy',

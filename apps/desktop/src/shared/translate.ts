@@ -18,7 +18,17 @@ export type TrItem = {
   voice?: { voiceId: string; model: string; speed: number; name: string; clone?: { sample: string; name: string } }
   /** A `v:<clipId>` sound cut into pieces (the pauses taken out): the clips after the first, which go with it when it's spoken again. */
   pieces?: string[]
+  /**
+   * Where a spoken sentence is in its sound file (seconds into it), for a voice Studio doesn't
+   * know: it's cloned from the file's sentences for the takes and deleted after. `mixed`: the
+   * voice is over music or other sound, so it's taken out of it first (the stems server) and the
+   * rest of the sound stays. `fromUs`/`spanUs`: the stretch of the file the clips play.
+   */
+  heard?: { path: string; mediaId: string; start: number; end: number; mixed: boolean; fromUs: number; spanUs: number }
 }
+
+/** A sound whose voice was taken out of its music for a translation: the voice and the rest, from `fromUs` in the file. */
+export type TrStems = { voice?: string; bed: string[]; fromUs: number }
 
 /** Claude's translation of one item, with what it says back in the project's language (to check meaning). */
 export type TrText = { id: string; translation: string; back: string }

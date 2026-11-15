@@ -13,3 +13,10 @@
 .tr-item .tr-back { grid-column: 2 / -1; font-size: 11px; line-height: 14px; color: #6e6e77; }
 .tr-own { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 3px; background: #1c1c1f; font-size: 12px; line-height: 16px; color: #a3a3ab; }
 .tr-own .lib-link { align-self: flex-start; }
+/* The check above Translate: a quiet line when everything spoken is said again; a yellow rule
+   and heading (the app's warning colour) when something would still be spoken in the old language. */
+.tr-check { display: flex; flex-direction: column; gap: 3px; margin: 2px 0 4px; padding: 2px 0 2px 9px; border-left: 2px solid #2a2a2e; font-size: 12px; line-height: 16px; color: #a3a3ab; }
+.tr-check p { margin: 0; }
+.tr-check.stays { border-left-color: #E8C050; }
+.tr-check-head { color: #ededef; }
+.tr-check.stays .tr-check-head { color: #E8C050; }

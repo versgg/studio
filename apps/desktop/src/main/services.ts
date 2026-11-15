@@ -165,7 +165,7 @@ export function registerServices() {
       return failure(e)
     }
   })
-  ipcMain.handle('translate:pickVoice', (_e, project: string, file: string, voice: { voiceId: string; name: string } | null) => void pickVoice(project, file, voice))
+  ipcMain.handle('translate:pickVoice', (_e, project: string, file: string, voice: { voiceId: string; name: string } | 'clone' | null) => void pickVoice(project, file, voice))
   ipcMain.handle('translate:jobs', (_e, project: string) => translate.list(project))
   ipcMain.handle('translate:summary', (_e, projects: string[]) => translate.summary(projects))
   ipcMain.handle('translate:go', (_e, id: string, o: Parameters<typeof translate.go>[1]) => translate.go(id, o))

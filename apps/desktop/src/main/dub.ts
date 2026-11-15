@@ -29,6 +29,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { retryPlan, type DubChange } from '../shared/dub-retry'
 import { cloneLease } from '../shared/clone-lease'
+import { voiceAndBed } from '../shared/stems'
 import { VOICE_GONE, cloneSpeaker } from '../shared/reclone'
 import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubTake, type DubText, type DubVoiceLine } from '../shared/dub'
 import { buildBase, measureLooks } from './dub-look'
@@ -402,13 +403,8 @@ async function waitForStems(job: DubJob, gone: () => boolean) {
     if (gone()) return null
     const sj = stems.list(job.project).find((s) => s.dir === job.stemsDir)
     if (!sj) throw new Error('The voice separation went missing. Try the dub again.')
-    if (sj.state === 'done' && sj.stems) {
-      const heard = sj.stems.filter((s) => !s.silent)
-      const voice = ['dialogue', 'speech_denoise', 'vocals', 'vocals_lead'].map((n) => heard.find((s) => s.name === n)).find(Boolean)
-      // The background: music and sound effects without the voice, never a stem twice.
-      const bedNames = heard.some((s) => s.name === 'music_fx') ? ['music_fx'] : heard.some((s) => s.name === 'instrumental') ? ['instrumental', 'effects'] : heard.filter((s) => !/^(vocals|dialogue|speech)/.test(s.name)).map((s) => s.name)
-      return { voice: voice?.path, bed: heard.filter((s) => bedNames.includes(s.name)).map((s) => s.path) }
-    }
+    // The background: music and sound effects without the voice, never a stem twice.
+    if (sj.state === 'done' && sj.stems) return voiceAndBed(sj.stems)
     if (sj.state === 'failed' || sj.state === 'cancelled') throw new Error(`Her voice couldn’t be separated from the music: ${sj.reason ?? 'the separation stopped'}`)
     patch(job, { state: 'voicing', stage: `Separating the voice from the music: ${sj.stage}`, fraction: 0.32 + sj.fraction * 0.1 })
     await sleep(1000)
