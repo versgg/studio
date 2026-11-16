@@ -2,7 +2,7 @@
 // click a shortcut to press new keys for it, export the list as a text file.
 
 import { useEffect, useState, useSyncExternalStore } from 'react'
-import { ACTIONS, changed, comboOf, currentPreset, keymapText, keysFor, keysVersion, PRESETS, setKeys, setPreset, subscribeKeys, type Group } from './keymap'
+import { ACTIONS, changed, comboOf, currentPreset, keyLabel, keymapText, keysFor, keysVersion, PRESETS, setKeys, setPreset, subscribeKeys, type Group } from './keymap'
 import { setState } from './store'
 import './shortcuts-dialog.css'
 
@@ -91,7 +91,7 @@ export function ShortcutsDialog() {
                         <span className="keys-chips" title="A mouse gesture">
                           {keys.split('+').map((k, i) => (
                             <span key={i} className="kbd">
-                              {k}
+                              {keyLabel(k)}
                             </span>
                           ))}
                         </span>
@@ -100,7 +100,7 @@ export function ShortcutsDialog() {
                           {keys ? (
                             keys.split(/\+(?!$)/).map((k, i) => (
                               <span key={i} className={`kbd${changed(a.id) ? ' changed' : ''}`}>
-                                {k}
+                                {keyLabel(k)}
                               </span>
                             ))
                           ) : (

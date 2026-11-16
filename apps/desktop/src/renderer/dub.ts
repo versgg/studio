@@ -19,7 +19,7 @@ import { FONTS } from './textFonts'
 import { loadFont } from './textFonts'
 import { layoutText, renderTextClip, type TextLook } from './textRender'
 import { getUi, setUi } from './ui-state'
-import { call, fileUrl, findClip, getState, mediaById, openProjectAt, setState, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
+import { call, fileUrl, findClip, getState, mediaById, openProjectAt, projectChanged, projectScope, sameFolder, setState, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
 
 const EMOJI = /\p{Extended_Pictographic}|‍|️/gu
 const noEmoji = (s: string) => s.replace(EMOJI, '').trim()
@@ -91,11 +91,13 @@ export function dubOf(snap: Snapshot | null, clip: Clip, jobs: DubJob[]): DubJob
  * take's words: all one undo step. A sentence whose clip is gone goes back at its moment.
  */
 async function swapIn(job: DubJob, lines: DubVoiceLine[], label: string) {
-  const engine = window.studio.engine
+  // The dub's project only: opened another meanwhile, the engine refuses (`ProjectChanged`).
+  const scope = projectScope(job.project)
+  const engine = { call: scope.engine }
   const gesture = `${label} ${job.id} ${Date.now().toString(36)}`
   const imp = await engine.call('media.import', { paths: lines.map((l) => l.file), gesture, label })
   if (imp.failed?.length || imp.imported?.length !== lines.length) throw new Error(imp.failed?.[0]?.error ?? 'the new take couldn’t be imported')
-  const snap = getState().snap
+  const snap = await scope.latest()
   const video = findClip(snap, job.clipId)?.clip
   const spans: { fromUs: number; toUs: number; words: { text: string; start: number; end: number }[] }[] = []
   let lastEnd = -Infinity
@@ -111,8 +113,11 @@ async function swapIn(job: DubJob, lines: DubVoiceLine[], label: string) {
     const time = (s: number) => at + Math.round((s * 1e6) / speed)
     spans.push({ fromUs: at, toUs: Math.max(lastEnd, old ? old.startUs + old.durationUs : 0), words: l.words.map((w) => ({ text: w.text, start: time(w.start), end: time(w.end) })) })
   }
-  await recaption(job.lang, spans, gesture)
+  await recaption(job.lang, spans, gesture, scope)
 }
+
+/** Said when a take couldn't go in because another project was opened meanwhile. */
+const KEPT_TAKE = 'The new take is kept with the dub: open its project and pick it in the Dub tab (‹ ›).'
 
 /**
  * Reroll: dubbed sentences spoken again by the same voice as a new take (main: `reroll`; with
@@ -125,6 +130,7 @@ export async function rerollLines(job: DubJob, lineIds: string[], edits: Record<
   try {
     await swapIn(job, r, 'Reroll voice')
   } catch (e) {
+    if (projectChanged(e)) return void toast(KEPT_TAKE)
     return void toast(`Couldn’t put the new take in: ${(e as Error).message}`, 'error')
   }
   const faster = r.some((l) => l.tempo > 1.001) ? ' It runs a little faster to fit before the next.' : ''
@@ -135,7 +141,10 @@ export async function rerollLines(job: DubJob, lineIds: string[], edits: Record<
 /** Right-click › Reroll voice: the dubbed sentences among `clipIds`, each dub's as one reroll. */
 export async function rerollClips(clipIds: string[]) {
   const snap = getState().snap
+  const scope = projectScope()
   for (const { job, lineIds } of dubbedLines(snap, clipIds)) {
+    // Another project opened meanwhile: the rest are left (their clips' ids name other clips there).
+    if (!scope.live()) return
     // Each with the words of the take its clip plays (Ctrl+Z may have put an earlier one back).
     const r = await window.studio.services.dubResult(job.id)
     const lines = 'error' in r ? [] : (r.voice?.lines ?? [])
@@ -158,6 +167,7 @@ export async function pickLineTake(job: DubJob, lineId: string, take: number): P
   try {
     await swapIn(job, [r], `Take ${take + 1}`)
   } catch (e) {
+    if (projectChanged(e)) return
     return void toast(`Couldn’t put that take in: ${(e as Error).message}`, 'error')
   }
   return r
@@ -313,8 +323,10 @@ export function onDubJob(job: DubJob, loading = false) {
  * was, and the new project opens here, where the dub goes on its timeline (the user's rule).
  */
 async function landedDub(job: DubJob, loading: boolean) {
+  const scope = projectScope(job.project)
   const c = findClip(getState().snap, job.clipId)?.clip
-  if (c?.busy === job.id) await call('clip.release', { clipId: c.id, job: job.id })
+  if (c?.busy === job.id) await scope.call('clip.release', { clipId: c.id, job: job.id }).catch(() => undefined)
+  if (!scope.live()) return
   if (loading || !job.landed || told.has(`${job.id}:end`)) return
   told.add(`${job.id}:end`)
   await openProjectAt(job.landed.project)
@@ -326,23 +338,20 @@ async function holdClip(job: DubJob) {
   const c = findClip(getState().snap, job.clipId)?.clip
   if (!c || c.busy || holding.has(job.id)) return
   holding.add(job.id)
-  await window.studio.engine.call('clip.busy', { clipId: c.id, job: job.id }).catch(() => {})
+  await projectScope(job.project).engine('clip.busy', { clipId: c.id, job: job.id }).catch(() => {})
   holding.delete(job.id)
 }
 
 async function freeClip(job: DubJob) {
   const c = findClip(getState().snap, job.clipId)?.clip
-  if (c?.busy === job.id) await call('clip.release', { clipId: c.id, job: job.id })
+  if (c?.busy === job.id) await projectScope(job.project).call('clip.release', { clipId: c.id, job: job.id }).catch(() => undefined)
   if (!told.has(`${job.id}:end`)) {
     told.add(`${job.id}:end`)
     toast(job.state === 'failed' ? `The dub of ${job.name} failed: ${job.reason ?? 'unknown error'}` : (job.reason ?? 'Dub cancelled.'), job.state === 'failed' ? 'error' : 'info')
   }
 }
 
-function sameDir(a: string, b: string) {
-  const n = (d: string) => d.replace(/[\\/]+$/, '').replace(/\\/g, '/')
-  return window.studio.platform === 'win32' ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b)
-}
+const sameDir = sameFolder
 
 /** Follows dubs: every change, and a project's dubs whenever it's opened. */
 export function initDub() {
@@ -579,11 +588,17 @@ function withOpacity(color: string, opacity: number) {
 async function applyDub(job: DubJob) {
   if (applying.has(job.id)) return
   applying.add(job.id)
+  // For the dub's project only: if another one is opened while it's put on, it stops there (the
+  // engine refuses the rest) and goes on again the next time this project is opened.
+  const scope = projectScope(job.project)
   try {
+    if (!scope.live()) return
     const r = await window.studio.services.dubResult(job.id)
     if ('error' in r) throw new Error(r.error)
-    const engine = window.studio.engine
-    let found = findClip(getState().snap, job.clipId)?.clip
+    const engine = { call: scope.engine }
+    const snap = await scope.latest()
+    const at0 = { dir: job.project, width: snap.project.width, height: snap.project.height }
+    let found = findClip(snap, job.clipId)?.clip
     if (found && !found.busy) {
       // Its mark was taken off (an older Studio did, opening the project): it's the dub's again.
       await engine.call('clip.busy', { clipId: found.id, job: job.id })
@@ -614,7 +629,7 @@ async function applyDub(job: DubJob) {
       const endUs = Math.min(found.startUs + found.durationUs, found.startUs + Math.round(it.block.endUs / speed))
       if (endUs - atUs < 20_000) continue
       const { spec, posX, posY } = await specFor(it.t, it.look, it.block, fits.get(it.t.id)!, found, r.scan!)
-      ready.push({ atUs, endUs, drawn: await renderTextClip(spec, `dub-${it.t.id}`), posX, posY, label: it.t.translation.split('\n')[0].slice(0, 40) })
+      ready.push({ atUs, endUs, drawn: await renderTextClip(spec, `dub-${it.t.id}`, undefined, at0), posX, posY, label: it.t.translation.split('\n')[0].slice(0, 40) })
     }
     const voice = r.voice?.lines ?? []
     const files = [...(job.bed ? [job.bed] : []), ...voice.map((l) => l.file)]
@@ -639,13 +654,28 @@ async function applyDub(job: DubJob) {
       await engine.call('clip.set', { clipId: added.clipId, posX: x.posX, posY: x.posY, label: x.label })
     }
 
-    // The voice: the clip's own sound off, the background under it, every sentence at its moment.
+    // The voice: the clip's own sound off, the background under it, every sentence at its moment,
+    // all on one sound track of their own (they used to go wherever there was room, so one track
+    // looked full of gaps). A clip that plays faster or slower than 1× has its new voice and
+    // background play at its speed too, as its own sound did (they spread apart or ran into each
+    // other before).
     const at = (s: number) => found.startUs + Math.round((s * 1e6) / speed)
     if (voice.length) {
       await engine.call('clip.set', { clipId: found.id, detached: true })
       let k = 0
-      if (job.bed) await engine.call('timeline.insert', { mediaId: sounds[k++], atUs: found.startUs })
-      for (const l of voice) await engine.call('timeline.insert', { mediaId: sounds[k++], atUs: at(l.at) })
+      const atSpeed = async (clipId: string) => {
+        if (Math.abs(speed - 1) > 0.001) await engine.call('clip.set', { clipId, speed })
+      }
+      if (job.bed) {
+        const bed = (await engine.call('timeline.insert', { mediaId: sounds[k++], atUs: found.startUs, newTrack: true })) as { clipId: string }
+        await atSpeed(bed.clipId)
+      }
+      let track = ''
+      for (const l of voice) {
+        const put = (await engine.call('timeline.insert', { mediaId: sounds[k++], atUs: at(l.at), ...(track ? { trackId: track } : { newTrack: true }) })) as { clipId: string; trackId: string }
+        track ||= put.trackId
+        await atSpeed(put.clipId)
+      }
     }
 
     // Captions in the new language: from the new voice's own word times; where her own voice
@@ -669,7 +699,7 @@ async function applyDub(job: DubJob) {
           else for (const w of l.words) words.push({ text: w.text, start: at(l.at + w.start), end: at(l.at + w.end) })
         }
       else for (const l of r.speech?.lines ?? []) spread(said.get(l.id) ?? l.text, l.start, l.end)
-      if (words.length) await placeCaptions(cuesOf(words, getUi('lib.capWords', 0)), { lang: job.lang, style: 'Clean', centerY: 0.72 })
+      if (words.length) await placeCaptions(cuesOf(words, getUi('lib.capWords', 0)), { lang: job.lang, style: 'Clean', centerY: 0.72 }, undefined, scope)
     }
     await window.studio.services.dubApplied(job.id)
     const dubbed = voice.filter((l) => !l.own).length
@@ -678,6 +708,7 @@ async function applyDub(job: DubJob) {
         ` in ${lang}${job.from ? ', in this new project (the original is as it was)' : ''}. Each is its own clip you can change; Ctrl+Z takes them off.${job.notes?.length ? ` Note: ${job.notes.join(' ')}` : ''}`,
     )
   } catch (e) {
+    if (projectChanged(e)) return
     // Ends failed (the main process tells us, and the clip is freed then); Try again puts it on again.
     await window.studio.services.dubFailed(job.id, `It couldn’t go on the timeline: ${(e as Error).message}`)
   } finally {

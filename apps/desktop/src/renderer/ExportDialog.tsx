@@ -237,6 +237,8 @@ export function ExportDialog() {
       localStorage.setItem(PREFS_KEY, JSON.stringify(settings()))
     } catch {}
   }
+  // Kept as they're changed (they were saved only by Export, so a closed window forgot them).
+  useEffect(remember, [formats, quality, folder, pattern, bitrates, fps, captions, after])
   const choose = async () => {
     const f = await window.studio.app.chooseFolder(folder || paths?.videos, 'Export to folder')
     if (f) setFolder(f)

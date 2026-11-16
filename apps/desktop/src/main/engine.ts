@@ -4,6 +4,7 @@
 import { ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import type { EngineProcess } from '../shared/api'
+import { log } from './log'
 
 const MAX_RESTARTS_PER_MINUTE = 5
 
@@ -39,12 +40,20 @@ export class EngineSupervisor extends EventEmitter {
     this.child = child
     this.setStatus({ state: 'starting', pid: child.pid })
     child.stdout?.on('data', (d: Buffer) => process.stdout.write(d))
-    child.stderr?.on('data', (d: Buffer) => process.stderr.write(d))
+    // The engine's errors go to the log too (opened from the Dock or app grid, nobody sees stderr).
+    child.stderr?.on('data', (d: Buffer) => {
+      process.stderr.write(d)
+      log('engine', d.toString().trimEnd())
+    })
     child.on('spawn', () => this.setStatus({ state: 'running', pid: child.pid }))
-    child.on('error', (err) => this.setStatus({ state: 'failed', error: `Could not start the engine: ${err.message}` }))
+    child.on('error', (err) => {
+      log('engine.error', `could not start: ${err.message}`)
+      this.setStatus({ state: 'failed', error: `Could not start the engine: ${err.message}` })
+    })
     child.on('exit', (code, signal) => {
       if (this.child === child) this.child = undefined
       if (this.stopping) return
+      log('engine.exit', `exited (${code ?? signal})`)
       const now = Date.now()
       this.restartTimes = this.restartTimes.filter((t) => now - t < 60_000)
       this.restartTimes.push(now)

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import type { EngineProcess, EngineStatus, StemsJob, StudioApi, VmakeJob } from '../shared/api'
+import type { DownloadJob, EngineProcess, EngineStatus, StemsJob, StudioApi, VmakeJob } from '../shared/api'
 import type { DubJob } from '../shared/dub'
 import type { TrJob } from '../shared/translate'
 import { EngineClient } from './engine-client'
@@ -32,6 +32,8 @@ ipcRenderer.invoke('engine:process').then((s: EngineProcess) => {
 const api: StudioApi = {
   platform: process.platform,
   silent: process.env.STUDIO_SILENT === '1',
+  debugDrag: process.env.STUDIO_DEBUG_DRAG === '1',
+  log: (kind, what) => ipcRenderer.send('log:line', kind, what),
   engine: {
     call: (method, params) => client.call(method, params),
     onStatus(cb) {
@@ -68,6 +70,7 @@ const api: StudioApi = {
     elevenDesign: (o) => ipcRenderer.invoke('eleven:design', o),
     elevenSaveDesigned: (o) => ipcRenderer.invoke('eleven:saveDesigned', o),
     transcribeParts: (o) => ipcRenderer.invoke('captions:transcribe', o),
+    cancelTranscribe: (taskId) => ipcRenderer.invoke('captions:cancel', taskId),
     scriptsFor: (paths) => ipcRenderer.invoke('captions:scripts', paths),
     stemsStart: (o) => ipcRenderer.invoke('stems:start', o),
     stemsJobs: (project) => ipcRenderer.invoke('stems:jobs', project),
@@ -86,6 +89,7 @@ const api: StudioApi = {
     dubRemoveAgain: (id) => ipcRenderer.invoke('dub:removeAgain', id),
     dubCancel: (id) => ipcRenderer.invoke('dub:cancel', id),
     dubResult: (id) => ipcRenderer.invoke('dub:result', id),
+    dubDraft: (id, which, value) => ipcRenderer.invoke('dub:draft', id, which, value),
     dubApplied: (id) => ipcRenderer.invoke('dub:applied', id),
     dubReroll: (id, lineIds, edits) => ipcRenderer.invoke('dub:reroll', id, lineIds, edits),
     dubPickTake: (id, lineId, take) => ipcRenderer.invoke('dub:pickTake', id, lineId, take),
@@ -104,6 +108,16 @@ const api: StudioApi = {
     translateStart: (o) => ipcRenderer.invoke('translate:start', o),
     translateReadVoice: (project, file) => ipcRenderer.invoke('translate:readVoice', project, file),
     translateChooseVoice: (project, key, choice) => ipcRenderer.invoke('translate:chooseVoice', project, key, choice),
+    downloadProbe: (url) => ipcRenderer.invoke('download:probe', url),
+    downloadStart: (project, picks) => ipcRenderer.invoke('download:start', project, picks),
+    downloadList: (project) => ipcRenderer.invoke('download:list', project),
+    downloadCancel: (id) => ipcRenderer.invoke('download:cancel', id),
+    downloadImported: (id) => ipcRenderer.invoke('download:imported', id),
+    onDownloadJob: (cb) => {
+      const h = (_e: unknown, j: DownloadJob) => cb(j)
+      ipcRenderer.on('download:job', h)
+      return () => ipcRenderer.removeListener('download:job', h)
+    },
     translateVoices: () => ipcRenderer.invoke('translate:voices'),
     translateJobs: (project) => ipcRenderer.invoke('translate:jobs', project),
     translateSummary: (projects) => ipcRenderer.invoke('translate:summary', projects),
@@ -111,6 +125,7 @@ const api: StudioApi = {
     translateRetry: (id) => ipcRenderer.invoke('translate:retry', id),
     translateCancel: (id) => ipcRenderer.invoke('translate:cancel', id),
     translateResult: (id) => ipcRenderer.invoke('translate:result', id),
+    translateDraft: (id, value) => ipcRenderer.invoke('translate:draft', id, value),
     translateApplied: (id) => ipcRenderer.invoke('translate:applied', id),
     translateFailed: (id, reason) => ipcRenderer.invoke('translate:failed', id, reason),
     onTranslateJob(cb) {
@@ -128,6 +143,8 @@ const api: StudioApi = {
   files: {
     writeAsset: (path, data) => ipcRenderer.invoke('file:writeAsset', path, data),
     exists: (path) => ipcRenderer.invoke('file:exists', path),
+    readDraft: (project, name) => ipcRenderer.invoke('draft:read', project, name),
+    writeDraft: (project, name, value) => ipcRenderer.invoke('draft:write', project, name, value),
     importSticker: (src, dir) => ipcRenderer.invoke('file:importSticker', src, dir),
     writeSrt: (path, text) => ipcRenderer.invoke('file:writeSrt', path, text),
     writeText: (path, text) => ipcRenderer.invoke('file:writeText', path, text),
@@ -167,6 +184,8 @@ const api: StudioApi = {
   },
   app: {
     paths: () => ipcRenderer.invoke('app:paths'),
+    getZoom: () => ipcRenderer.invoke('app:getZoom'),
+    setZoom: (factor) => ipcRenderer.invoke('app:setZoom', factor),
     openMedia: () => ipcRenderer.invoke('dialog:openMedia'),
     chooseFolder: (defaultPath, title) => ipcRenderer.invoke('dialog:chooseFolder', defaultPath, title),
     chooseFile: (o) => ipcRenderer.invoke('dialog:chooseFile', o),
@@ -180,6 +199,13 @@ const api: StudioApi = {
     projects: (extra) => ipcRenderer.invoke('projects:list', extra ?? []),
     projectStill: (dir) => ipcRenderer.invoke('project:still', dir),
     saveProjectAs: (dir, name, pick) => ipcRenderer.invoke('project:saveAs', dir, name, pick),
+    shareProject: (dir, report, to) => ipcRenderer.invoke('project:share', dir, report, to),
+    openSharedProject: (zip) => ipcRenderer.invoke('project:openShared', zip),
+    onShareProgress: (cb) => {
+      const h = (_e: unknown, p: { done: number; total: number }) => cb(p)
+      ipcRenderer.on('share:progress', h)
+      return () => ipcRenderer.removeListener('share:progress', h)
+    },
     renameProject: (dir, name) => ipcRenderer.invoke('project:rename', dir, name),
     projectSize: (dir) => ipcRenderer.invoke('project:size', dir),
     deleteProject: (dir) => ipcRenderer.invoke('project:delete', dir),

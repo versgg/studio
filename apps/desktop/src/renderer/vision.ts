@@ -7,7 +7,7 @@
 // Frames come from the main process (FFmpeg decodes them small); progress shows in the
 // title bar's task pill.
 
-import { call, endTask, findClip, getState, mediaById, patchTask, startTask, toast, type Clip, type Media, type Track, type Us } from './store'
+import { call, endTask, findClip, getState, mediaById, onProjectSwitch, patchTask, projectChanged, projectScope, startTask, toast, type Clip, type Media, type ProjectScope, type Snapshot, type Track, type Us } from './store'
 
 // The worker
 
@@ -79,11 +79,9 @@ const sourceRange = (clip: Clip, media: Media) => {
   return { startUs: media.kind === 'image' ? 0 : clip.inUs, durationUs: Math.max(40_000, len) }
 }
 
-function projectFile(...parts: string[]) {
-  const dir = getState().snap?.dir ?? ''
-  const sep = dir.includes('\\') ? '\\' : '/'
-  return [dir, ...parts].join(sep)
-}
+// Each tool works for the project it started in (`ProjectScope`): its files go in that project's
+// folder, and its result is refused by the engine once another project is open (the clip id
+// would name another clip there). What it found is kept by clip id, so it's forgotten on a switch.
 
 // Remove background
 
@@ -102,6 +100,7 @@ const busy = new Set<string>()
 
 /** Makes a matte for the clip with `method`, and sets it on the clip. */
 export async function removeBackground(clipId: string, method: MatteMethod, edge: number) {
+  const scope = projectScope()
   const snap = getState().snap
   const found = findClip(snap, clipId)
   const media = found && mediaById(snap, found.clip.mediaId)
@@ -114,7 +113,7 @@ export async function removeBackground(clipId: string, method: MatteMethod, edge
   const task = startTask(`Removing the background: ${label}`, 'matte', clipId)
   const stamp = Date.now().toString(36)
   const stem = `${clip.id}-${method}-${stamp}`
-  const raw = projectFile('mattes', `${stem}-raw.mp4`)
+  const raw = scope.path('mattes', `${stem}-raw.mp4`)
   const range = sourceRange(clip, media)
   let writer: string | null = null
   try {
@@ -142,19 +141,19 @@ export async function removeBackground(clipId: string, method: MatteMethod, edge
     writer = null
     if (fail(closed)) throw new Error(closed.error)
     patchTask(task, { stage: 'Making the matte', fraction: 0.93 })
-    const matte = await finish(raw, stem, edge, media, range.startUs, media.kind === 'image' ? clip.durationUs : 0)
-    await call('clip.set', { clipId: clip.id, matte: { path: matte }, label: 'Remove background' })
+    const matte = await finish(scope, raw, stem, edge, media, range.startUs, media.kind === 'image' ? clip.durationUs : 0)
+    await scope.call('clip.set', { clipId: clip.id, matte: { path: matte }, label: 'Remove background' })
     endTask(task)
   } catch (e) {
     if (writer) await window.studio.files.closeMatte(writer, true)
-    endTask(task, `Background removal failed: ${(e as Error).message}`)
+    endTask(task, projectChanged(e) ? undefined : `Background removal failed: ${(e as Error).message}`)
   } finally {
     busy.delete(clipId)
   }
 }
 
-async function finish(raw: string, stem: string, edge: number, media: Media, startUs: Us, holdUs: Us) {
-  const out = projectFile('mattes', `${stem}-e${Math.round(edge)}.mp4`)
+async function finish(scope: ProjectScope, raw: string, stem: string, edge: number, media: Media, startUs: Us, holdUs: Us) {
+  const out = scope.path('mattes', `${stem}-e${Math.round(edge)}.mp4`)
   const r = await window.studio.files.finishMatte({ raw, out, width: media.width, height: media.height, startUs, edge: Math.round(edge), holdUs })
   if (fail(r)) throw new Error(r.error)
   return r.out
@@ -162,6 +161,7 @@ async function finish(raw: string, stem: string, edge: number, media: Media, sta
 
 /** A new edge softness: the matte is made again from the raw one (no new analysis). */
 export async function setMatteEdge(clipId: string, edge: number) {
+  const scope = projectScope()
   const snap = getState().snap
   const found = findClip(snap, clipId)
   const media = found && mediaById(snap, found.clip.mediaId)
@@ -170,10 +170,10 @@ export async function setMatteEdge(clipId: string, edge: number) {
   if (!(await window.studio.files.exists(info.raw))) return removeBackground(clipId, info.method, edge)
   const stem = (/[\\/]([^\\/]+)-raw\.mp4$/i.exec(info.raw) ?? [])[1] ?? `${clipId}-${info.method}-${Date.now().toString(36)}`
   try {
-    const out = await finish(info.raw, stem, edge, media, sourceRange(found.clip, media).startUs, media.kind === 'image' ? found.clip.durationUs : 0)
-    await call('clip.set', { clipId, matte: { path: out }, label: 'Background edge' })
+    const out = await finish(scope, info.raw, stem, edge, media, sourceRange(found.clip, media).startUs, media.kind === 'image' ? found.clip.durationUs : 0)
+    await scope.call('clip.set', { clipId, matte: { path: out }, label: 'Background edge' })
   } catch (e) {
-    toast(`Couldn’t change the edge: ${(e as Error).message}`, 'error')
+    if (!projectChanged(e)) toast(`Couldn’t change the edge: ${(e as Error).message}`, 'error')
   }
 }
 
@@ -254,8 +254,7 @@ function simplify<T extends { t: number }>(pts: T[], value: (p: T) => number, to
 }
 
 /** How a main-track clip's picture sits in the frame: shown size and the visible part of the source. */
-function placement(clip: Clip, media: Media, scale = clip.scale ?? 100) {
-  const p = getState().snap!.project
+function placement(clip: Clip, media: Media, scale = clip.scale ?? 100, p: { width: number; height: number } = getState().snap!.project) {
   const c = clip.crop ?? { x: 0, y: 0, w: 1, h: 1 }
   const turned = (clip.rotate ?? 0) % 180 === 90
   let sw = media.width * c.w
@@ -276,6 +275,7 @@ export const wasReframed = (clipId: string) => reframed.get(clipId)?.follow ?? n
  * the project's format. Smooth moves slowly (a 1.6 s average); Snappy keeps up (0.4 s).
  */
 export async function autoReframe(clipId: string, follow: Follow, movement: 'Smooth' | 'Snappy') {
+  const scope = projectScope()
   const snap = getState().snap
   const found = findClip(snap, clipId)
   const media = found && mediaById(snap, found.clip.mediaId)
@@ -291,6 +291,7 @@ export async function autoReframe(clipId: string, follow: Follow, movement: 'Smo
       const path = await followPath(media, range.startUs, range.durationUs, follow, null, (f) => patchTask(task, { fraction: 0.02 + 0.9 * f, stage: `${Math.round(f * 100)} %` }))
       if (!path.some((p) => p.box)) throw new Error(follow === 'face' ? 'No face was found in this clip. Try Object.' : 'Nothing to follow was found in this clip. Try Face.')
       cached = { follow, path }
+      if (!scope.live()) return endTask(task)
       reframed.set(clipId, cached)
       endTask(task)
     } catch (e) {
@@ -300,11 +301,17 @@ export async function autoReframe(clipId: string, follow: Follow, movement: 'Smo
       busy.delete(clipId)
     }
   }
-  await applyReframe(clipId, cached.path, movement)
+  await applyReframe(scope, clipId, cached.path, movement)
 }
 
-async function applyReframe(clipId: string, path: PathPoint[], movement: 'Smooth' | 'Snappy') {
-  const snap = getState().snap
+async function applyReframe(scope: ProjectScope, clipId: string, path: PathPoint[], movement: 'Smooth' | 'Snappy') {
+  let snap: Snapshot
+  try {
+    snap = await scope.latest()
+  } catch (e) {
+    if (projectChanged(e)) return
+    throw e
+  }
   const found = findClip(snap, clipId)
   const media = found && mediaById(snap, found.clip.mediaId)
   if (!found || !media) return
@@ -312,10 +319,10 @@ async function applyReframe(clipId: string, path: PathPoint[], movement: 'Smooth
   const smooth = smoothPath(path, movement === 'Smooth' ? 800_000 : 200_000)
   // Room to move: if the picture barely overflows the frame, zoom in a little to make some.
   let scale = clip.scale ?? 100
-  let pl = placement(clip, media, scale)
+  let pl = placement(clip, media, scale, snap.project)
   if (pl.dw - pl.W < pl.W * 0.08 && pl.dh - pl.H < pl.H * 0.08) {
     scale = Math.round(scale * 1.3)
-    pl = placement(clip, media, scale)
+    pl = placement(clip, media, scale, snap.project)
   }
   const rx = Math.max(0, (pl.dw - pl.W) / 2)
   const ry = Math.max(0, (pl.dh - pl.H) / 2)
@@ -334,13 +341,15 @@ async function applyReframe(clipId: string, path: PathPoint[], movement: 'Smooth
   if (ry > 1) keys.posY = simplify(pts, (p) => p.y, tol).map((p) => ({ atUs: p.t, value: p.y }))
   else delete keys.posY
   if (keys.scale) delete keys.scale
-  await call('clip.set', { clipId, keyframes: keys, posX: keys.posX?.[0]?.value ?? 0, posY: keys.posY?.[0]?.value ?? 0, scale, label: 'Auto reframe' })
+  await scope.call('clip.set', { clipId, keyframes: keys, posX: keys.posX?.[0]?.value ?? 0, posY: keys.posY?.[0]?.value ?? 0, scale, label: 'Auto reframe' }).catch((e) => {
+    if (!projectChanged(e)) throw e
+  })
 }
 
 /** Movement changed after a reframe this session: smooth the same path again. */
 export async function reSmooth(clipId: string, movement: 'Smooth' | 'Snappy') {
   const c = reframed.get(clipId)
-  if (c) await applyReframe(clipId, c.path, movement)
+  if (c) await applyReframe(projectScope(), clipId, c.path, movement)
 }
 
 /** Takes the reframe out: position keyframes gone, position and scale back to normal. */
@@ -386,6 +395,7 @@ export function trackTargets(clipId: string): { label: string; seen: number }[] 
 
 /** Looks through the picture under a clip for faces and things to follow. */
 export async function findTrackTargets(clipId: string) {
+  const scope = projectScope()
   const snap = getState().snap
   const found = findClip(snap, clipId)
   if (!found || !snap) return
@@ -426,6 +436,8 @@ export async function findTrackTargets(clipId: string) {
       }
     }
     for (const [l, n] of counts) counts.set(l, Math.round((100 * n) / Math.max(1, samples)))
+    // Found for the project it started in: another one open now has its own clip with this id.
+    if (!scope.live()) return endTask(task)
     tracked.set(clipId, { segments, paths, counts })
     endTask(task)
     if (!counts.size) toast('Nothing to follow was found under this clip.', 'error')
@@ -472,7 +484,7 @@ export async function followTarget(clipId: string, label: string, withScale: boo
   const s0 = clip.scale ?? 100
   if (withScale) keys.scale = simplify(sm, (p) => p.size, 2).map((p) => ({ atUs: Math.round(p.t), value: Math.round((s0 * p.size) / Math.max(1, sm[0].size)) }))
   else delete keys.scale
-  await call('clip.set', { clipId, keyframes: keys, label: `Follow ${label}` })
+  await projectScope().call('clip.set', { clipId, keyframes: keys, label: `Follow ${label}` })
 }
 
 /** Stops following: the position (and scale) keyframes go. */
@@ -485,3 +497,9 @@ export async function stopFollowing(clip: Clip) {
 }
 
 export const hasTrackTargets = (clipId: string) => tracked.has(clipId)
+
+// What the tools found is by clip id, and ids start again in every project.
+onProjectSwitch(() => {
+  reframed.clear()
+  tracked.clear()
+})

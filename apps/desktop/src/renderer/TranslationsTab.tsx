@@ -18,12 +18,13 @@ import { TR_LANGS, trLangName, trProjectName, trRunning, type TrItem, type TrJob
 import { Pills, Select } from './controls'
 import { Head, Note, Setting, Settings } from './LibraryBlocks'
 import { chooseVoice, collect, cancelTranslation, goTranslation, openTranslation, readVoiceover, retryTranslation, startTranslation, useTrJobs, type TrVoiceRow } from './translate'
-import { toast, useStore } from './store'
+import { sameFolder, toast, useStore } from './store'
 import { getUi, useUi } from './ui-state'
+import { writeSoon } from './drafts'
 
 const clock = (us: number) => `${Math.floor(us / 60e6)}:${((us / 1e6) % 60).toFixed(1).padStart(4, '0')}`
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-const sameDir = (a: string, b: string) => a.replace(/[\\/]+$/, '').toLowerCase() === b.replace(/[\\/]+$/, '').toLowerCase()
+const sameDir = sameFolder
 
 export function TranslationsTab() {
   const snap = useStore((s) => s.snap)
@@ -43,7 +44,7 @@ export function TranslationsTab() {
       ) : latest.some((j) => trRunning(j) || j.state === 'failed' || j.state === 'ready') ? (
         <Progress jobs={latest} />
       ) : (
-        <Setup done={mine.filter((j) => j.state === 'applied' || j.state === 'ready')} own={own?.state} />
+        <Setup key={snap.dir} done={mine.filter((j) => j.state === 'applied' || j.state === 'ready')} own={own?.state} />
       )}
     </>
   )
@@ -241,7 +242,11 @@ function Progress({ jobs }: { jobs: TrJob[] }) {
 
 type Loaded = { job: TrJob; items: TrItem[]; texts: TrText[] }
 
-/** The review: one tab per language, every line with its translation and back-translation. */
+/**
+ * The review: one tab per language, every line with its translation and back-translation. What's
+ * unticked and changed is saved in each language's job as it's typed (`translateDraft`), so it's
+ * there after another tab, another project or closing Studio, until Translate uses it.
+ */
 function Review({ jobs }: { jobs: TrJob[] }) {
   const [data, setData] = useState<Record<string, Loaded>>({})
   const [tab, setTab] = useState(jobs[0].id)
@@ -253,8 +258,15 @@ function Review({ jobs }: { jobs: TrJob[] }) {
       window.studio.services.translateResult(j.id).then((r) => {
         if ('error' in r) return void toast(r.error, 'error')
         setData((d) => ({ ...d, [j.id]: r }))
+        // Picks and words left from before, once per language (what's typed since wins).
+        if (r.draft) {
+          setOff((o) => (o[j.id] ? o : { ...o, [j.id]: new Set(r.draft!.off) }))
+          setEdits((e) => (e[j.id] ? e : { ...e, [j.id]: r.draft!.edits }))
+        }
       })
   }, [jobs.map((j) => j.id).join()])
+  /** A language's picks and words saved in its job, as they change. */
+  const keep = (id: string, o: Set<string>, e: Record<string, string>) => writeSoon(`tr|${id}`, () => window.studio.services.translateDraft(id, { off: [...o], edits: e }))
   const job = jobs.find((j) => j.id === tab) ?? jobs[0]
   const r = data[job.id]
   const skip = off[job.id] ?? new Set<string>()
@@ -273,7 +285,9 @@ function Review({ jobs }: { jobs: TrJob[] }) {
       const d = data[j.id]
       if (!d) continue
       const s = off[j.id] ?? new Set()
-      await goTranslation(j.id, { picks: d.texts.map((t) => t.id).filter((id) => !s.has(id)), edits: edits[j.id] })
+      const e = edits[j.id] ?? {}
+      // A line whose words were all taken out stays as it is.
+      await goTranslation(j.id, { picks: d.texts.map((t) => t.id).filter((id) => !s.has(id) && !(e[id] != null && !e[id].trim())), edits: e })
     }
     setSending(false)
   }
@@ -282,6 +296,14 @@ function Review({ jobs }: { jobs: TrJob[] }) {
     if (n.has(id)) n.delete(id)
     else n.add(id)
     setOff({ ...off, [job.id]: n })
+    keep(job.id, n, mine)
+  }
+  const type = (id: string, text: string | null) => {
+    const next = { ...mine }
+    if (text === null) delete next[id]
+    else next[id] = text
+    setEdits({ ...edits, [job.id]: next })
+    keep(job.id, skip, next)
   }
   const from = trLangName(job.from)
   const group = (kind: TrItem['kind'], title: string) => {
@@ -305,7 +327,12 @@ function Review({ jobs }: { jobs: TrJob[] }) {
                 <span className="dub-orig" title={i.text}>
                   {i.text.replace(/\n/g, ' / ')}
                 </span>
-                <textarea className="dub-edit" rows={Math.max(1, Math.min(4, Math.ceil((mine[i.id] ?? t.translation).length / 38)))} value={mine[i.id] ?? t.translation} disabled={!on} onChange={(e) => setEdits({ ...edits, [job.id]: { ...mine, [i.id]: e.target.value } })} />
+                <textarea className="dub-edit" rows={Math.max(1, Math.min(4, Math.ceil((mine[i.id] ?? t.translation).length / 38)))} value={mine[i.id] ?? t.translation} disabled={!on} onChange={(e) => type(i.id, e.target.value)} />
+                {on && mine[i.id] != null && mine[i.id] !== t.translation && (
+                  <button type="button" className="lib-link tr-claude" title={`Claude's: ${t.translation}`} onClick={() => type(i.id, null)}>
+                    {mine[i.id].trim() ? 'Back to Claude’s' : 'Empty: stays as it is · Back to Claude’s'}
+                  </button>
+                )}
                 {on && t.back && (
                   <span className="tr-back" title={`What it says, put back into ${from}`}>
                     {from}: {t.back.replace(/\n/g, ' / ')}

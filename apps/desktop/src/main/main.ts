@@ -1,6 +1,6 @@
 // First: on a Mac, the PATH Terminal has, before the engine or any tool starts (shell-path.ts).
 import './shell-path'
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, screen, shell } from 'electron'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -11,6 +11,8 @@ import { registerServices } from './services'
 import { capcutRoot } from './capcut'
 import { runChromeCheck, runUiCheck } from './ui-check'
 import { MIN_WINDOW } from '../shared/window'
+import { readSettings, writeSetting } from './files'
+import { log, startLog } from './log'
 
 // Cached thumbnails and waveforms are served to the renderer through studio-file://,
 // limited to the projects folder (the dev renderer runs on http:// and can't read file://).
@@ -83,7 +85,8 @@ function createWindow() {
     skipTaskbar: testRun,
     // No system title bar: the app's own top bar is the title bar, with its own minimise,
     // maximise and close buttons on Windows and Linux. macOS keeps its traffic lights.
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : { frame: false }),
+    // On a Mac the traffic lights sit in the 40 px title bar's left end, centred on it.
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 14, y: 13 } } : { frame: false }),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -99,9 +102,19 @@ function createWindow() {
       additionalArguments: [`--studio-socket=${socketPath}`, `--studio-ring=${ringPath}`, ...(bench ? [`--studio-bench=${bench}`] : [])],
     },
   })
-  // Why a page dies, in the terminal: the reason and exit code, and a preload that threw.
-  win.webContents.on('render-process-gone', (_e, d) => console.error(`[app] the page stopped: ${d.reason} (exit code ${d.exitCode})`))
-  win.webContents.on('preload-error', (_e, file, err) => console.error(`[app] preload ${path.basename(file)} failed: ${err.stack ?? err.message}`))
+  // Why a page dies, in the terminal and the log: the reason and exit code, and a preload that threw.
+  win.webContents.on('render-process-gone', (_e, d) => {
+    console.error(`[app] the page stopped: ${d.reason} (exit code ${d.exitCode})`)
+    log('page.gone', `${d.reason} (exit code ${d.exitCode})`)
+  })
+  win.webContents.on('preload-error', (_e, file, err) => {
+    console.error(`[app] preload ${path.basename(file)} failed: ${err.stack ?? err.message}`)
+    log('page.preload', `${path.basename(file)}: ${err.stack ?? err.message}`)
+  })
+  // The page's errors and warnings go to the log (its console is seen by nobody).
+  win.webContents.on('console-message', (e) => {
+    if (e.level === 'error' || e.level === 'warning') log(`page.${e.level}`, `${e.message}${e.sourceId ? ` (${path.basename(e.sourceId)}:${e.lineNumber})` : ''}`)
+  })
   // STUDIO_DEBUG=1: the page's loading milestones, to see where a window that never shows got stuck.
   if (process.env.STUDIO_DEBUG) {
     for (const ev of ['did-start-loading', 'dom-ready', 'did-finish-load', 'did-stop-loading'] as const) win.webContents.on(ev as 'dom-ready', () => mark(ev))
@@ -176,12 +189,42 @@ function createWindow() {
   win.on('unmaximize', () => win.webContents.send('window:maximized', false))
   win.webContents.on('will-navigate', (e) => e.preventDefault())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // The app zoom Studio was left at (Chromium would keep one per page address: the dev server's
+  // and the built page's would differ), set again on every load.
+  win.webContents.on('did-finish-load', () => applyZoom(win, Number(readSettings().appZoom) || 1))
   const devUrl = process.env.VITE_DEV_SERVER_URL
   if (devUrl) win.loadURL(devUrl)
   else win.loadFile(path.join(__dirname, '..', 'dist-renderer', 'index.html'))
 }
 
+/**
+ * The whole window at `factor` (Ctrl/Cmd+Shift + and −). The window's smallest size grows with
+ * it, so the page never gets less room than it's laid out for (MIN_WINDOW at 100 %), and the
+ * factor stops at what the screen it's on can hold. Returns the factor set.
+ */
+function applyZoom(win: BrowserWindow, factor: number) {
+  const area = screen.getDisplayMatching(win.getBounds()).workAreaSize
+  const most = Math.min(area.width / MIN_WINDOW.width, area.height / MIN_WINDOW.height)
+  const f = Math.max(0.5, Math.min(factor, most))
+  win.webContents.setZoomFactor(f)
+  const min = { width: Math.round(MIN_WINDOW.width * Math.max(1, f)), height: Math.round(MIN_WINDOW.height * Math.max(1, f)) }
+  win.setMinimumSize(min.width, min.height)
+  const [w, h] = win.getContentSize()
+  if (w < min.width || h < min.height) win.setContentSize(Math.max(w, min.width), Math.max(h, min.height))
+  return { factor: f, limited: f < factor - 1e-6 }
+}
+ipcMain.handle('app:getZoom', (e) => BrowserWindow.fromWebContents(e.sender)?.webContents.getZoomFactor() ?? 1)
+ipcMain.handle('app:setZoom', (e, factor: number) => {
+  const win = BrowserWindow.fromWebContents(e.sender)
+  if (!win || !Number.isFinite(factor)) return { factor: 1, limited: false }
+  const r = applyZoom(win, factor)
+  writeSetting('appZoom', r.factor)
+  return r
+})
+
 ipcMain.on('player:first-frame', () => mark('firstFrame'))
+// The page's own lines for the log (its unhandled errors, a drag traced with STUDIO_DEBUG_DRAG).
+ipcMain.on('log:line', (_e, kind: string, what: unknown) => log(`page.${String(kind).replace(/[^\w.-]/g, '').slice(0, 40)}`, what))
 
 const MEDIA_EXTENSIONS = ['mp4', 'mov', 'm4v', 'mkv', 'webm', 'avi', 'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'png', 'jpg', 'jpeg', 'webp']
 ipcMain.handle('app:paths', () => ({ documents: userPath('documents'), videos: userPath('videos'), projects: projectsDir }))
@@ -255,8 +298,27 @@ ipcMain.on('bench:done', (_e, result: Record<string, unknown>) => {
 })
 
 app.whenReady().then(() => {
+  startLog()
   mark('appReady')
-  Menu.setApplicationMenu(null)
+  // No menu bar of the system's on Windows and Linux: its accelerators would take Ctrl+Z, Ctrl+B
+  // and friends from the page. A Mac needs one for Cmd+C/V/X/A/Z in text fields and Cmd+Q/H/M
+  // (without it they did nothing): its App, Edit and Window menus, from Electron's roles. A key
+  // the page handles (Cmd+Z on the timeline) is stopped there, so the menu doesn't act twice;
+  // the View menu is left out, as its zoom would take Cmd+= and Cmd+− from the timeline.
+  // The Mac's menu bar: Edit is what makes Cmd+C/V/X/A/Z reach text fields; Hide, Minimise and
+  // Quit are the Mac's own keys. Named "Studio" (the package is named @studio/desktop).
+  Menu.setApplicationMenu(
+    process.platform === 'darwin'
+      ? Menu.buildFromTemplate([
+          {
+            label: 'Studio',
+            submenu: [{ role: 'about', label: 'About Studio' }, { type: 'separator' }, { role: 'hide', label: 'Hide Studio' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit', label: 'Quit Studio' }],
+          },
+          { role: 'editMenu' },
+          { role: 'windowMenu' },
+        ])
+      : null,
+  )
   sweepRunDirs()
   fs.mkdirSync(runDir, { recursive: true })
   // studio-file://cache/<encoded absolute path>. Only files in the projects folder, or the
@@ -277,6 +339,8 @@ app.whenReady().then(() => {
     const ccRoot = path.basename(file) === 'draft_cover.jpg' ? capcutRoot() : ''
     const capcutCover = !!ccRoot && path.relative(ccRoot, path.dirname(path.dirname(file))) === ''
     if (!inProjects && !inCache && !cover && !dubbed && !font && !capcutCover) return new Response('Not allowed', { status: 403 })
+    // A file not made yet (a poster the engine is remaking): a plain 404, not a thrown fetch.
+    if (!fs.existsSync(file)) return new Response('Not found', { status: 404 })
     const res = await net.fetch(pathToFileURL(file).toString())
     const headers = new Headers(res.headers)
     headers.set('Access-Control-Allow-Origin', '*')

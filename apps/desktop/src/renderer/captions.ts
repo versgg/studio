@@ -13,9 +13,9 @@
 import { roleOf, trackName } from './audioState'
 import { CAPTION_STYLES, scaleSpec } from './textPresets'
 import { previewTextLook } from './liveText'
-import { drawText, projectFile, savePng, type TextLook } from './textRender'
+import { drawText, savePng, type TextLook } from './textRender'
 import { basename } from './format'
-import { alreadyRunning, call, endTask, getState, holdSelection, mediaById, patchTask, setState, startTask, toast, type Clip, type Snapshot, type Track, type Us } from './store'
+import { alreadyRunning, call, endTask, getState, holdSelection, mediaById, onProjectSwitch, patchTask, projectChanged, projectScope, setState, startTask, toast, type Clip, type ProjectScope, type Snapshot, type Track, type Us } from './store'
 
 /** The languages the transcript server takes (it can also detect them). */
 export const LANGS: { code: string; name: string; iso3: string[] }[] = [
@@ -172,8 +172,12 @@ export function cuesOf(words: Word[], perCaption: number): Cue[] {
   })
 }
 
-/** Words heard this session, per captions track: for lines made before they kept their own. */
+/**
+ * Words heard this session, per project and captions track (`<dir>|<trackId>`): for lines made
+ * before they kept their own. Keyed by the project as well, as track ids start again in every one.
+ */
 const heard = new Map<string, Word[]>()
+const keyIn = (dir: string, trackId: string) => `${dir}|${trackId}`
 
 /** A line's words with its time shared out by their length (a space counts as a letter). */
 function estimateWords(text: string, durationUs: Us): CapWord[] {
@@ -187,6 +191,16 @@ function estimateWords(text: string, durationUs: Us): CapWord[] {
   })
 }
 
+/**
+ * A line's word times for new words typed into it: the old times when it has as many words
+ * (each new word takes the old one's time), else none, so they're shared out by length.
+ * Times that don't match the words would bring the old words back when it's split again.
+ */
+function retimed(words: CapWord[] | undefined, text: string): CapWord[] | undefined {
+  const ws = text.split(/\s+/).filter(Boolean)
+  return words && words.length === ws.length ? words.map((w, k) => ({ ...w, w: ws[k] })) : undefined
+}
+
 /** Whether a line kept its words' times (lines made before Studio kept them didn't). */
 const keptTimes = (c: Clip) => Array.isArray(c.text?.words) && c.text!.words!.length > 0
 
@@ -197,11 +211,13 @@ function wordsOfLine(c: Clip): Word[] {
 }
 
 /**
- * Every word of a captions track in time order: the times its lines keep, else this session's
- * as heard, else shared out over each line by length (good enough to split by, and kept after).
+ * Every word of a captions track in time order: the times its lines keep (a line without them,
+ * its words shared out over it), or for a track whose lines keep none (made before Studio kept
+ * them), this session's as heard.
  */
-export function wordsOfTrack(info: CaptionInfo): Word[] | null {
-  if (!info.lines.every(keptTimes) && heard.has(info.track.id)) return heard.get(info.track.id)!
+export function wordsOfTrack(info: CaptionInfo, dir = getState().snap?.dir ?? ''): Word[] | null {
+  const k = keyIn(dir, info.track.id)
+  if (!info.lines.some(keptTimes) && heard.has(k)) return heard.get(k)!
   const all = info.lines.flatMap(wordsOfLine)
   return all.length ? all : null
 }
@@ -227,9 +243,10 @@ export interface Proofread {
   summary: string
   changes: { heard: string; script: string; atUs: Us }[]
 }
+/** By project and track (`keyIn`). */
 const proofreads = new Map<string, Proofread>()
 const proofListeners = new Set<() => void>()
-export const proofreadOf = (trackId: string) => proofreads.get(trackId)
+export const proofreadOf = (trackId: string) => proofreads.get(keyIn(getState().snap?.dir ?? '', trackId))
 export function subscribeProofreads(l: () => void) {
   proofListeners.add(l)
   return () => {
@@ -245,21 +262,25 @@ function soundClips(snap: Snapshot, src: Track): Clip[] {
 }
 
 /** The script a track's sound was read from: its voiceovers' ElevenLabs scripts, joined; "" if none. */
-export async function scriptOfTrack(trackId: string): Promise<string> {
-  const snap = getState().snap
+export async function scriptOfTrack(trackId: string, snap = getState().snap): Promise<string> {
   const src = snap?.project.tracks.find((t) => t.id === trackId)
   if (!snap || !src) return ''
   const paths = soundClips(snap, src).map((c) => mediaById(snap, c.mediaId)!.path)
   return paths.length ? window.studio.services.scriptsFor(paths) : ''
 }
 
-// Drawing and setting lines
+// Drawing and setting lines. Every change is for the project it started in (`ProjectScope`):
+// drawn at that project's size into its folder, set with calls the engine refuses once another
+// project is open (they'd land on that one's lines: track and clip ids start again in every
+// project). A change that's refused stops there, quietly (`forProject`).
 
 /**
  * The engine's project as it is now. A change made a moment ago may not have reached the
- * store's copy yet, and lines drawn from an old copy would undo it.
+ * store's copy yet, and lines drawn from an old copy would undo it. With a scope, that project
+ * only (another one open throws `ProjectChanged`).
  */
-async function latest(): Promise<Snapshot | null> {
+async function latest(scope?: ProjectScope): Promise<Snapshot | null> {
+  if (scope) return scope.latest()
   try {
     return (await window.studio.engine.call('project.current')) as Snapshot
   } catch {
@@ -267,18 +288,39 @@ async function latest(): Promise<Snapshot | null> {
   }
 }
 
+/** `f` for the open project: if another is opened while it runs, it stops there and resolves undefined. */
+function forProject<A extends unknown[], R>(f: (scope: ProjectScope, ...a: A) => Promise<R>): (...a: A) => Promise<R | undefined> {
+  return async (...a: A) => {
+    const scope = projectScope()
+    try {
+      return await f(scope, ...a)
+    } catch (e) {
+      if (projectChanged(e)) return undefined
+      throw e
+    }
+  }
+}
+
+/** Where lines are drawn: the project's folder and frame. */
+interface Canvas {
+  dir: string
+  width: number
+  height: number
+}
+const canvasOf = (s: Snapshot): Canvas => ({ dir: s.dir, width: s.project.width, height: s.project.height })
+const fileIn = (dir: string, ...parts: string[]) => [dir, ...parts].join(dir.includes('\\') ? '\\' : '/')
+
 const presetOf = (style: string, lang: string, centerY: number) => `${style} · ${lang} · ${Math.round(centerY * 100)}`
 
-function styleFor(style: string, lang: string, centerY: number): TextLook {
-  const p = getState().snap!.project
-  const s = scaleSpec(CAPTION_STYLES[style] ?? CAPTION_STYLES.Clean, p.width)
+function styleFor(style: string, lang: string, centerY: number, width: number): TextLook {
+  const s = scaleSpec(CAPTION_STYLES[style] ?? CAPTION_STYLES.Clean, width)
   return { ...s, preset: presetOf(style, lang, centerY) }
 }
 
 /** A captions track's look as its lines have it now: its style and every change made to it since. */
-function lookOf(info: CaptionInfo, centerY = info.centerY): TextLook {
+function lookOf(info: CaptionInfo, width: number, centerY = info.centerY): TextLook {
   const t = info.lines[0]?.text
-  if (!t) return styleFor(info.style, info.lang, centerY)
+  if (!t) return styleFor(info.style, info.lang, centerY, width)
   const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, ...look } = t
   return { ...(look as TextLook), content: '', preset: presetOf(info.style, info.lang, centerY) }
 }
@@ -307,20 +349,16 @@ function keepSelected(info: CaptionInfo, r: { clipIds: string[] } | undefined, i
 
 /** Drawings made this session, by project, look, words and place. */
 const drawings = new Map<string, { png: string; boxW: number; boxH: number }>()
-const drawKey = (look: TextLook, text: string, centerY: number) => {
-  const s = getState().snap
-  return JSON.stringify([s?.dir, s?.project.width, s?.project.height, centerY, text, look])
-}
+const drawKey = (look: TextLook, text: string, centerY: number, cv: Canvas) => JSON.stringify([cv.dir, cv.width, cv.height, centerY, text, look])
 let drawCount = 0
 
 /** One line's drawing, from the ones kept when it's been drawn before. */
-async function drawLine(look: TextLook, text: string, centerY: number) {
-  const key = drawKey(look, text, centerY)
+async function drawLine(look: TextLook, text: string, centerY: number, cv: Canvas) {
+  const key = drawKey(look, text, centerY, cv)
   const kept = drawings.get(key)
   if (kept) return kept
-  const p = getState().snap!.project
-  const d = await drawText({ ...look, content: text }, p.width, p.height, { centerY, maxWidth: p.width * 0.94 })
-  const png = await savePng(projectFile('text', `cap-${Date.now().toString(36)}${(++drawCount).toString(36)}.png`), d.png)
+  const d = await drawText({ ...look, content: text }, cv.width, cv.height, { centerY, maxWidth: cv.width * 0.94 })
+  const png = await savePng(fileIn(cv.dir, 'text', `cap-${Date.now().toString(36)}${(++drawCount).toString(36)}.png`), d.png)
   const made = { png, boxW: d.boxW, boxH: d.boxH }
   drawings.set(key, made)
   return made
@@ -337,7 +375,7 @@ async function inTurn<T>(n: number, items: T[], f: (x: T, i: number) => Promise<
   }))
 }
 
-async function drawLines(cues: Drawable[], style: TextLook, centerY: number, task?: string, only?: number) {
+async function drawLines(cues: Drawable[], style: TextLook, centerY: number, cv: Canvas, task?: string, only?: number) {
   const out: Drawable[] = new Array(cues.length)
   let done = 0
   await inTurn(3, cues, async (c, i) => {
@@ -345,14 +383,14 @@ async function drawLines(cues: Drawable[], style: TextLook, centerY: number, tas
       out[i] = c
       return
     }
-    const d = await drawLine(style, c.text, centerY)
+    const d = await drawLine(style, c.text, centerY, cv)
     out[i] = { startUs: c.startUs, endUs: c.endUs, text: c.text, ...d, words: c.words, posX: c.posX, posY: c.posY, scale: c.scale, rotation: c.rotation }
     if (task && ++done % 4 === 0) patchTask(task, { stage: `Drawing line ${done} of ${cues.length}`, fraction: 0.7 + (0.25 * done) / cues.length })
   })
   return out
 }
 
-/** The latest change to every line of a row; an older one still drawing stops. */
+/** The latest change to every line of a row (by project and row); an older one still drawing stops. */
 const streams = new Map<string, number>()
 
 /**
@@ -360,23 +398,23 @@ const streams = new Map<string, number>()
  * or `keep: false` none, until its new one comes; ones drawn before come at once), then drawn
  * nearest the playhead first and sent as they're ready (`captions.draw`), all one undo step.
  */
-async function streamLines(info: CaptionInfo, cues: Drawable[], spec: TextLook, centerY: number, keep: boolean) {
-  const row = info.track.id
+async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, cues: Drawable[], spec: TextLook, centerY: number, keep: boolean) {
+  const row = keyIn(scope.dir, info.track.id)
   const run = (streams.get(row) ?? 0) + 1
   streams.set(row, run)
-  const gesture = `restyle ${row} ${run} ${Date.now().toString(36)}`
-  const ready = cues.map((c) => drawings.get(drawKey(spec, c.text, centerY)))
+  const gesture = `restyle ${info.track.id} ${run} ${Date.now().toString(36)}`
+  const ready = cues.map((c) => drawings.get(drawKey(spec, c.text, centerY, cv)))
   const lines = cues.map((c, i) => ({ ...c, ...(ready[i] ?? (keep ? {} : { png: undefined, boxW: undefined, boxH: undefined })) }))
   const sel = getState().selection[0]
   const at = Math.max(0, info.lines.findIndex((c) => c.id === sel))
   holdSelection(3000)
-  const r = await setLines(row, lines, spec, undefined, gesture)
+  const r = await setLines(scope, info.track.id, lines, spec, undefined, gesture)
   if (!r) return
   keepSelected(info, r, Math.min(at, lines.length - 1))
   const pos = getState().positionUs
   const todo = cues.map((_, i) => i).filter((i) => !ready[i]).sort((a, b) => Math.abs(cues[a].startUs - pos) - Math.abs(cues[b].startUs - pos))
   if (!todo.length) return r
-  const task = todo.length > 24 ? startTask('Drawing the captions', 'restyle', row) : undefined
+  const task = todo.length > 24 ? startTask('Drawing the captions', 'restyle', info.track.id) : undefined
   let batch: { clipId: string; png: string; boxW: number; boxH: number }[] = []
   let sent = performance.now()
   let done = 0
@@ -385,12 +423,12 @@ async function streamLines(info: CaptionInfo, cues: Drawable[], spec: TextLook, 
     const b = batch
     batch = []
     sent = performance.now()
-    await call('captions.draw', { drawings: b, gesture })
+    await scope.call('captions.draw', { drawings: b, gesture })
   }
   try {
     await inTurn(3, todo, async (i) => {
-      if (streams.get(row) !== run) return
-      const d = await drawLine(spec, cues[i].text, centerY)
+      if (streams.get(row) !== run || !scope.live()) return
+      const d = await drawLine(spec, cues[i].text, centerY, cv)
       batch.push({ clipId: r.clipIds[i], ...d })
       done++
       // Sent in a few big batches: each one is a new snapshot of the whole project.
@@ -402,15 +440,19 @@ async function streamLines(info: CaptionInfo, cues: Drawable[], spec: TextLook, 
     await send()
     if (task) endTask(task)
   } catch (e) {
+    if (projectChanged(e)) {
+      if (task) endTask(task)
+      throw e
+    }
     if (task) endTask(task, (e as Error).message)
     else toast(`Couldn’t draw the captions: ${(e as Error).message}`, 'error')
   }
   return r
 }
 
-async function setLines(trackId: string | undefined, lines: ({ startUs: Us; endUs: Us; text: string; png?: string; words?: CapWord[] } & LinePlace)[], style: TextLook, above?: string, gesture?: string) {
+async function setLines(scope: ProjectScope, trackId: string | undefined, lines: ({ startUs: Us; endUs: Us; text: string; png?: string; words?: CapWord[] } & LinePlace)[], style: TextLook, above?: string, gesture?: string) {
   const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, ...shared } = style as TextLook & { words?: unknown }
-  return call<{ trackId: string; clipIds: string[] }>('captions.set', { ...(trackId ? { trackId } : {}), ...(above ? { aboveTrackId: above } : {}), lines, style: shared, ...(gesture ? { gesture } : {}) })
+  return scope.call<{ trackId: string; clipIds: string[] }>('captions.set', { ...(trackId ? { trackId } : {}), ...(above ? { aboveTrackId: above } : {}), lines, style: shared, ...(gesture ? { gesture } : {}) })
 }
 
 /**
@@ -419,35 +461,57 @@ async function setLines(trackId: string | undefined, lines: ({ startUs: Us; endU
  * the playhead first, and their drawings sent as they're ready (`streamLines`), all one undo
  * step. A newer change while they draw starts over.
  */
-export async function resplitCaptions(trackId: string, perCaption: number) {
-  const info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  const words = info && wordsOfTrack(info)
-  if (!info || !words?.length) return
+export const resplitCaptions = forProject(async (scope, trackId: string, perCaption: number) => {
+  const snap = await latest(scope)
+  const info = captionTracks(snap).find((t) => t.track.id === trackId)
+  const words = info && wordsOfTrack(info, scope.dir)
+  if (!snap || !info || !words?.length) return
   const cues = cuesOf(words, perCaption).map((c) => ({ ...c, ...placeOf(info.lines[0]) }))
   // The line you were on: the new one that starts where it was, or holds that moment.
   const sel = info.lines.find((c) => c.id === getState().selection[0])
   const at = sel ? Math.max(0, cues.findIndex((c) => c.endUs > sel.startUs)) : -1
-  const r = await streamLines(info, cues, lookOf(info), info.centerY, false)
+  const cv = canvasOf(snap)
+  const r = await streamLines(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, false)
   if (r && at >= 0 && r.clipIds[at]) setState({ selection: [r.clipIds[at]] })
-}
+})
 
 const isErr = (r: unknown): r is { error: string } => !!r && typeof r === 'object' && 'error' in r
+
+/** Captions made for a project while another one was open, kept in it until it's opened (a draft). */
+const WAITING = 'captions-waiting'
+interface Waiting {
+  cues: Cue[]
+  o: { lang: string; style: string; centerY: number }
+  words: Word[]
+  proofread?: Proofread
+  /** What they were made from, for the note. */
+  from: string
+}
 
 /**
  * Makes captions from a sound track: its clips' sound goes to the transcript server as one
  * recording, with `script` (else the voiceovers' own scripts) to proofread against; the words
- * come back on the timeline, are split into lines, drawn and set.
+ * come back on the timeline, are split into lines, drawn and set. All for the project it started
+ * in: opened another meanwhile, they wait in this one (a draft) and go on when it's opened again.
  */
-export async function generateCaptions(o: { sourceTrackId: string; language: string; perCaption: number; style: string; centerY: number; script?: string }) {
-  const snap = getState().snap
+export async function generateCaptions(o: { sourceTrackId: string; language: string; perCaption: number; style: string; centerY: number; script?: string }, scope = projectScope()) {
+  let snap: Snapshot | null
+  try {
+    snap = await latest(scope)
+  } catch (e) {
+    if (projectChanged(e)) return
+    throw e
+  }
   const src = snap?.project.tracks.find((t) => t.id === o.sourceTrackId)
   if (!snap || !src) return toast('Pick the sound to make captions from.', 'error')
   const clips = soundClips(snap, src)
   if (!clips.length) return toast('That track has no sound to transcribe.', 'error')
   if (alreadyRunning('captions', o.sourceTrackId)) return
-  const task = startTask(`Making captions from ${trackName(src, snap)}`, 'captions', o.sourceTrackId)
+  const name = trackName(src, snap)
+  const task = startTask(`Making captions from ${name}`, 'captions', o.sourceTrackId)
+  let made: Waiting | null = null
   try {
-    const script = o.script?.trim() || (await scriptOfTrack(o.sourceTrackId))
+    const script = o.script?.trim() || (await scriptOfTrack(o.sourceTrackId, snap))
     const parts = clips.map((c) => ({ path: mediaById(snap, c.mediaId)!.path, startUs: c.inUs, durationUs: Math.round(c.durationUs * (c.speed ?? 1)) }))
     const r = await window.studio.services.transcribeParts({ taskId: task, parts, language: o.language || undefined, script: script || undefined })
     if (isErr(r)) throw new Error(r.error)
@@ -464,24 +528,58 @@ export async function generateCaptions(o: { sourceTrackId: string; language: str
     if (!words.length) throw new Error('No speech was heard in that sound.')
     const lang = o.language || langCode(r.language) || ''
     const cues = cuesOf(words, o.perCaption)
-    patchTask(task, { stage: 'Drawing the lines', fraction: 0.7 })
-    const trackId = await placeCaptions(cues, { lang, style: o.style, centerY: o.centerY }, task)
-    heard.set(trackId, words)
     // The script check can fail on its own (the server's AI out of credits): the words stay as heard.
     const unchecked = script && r.unchecked ? `Not checked against the script: ${r.unchecked}. The words are as heard.` : ''
-    if (script) proofreads.set(trackId, { summary: unchecked || (r.summary ?? 'Checked against the script.'), changes: r.changes.filter((c) => clips[c.part]).map((c) => ({ heard: c.heard, script: c.script, atUs: onTimeline(c.part, c.at) })) })
-    else proofreads.delete(trackId)
-    for (const l of proofListeners) l()
+    const proofread = script ? { summary: unchecked || (r.summary ?? 'Checked against the script.'), changes: r.changes.filter((c) => clips[c.part]).map((c) => ({ heard: c.heard, script: c.script, atUs: onTimeline(c.part, c.at) })) } : undefined
+    made = { cues, o: { lang, style: o.style, centerY: o.centerY }, words, proofread, from: name }
+    patchTask(task, { stage: 'Drawing the lines', fraction: 0.7 })
+    const trackId = await placeWaiting(scope, made, task)
     endTask(task)
     toast(`${cues.length} caption lines in ${langName(lang)}.${unchecked ? ` ${unchecked}` : script && r.summary ? ` ${r.summary.replace(/\.$/, '')}.` : ''}`)
     return trackId
   } catch (e) {
+    if (projectChanged(e)) {
+      // Another project is open: they wait in theirs, and go on when it's opened again.
+      endTask(task)
+      if (made) {
+        await window.studio.files.writeDraft(scope.dir, WAITING, made)
+        toast(`The captions from ${made.from} are ready for ${basename(scope.dir).replace(/\.studio$/i, '')}: they go on its timeline when you open it.`)
+      }
+      return
+    }
     const msg = (e as Error).message
+    if (msg === 'Cancelled.') return endTask(task)
     // Nothing said in it: name another sound that may have speech.
     const other = /no speech/i.test(msg) ? captionSources(getState().snap).find(([id]) => id !== o.sourceTrackId) : undefined
     endTask(task, `Captions failed: ${msg}${other ? ` Try Made from › ${other[1]}.` : ''}`)
   }
 }
+
+/** Captions made (`w`) put on the scope's project, with their heard words and proofread kept. Returns the track. */
+async function placeWaiting(scope: ProjectScope, w: Waiting, task?: string) {
+  const trackId = await placeCaptions(w.cues, w.o, task, scope)
+  heard.set(keyIn(scope.dir, trackId), w.words)
+  if (w.proofread) proofreads.set(keyIn(scope.dir, trackId), w.proofread)
+  else proofreads.delete(keyIn(scope.dir, trackId))
+  for (const l of proofListeners) l()
+  return trackId
+}
+
+// Captions that finished while their project was closed go on when it's opened.
+onProjectSwitch((_from, to) => {
+  void (async () => {
+    const w = await window.studio.files.readDraft<Waiting>(to, WAITING)
+    if (!w?.cues?.length) return
+    const scope = projectScope(to)
+    try {
+      await placeWaiting(scope, w)
+      await window.studio.files.writeDraft(to, WAITING, null)
+      toast(`The captions from ${w.from} made while this project was closed are on the timeline: ${w.cues.length} lines in ${langName(w.o.lang)}.`)
+    } catch (e) {
+      if (!projectChanged(e)) toast(`The captions made while this project was closed couldn’t go on: ${(e as Error).message}`, 'error')
+    }
+  })()
+})
 
 /**
  * Captions for every voiceover, each in its own language from its own ElevenLabs script: the
@@ -489,30 +587,37 @@ export async function generateCaptions(o: { sourceTrackId: string; language: str
  * takes two jobs at once from an address. Returns the captions tracks made.
  */
 export async function captionsForEveryVoiceover(o: { perCaption: number; style: string; centerY: number }): Promise<string[]> {
+  const scope = projectScope()
   const snap = getState().snap
   const voices = (snap?.project.tracks ?? []).filter((t) => t.kind === 'audio' && roleOf(t, snap) === 'voice' && soundClips(snap!, t).length)
   const made: string[] = []
   for (const t of voices) {
-    if (!(await scriptOfTrack(t.id))) continue
-    const id = await generateCaptions({ ...o, sourceTrackId: t.id, language: '' })
+    // Another project opened meanwhile: its tracks have the same ids, so the rest stop here.
+    if (!scope.live()) return made
+    if (!(await scriptOfTrack(t.id, snap))) continue
+    const id = await generateCaptions({ ...o, sourceTrackId: t.id, language: '' }, scope)
     if (id) made.push(id)
   }
-  if (!made.length) toast('No voiceover here has its script. Voiceovers made in the Audio tab keep theirs; for others, paste the script and make captions from that track.', 'error')
+  if (!made.length && scope.live()) toast('No voiceover here has its script. Voiceovers made in the Audio tab keep theirs; for others, paste the script and make captions from that track.', 'error')
   return made
 }
 
 /**
  * Draws caption lines and sets them on the captions track for `lang` (made if there's none;
  * a language that already has a track gets its lines replaced). Returns the track's id.
+ * For the scope's project (another one open throws `ProjectChanged`).
  */
-export async function placeCaptions(cues: Cue[], o: { lang: string; style: string; centerY: number }, task?: string): Promise<string> {
+export async function placeCaptions(cues: Cue[], o: { lang: string; style: string; centerY: number }, task?: string, scope = projectScope()): Promise<string> {
+  const snap = await latest(scope)
+  if (!snap) throw new Error('No project is open.')
+  const cv = canvasOf(snap)
   // Made again for a language that has a track: its lines are replaced, its look and height kept.
-  const same = captionTracks(await latest()).find((t) => t.lang === o.lang)
+  const same = captionTracks(snap).find((t) => t.lang === o.lang)
   const centerY = same?.lines.length ? same.centerY : o.centerY
-  const style = same?.lines.length ? lookOf(same) : styleFor(o.style, o.lang, o.centerY)
+  const style = same?.lines.length ? lookOf(same, cv.width) : styleFor(o.style, o.lang, o.centerY, cv.width)
   // Made again, the lines stay where the old ones were moved to.
-  const lines = await drawLines(same?.lines.length ? cues.map((c) => ({ ...c, ...placeOf(same.lines[0]) })) : cues, style, centerY, task)
-  const r = await setLines(same?.track.id, lines, style)
+  const lines = await drawLines(same?.lines.length ? cues.map((c) => ({ ...c, ...placeOf(same.lines[0]) })) : cues, style, centerY, cv, task)
+  const r = await setLines(scope, same?.track.id, lines, style)
   if (!r) throw new Error('The engine didn’t take the captions.')
   return r.trackId
 }
@@ -521,12 +626,14 @@ export async function placeCaptions(cues: Cue[], o: { lang: string; style: strin
  * A captions row's lines replaced by `cues` in another language (Translations): the row keeps
  * its look, height and the place its lines were moved to; its language becomes `lang`.
  */
-export async function setCaptionLines(trackId: string, cues: Cue[], lang: string) {
-  const info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  if (!info) throw new Error('A captions track is gone.')
-  const look = { ...lookOf(info), preset: presetOf(info.style, lang, info.centerY) }
-  const lines = await drawLines(cues.map((c) => (c.posX == null ? { ...c, ...placeOf(info.lines[0]) } : c)), look, info.centerY)
-  return setLines(trackId, lines, look)
+export async function setCaptionLines(trackId: string, cues: Cue[], lang: string, scope = projectScope()) {
+  const snap = await latest(scope)
+  const info = captionTracks(snap).find((t) => t.track.id === trackId)
+  if (!snap || !info) throw new Error('A captions track is gone.')
+  const cv = canvasOf(snap)
+  const look = { ...lookOf(info, cv.width), preset: presetOf(info.style, lang, info.centerY) }
+  const lines = await drawLines(cues.map((c) => (c.posX == null ? { ...c, ...placeOf(info.lines[0]) } : c)), look, info.centerY, cv)
+  return setLines(scope, trackId, lines, look)
 }
 
 /**
@@ -536,8 +643,11 @@ export async function setCaptionLines(trackId: string, cues: Cue[], lang: string
  * with no line of the language in it is left alone. `gesture` makes it one undo step with the
  * sound swapped before it.
  */
-export async function recaption(lang: string, spans: { fromUs: Us; toUs: Us; words: Word[] }[], gesture?: string) {
-  const rows = captionTracks(await latest()).filter((t) => t.lang === lang)
+export async function recaption(lang: string, spans: { fromUs: Us; toUs: Us; words: Word[] }[], gesture?: string, scope = projectScope()) {
+  const snap = await latest(scope)
+  if (!snap) return
+  const cv = canvasOf(snap)
+  const rows = captionTracks(snap).filter((t) => t.lang === lang)
   const within = (c: Clip, s: (typeof spans)[number]) => s.words.length > 0 && c.startUs + c.durationUs / 2 >= s.fromUs && c.startUs + c.durationUs / 2 < s.toUs
   const inside = (c: Clip) => spans.some((s) => within(c, s))
   const added = new Map<string, Drawable[]>()
@@ -553,8 +663,8 @@ export async function recaption(lang: string, spans: { fromUs: Us; toUs: Us; wor
     const cues = [...cuesFrom(r, true).filter((_, i) => !inside(r.lines[i])), ...add].sort((a, b) => a.startUs - b.startUs)
     // A new line never runs into the one after it.
     for (let i = 0; i < cues.length - 1; i++) cues[i].endUs = Math.min(cues[i].endUs, cues[i + 1].startUs)
-    const look = lookOf(r)
-    await setLines(r.track.id, await drawLines(cues, look, r.centerY, undefined, -1), look, undefined, gesture)
+    const look = lookOf(r, cv.width)
+    await setLines(scope, r.track.id, await drawLines(cues, look, r.centerY, cv, undefined, -1), look, undefined, gesture)
   }
 }
 
@@ -570,33 +680,37 @@ export function wordsPerCaptionOf(info: CaptionInfo) {
  * height, or split again into `perCaption` words (from the times the lines keep). Any other
  * change made to the look stays, unless a style is picked.
  */
-export async function restyleCaptions(trackId: string, o: { style?: string; centerY?: number; perCaption?: number }) {
+export const restyleCaptions = forProject(async (scope, trackId: string, o: { style?: string; centerY?: number; perCaption?: number }) => {
   // A style or a height is the language's, every row of it; words per caption is this row's.
   const done = o.perCaption == null ? previewCaptionLook(trackId, o) : () => {}
   try {
-    const rows = o.perCaption != null ? captionTracks(await latest()).filter((t) => t.track.id === trackId) : captionGroup(await latest(), trackId)
+    const snap = await latest(scope)
+    if (!snap) return
+    const cv = canvasOf(snap)
+    const rows = o.perCaption != null ? captionTracks(snap).filter((t) => t.track.id === trackId) : captionGroup(snap, trackId)
     for (const info of rows) {
       if (!info.lines.length) continue
       const centerY = o.centerY ?? info.centerY
-      const words = o.perCaption != null ? wordsOfTrack(info) : null
+      const words = o.perCaption != null ? wordsOfTrack(info, scope.dir) : null
       const cues: Drawable[] = words ? cuesOf(words, o.perCaption!).map((c) => ({ ...c, ...placeOf(info.lines[0]) })) : cuesFrom(info, true)
-      const spec = o.style ? styleFor(o.style, info.lang, centerY) : lookOf(info, centerY)
+      const spec = o.style ? styleFor(o.style, info.lang, centerY, cv.width) : lookOf(info, cv.width, centerY)
       // Set at once; each line keeps its drawing (the same words) until its new one comes.
-      await streamLines(info, cues, spec, centerY, !words)
+      await streamLines(scope, cv, info, cues, spec, centerY, !words)
     }
   } finally {
     done()
   }
-}
+})
 
 /**
  * Shows a language's captions in the player with another style or height straight away (the
  * Height slider while it's dragged); the drawings come with restyleCaptions.
  */
 export function previewCaptionLook(trackId: string, o: { style?: string; centerY?: number }): () => void {
-  const dones = captionGroup(getState().snap, trackId).map((info) => {
+  const snap = getState().snap
+  const dones = captionGroup(snap, trackId).map((info) => {
     const centerY = o.centerY ?? info.centerY
-    const { content: _c, ...look } = o.style ? styleFor(o.style, info.lang, centerY) : { content: '', preset: presetOf(info.style, info.lang, centerY) }
+    const { content: _c, ...look } = o.style ? styleFor(o.style, info.lang, centerY, snap?.project.width ?? 1080) : { content: '', preset: presetOf(info.style, info.lang, centerY) }
     return previewTextLook(
       info.lines.map((c) => c.id),
       look,
@@ -605,8 +719,8 @@ export function previewCaptionLook(trackId: string, o: { style?: string; centerY
   return () => dones.forEach((d) => d())
 }
 
-/** Look changes waiting to be set, per language: a slider dragged sets them once it rests. */
-const lookQueue = new Map<string, { patch: Partial<TextLook>; timer: number; dones: (() => void)[]; waiting: (() => void)[] }>()
+/** Look changes waiting to be set, per project and language: a slider dragged sets them once it rests. */
+const lookQueue = new Map<string, { patch: Partial<TextLook>; timer: number; dones: (() => void)[]; waiting: (() => void)[]; scope: ProjectScope }>()
 
 /**
  * A change to how every line of a language's captions looks (font, size, colour…), on every
@@ -614,8 +728,9 @@ const lookQueue = new Map<string, { patch: Partial<TextLook>; timer: number; don
  * together, each line keeping its old drawing until its new one comes (`streamLines`).
  */
 export function applyCaptionLook(trackId: string, patch: Partial<TextLook>): Promise<void> {
-  const key = captionGroup(getState().snap, trackId)[0]?.lang ?? trackId
-  const q = lookQueue.get(key) ?? { patch: {}, timer: 0, dones: [], waiting: [] }
+  const scope = projectScope()
+  const key = keyIn(scope.dir, captionGroup(getState().snap, trackId)[0]?.lang ?? trackId)
+  const q = lookQueue.get(key) ?? { patch: {}, timer: 0, dones: [], waiting: [], scope }
   q.patch = { ...q.patch, ...patch }
   lookQueue.set(key, q)
   q.dones.push(previewTextLook(groupLines(getState().snap, trackId).map((l) => l.clip.id), patch))
@@ -625,13 +740,16 @@ export function applyCaptionLook(trackId: string, patch: Partial<TextLook>): Pro
     q.timer = window.setTimeout(async () => {
       lookQueue.delete(key)
       try {
-        for (const info of captionGroup(await latest(), trackId)) {
+        const snap = await latest(q.scope)
+        if (!snap) return
+        const cv = canvasOf(snap)
+        for (const info of captionGroup(snap, trackId)) {
           if (!info.lines.length) continue
-          const look = lookOf(info)
-          await streamLines(info, cuesFrom(info, true), { ...look, ...q.patch, preset: look.preset }, info.centerY, true)
+          const look = lookOf(info, cv.width)
+          await streamLines(q.scope, cv, info, cuesFrom(info, true), { ...look, ...q.patch, preset: look.preset }, info.centerY, true)
         }
       } catch (e) {
-        toast(`Couldn’t change the captions: ${(e as Error).message}`, 'error')
+        if (!projectChanged(e)) toast(`Couldn’t change the captions: ${(e as Error).message}`, 'error')
       } finally {
         for (const d of q.dones) d()
         for (const w of q.waiting) w()
@@ -641,40 +759,53 @@ export function applyCaptionLook(trackId: string, patch: Partial<TextLook>): Pro
 }
 
 /** Draws the lines that need it and sets the track's lines, the selected line staying selected. */
-async function redraw(info: CaptionInfo, cues: Drawable[], spec: TextLook, centerY: number, only?: number, select?: number) {
+async function redraw(scope: ProjectScope, cv: Canvas, info: CaptionInfo, cues: Drawable[], spec: TextLook, centerY: number, only?: number, select?: number) {
   const sel = getState().selection[0]
   const at = select ?? Math.max(0, info.lines.findIndex((c) => c.id === sel))
   const task = cues.filter((c) => !c.png).length > 12 ? startTask('Redrawing the captions', 'restyle', info.track.id) : undefined
   try {
-    const lines = await drawLines(cues, spec, centerY, task, only)
+    const lines = await drawLines(cues, spec, centerY, cv, task, only)
     holdSelection(3000)
-    const r = await setLines(info.track.id, lines, spec)
+    const r = await setLines(scope, info.track.id, lines, spec)
     keepSelected(info, r, Math.min(at, lines.length - 1))
     if (task) endTask(task)
     return r
   } catch (e) {
+    if (projectChanged(e)) {
+      if (task) endTask(task)
+      throw e
+    }
     if (task) endTask(task, (e as Error).message)
     else toast(`Couldn’t change the captions: ${(e as Error).message}`, 'error')
   }
 }
 
+/** The project and the captions track `trackId` in it, as the engine has them now. */
+async function rowOf(scope: ProjectScope, trackId: string) {
+  const snap = await latest(scope)
+  const info = captionTracks(snap).find((t) => t.track.id === trackId)
+  return snap && info ? { cv: canvasOf(snap), snap, info } : null
+}
+
 /**
  * One line's new words: its PNG is drawn again and the track's lines are set again (its times
- * stay). No words at all takes the line out (the one before it is then the selected one).
+ * stay; its words' times too while it has as many words). No words at all takes the line out
+ * (the one before it is then the selected one).
  */
-export async function editCaptionLine(trackId: string, clipId: string, text: string) {
-  const info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  if (!info) return
+export const editCaptionLine = forProject(async (scope, trackId: string, clipId: string, text: string) => {
+  const row = await rowOf(scope, trackId)
+  if (!row) return
+  const { cv, info } = row
   const i = info.lines.findIndex((c) => c.id === clipId)
   if (i < 0 || (text.trim() && info.lines[i].text?.content === text)) return
   const cues = cuesFrom(info, true)
   if (!text.trim()) {
     cues.splice(i, 1)
-    return redraw(info, cues, lookOf(info), info.centerY, -1, Math.max(0, i - 1))
+    return redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, Math.max(0, i - 1))
   }
-  cues[i] = { ...cues[i], text, png: undefined }
-  return redraw(info, cues, lookOf(info), info.centerY, -1, i)
-}
+  cues[i] = { ...cues[i], text, words: retimed(cues[i].words, text), png: undefined }
+  return redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, i)
+})
 
 /** `find` (any case) as a pattern that matches it anywhere. */
 export const findPattern = (find: string) => new RegExp(find.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
@@ -684,26 +815,28 @@ export const findPattern = (find: string) => new RegExp(find.trim().replace(/[.*
  * instead; only those lines are drawn again, their times kept (and their words' times while
  * they have as many words). Returns how many lines changed.
  */
-export async function replaceInCaptions(trackId: string, find: string, replace: string): Promise<number> {
+export const replaceInCaptions = forProject(async (scope, trackId: string, find: string, replace: string): Promise<number> => {
   if (!find.trim()) return 0
   let changed = 0
-  for (const info of captionGroup(await latest(), trackId)) {
+  const snap = await latest(scope)
+  if (!snap) return 0
+  const cv = canvasOf(snap)
+  for (const info of captionGroup(snap, trackId)) {
     const cues = cuesFrom(info, true)
     let here = 0
     for (const [i, c] of cues.entries()) {
       const text = c.text.replace(findPattern(find), replace).replace(/\s+/g, ' ').trim()
       if (text === c.text) continue
-      const words = c.words && text.split(' ').length === c.words.length ? c.words.map((w, k) => ({ ...w, w: text.split(' ')[k] })) : undefined
-      cues[i] = { ...c, text, words, png: undefined }
+      cues[i] = { ...c, text, words: retimed(c.words, text), png: undefined }
       here++
     }
     // A line replaced by nothing goes.
     const kept = cues.filter((c) => c.text)
-    if (here) await redraw(info, kept, lookOf(info), info.centerY, -1)
+    if (here) await redraw(scope, cv, info, kept, lookOf(info, cv.width), info.centerY, -1)
     changed += here
   }
   return changed
-}
+})
 
 /** How long a new line is, and the least room that takes one between two lines. */
 const NEW_LINE_US = 1_500_000
@@ -715,42 +848,47 @@ const MIN_ROOM_US = 300_000
  * the language's next row if it's free there, else a new one just above this row. `text` is
  * the line's words as typed, saved first. Returns the new line's id.
  */
-export async function addCaptionLineAfter(trackId: string, clipId: string, text?: string): Promise<string | undefined> {
-  let info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  let i = info?.lines.findIndex((c) => c.id === clipId) ?? -1
-  if (!info || i < 0) return
+export const addCaptionLineAfter = forProject(async (scope, trackId: string, clipId: string, text?: string): Promise<string | undefined> => {
+  let row = await rowOf(scope, trackId)
+  let i = row?.info.lines.findIndex((c) => c.id === clipId) ?? -1
+  if (!row || i < 0) return
+  const { cv } = row
+  let info = row.info
   const typed = text?.trim()
   const start = info.lines[i].startUs + info.lines[i].durationUs
   const room = (info.lines[i + 1]?.startUs ?? Infinity) - start
   if (room >= MIN_ROOM_US) {
     const cues = cuesFrom(info, true)
-    if (typed && typed !== cues[i].text) cues[i] = { ...cues[i], text: typed, png: undefined }
+    if (typed && typed !== cues[i].text) cues[i] = { ...cues[i], text: typed, words: retimed(cues[i].words, typed), png: undefined }
     cues.splice(i + 1, 0, { startUs: start, endUs: start + Math.min(room, NEW_LINE_US), text: '', ...placeOf(info.lines[i]) })
-    const r = await redraw(info, cues, lookOf(info), info.centerY, -1, i + 1)
+    const r = await redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, i + 1)
     return r?.clipIds[i + 1]
   }
   if (typed && typed !== info.lines[i].text?.content) {
-    await editCaptionLine(trackId, clipId, typed)
-    info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-    if (!info) return
+    const r = await redraw(scope, cv, info, cuesFrom(info, true).map((c, k) => (k === i ? { ...c, text: typed, words: retimed(c.words, typed), png: undefined } : c)), lookOf(info, cv.width), info.centerY, -1, i)
+    row = await rowOf(scope, trackId)
+    if (!row || !r) return
+    info = row.info
+    i = info.lines.findIndex((c) => c.id === r.clipIds[i])
+    if (i < 0) return
   }
   const end = start + NEW_LINE_US
   const free = (t: CaptionInfo) => t.lines.every((c) => c.startUs >= end || c.startUs + c.durationUs <= start)
-  const row = captionGroup(await latest(), trackId).find((t) => t.track.id !== trackId && free(t))
-  if (row) {
-    const cues = cuesFrom(row, true)
+  const other = captionGroup(row.snap, trackId).find((t) => t.track.id !== trackId && free(t))
+  if (other) {
+    const cues = cuesFrom(other, true)
     const at = cues.filter((c) => c.startUs < start).length
     cues.splice(at, 0, { startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]) })
-    const r = await redraw(row, cues, lookOf(row), row.centerY, -1, at)
+    const r = await redraw(scope, cv, other, cues, lookOf(other, cv.width), other.centerY, -1, at)
     return r?.clipIds[at]
   }
-  const look = lookOf(info)
-  const lines = await drawLines([{ startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]) }], look, info.centerY)
+  const look = lookOf(info, cv.width)
+  const lines = await drawLines([{ startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]) }], look, info.centerY, cv)
   holdSelection(3000)
-  const r = await setLines(undefined, lines, look, trackId)
+  const r = await setLines(scope, undefined, lines, look, trackId)
   if (r?.clipIds[0]) setState({ selection: [r.clipIds[0]] })
   return r?.clipIds[0]
-}
+})
 
 /**
  * Enter in a line: it becomes two at the cursor, `before` and `after`, each keeping the voice's
@@ -758,19 +896,25 @@ export async function addCaptionLineAfter(trackId: string, clipId: string, text?
  * starts with its first; without them the time is shared out by length. Nothing is heard
  * again. Returns the new lines' ids (the second part is `ids[index + 1]`).
  */
-export async function splitCaptionLine(trackId: string, clipId: string, before: string, after: string) {
-  const info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  const i = info?.lines.findIndex((c) => c.id === clipId) ?? -1
-  if (!info || i < 0) return
+export const splitCaptionLine = forProject(async (scope, trackId: string, clipId: string, before: string, after: string): Promise<{ ids: string[]; index: number } | undefined> => {
+  const row = await rowOf(scope, trackId)
+  const i = row?.info.lines.findIndex((c) => c.id === clipId) ?? -1
+  if (!row || i < 0) return
+  const { cv, info } = row
   const [a, b] = [before.trim(), after.trim()]
   if (!a || !b) {
-    await editCaptionLine(trackId, clipId, `${a} ${b}`.trim())
+    const cues = cuesFrom(info, true)
+    const text = `${a} ${b}`.trim()
+    if (!text) cues.splice(i, 1)
+    else cues[i] = { ...cues[i], text, words: retimed(cues[i].words, text), png: undefined }
+    await redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, text ? i : Math.max(0, i - 1))
     return
   }
   const c = info.lines[i]
   const start = c.startUs
   const end = c.startUs + c.durationUs
-  const ws = c.text?.words ?? []
+  // The words' times hold only while the line's words are as they were.
+  const ws = retimed(c.text?.words, `${a} ${b}`) ?? []
   const n = a.split(/\s+/).length
   let first: Cue
   let second: Cue
@@ -785,19 +929,21 @@ export async function splitCaptionLine(trackId: string, clipId: string, before: 
   }
   const cues = cuesFrom(info, true)
   cues.splice(i, 1, first, second)
-  const r = await redraw(info, cues, lookOf(info), info.centerY, -1, i + 1)
+  const r = await redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, i + 1)
   return r && { ids: r.clipIds, index: i }
-}
+})
 
 /** Backspace at the start of a line: it joins the line before it (`text` is this line's words as typed). */
-export async function joinCaptionLine(trackId: string, clipId: string, text: string) {
-  const info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  const i = info?.lines.findIndex((c) => c.id === clipId) ?? -1
-  if (!info || i < 1) return
+export const joinCaptionLine = forProject(async (scope, trackId: string, clipId: string, text: string) => {
+  const row = await rowOf(scope, trackId)
+  const i = row?.info.lines.findIndex((c) => c.id === clipId) ?? -1
+  if (!row || i < 1) return
+  const { cv, info } = row
   const [prev, cur] = [info.lines[i - 1], info.lines[i]]
   const shift = cur.startUs - prev.startUs
   const pw = prev.text?.words
-  const cw = cur.text?.words
+  // This line's word times hold only while its words are as they were.
+  const cw = retimed(cur.text?.words, text.trim())
   const joined: Cue = {
     ...placeOf(prev),
     startUs: prev.startUs,
@@ -807,23 +953,24 @@ export async function joinCaptionLine(trackId: string, clipId: string, text: str
   }
   const cues = cuesFrom(info, true)
   cues.splice(i - 1, 2, joined)
-  const r = await redraw(info, cues, lookOf(info), info.centerY, -1, i - 1)
+  const r = await redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, i - 1)
   return r && { ids: r.clipIds, index: i - 1, caret: (prev.text?.content ?? '').trim().length + 1 }
-}
+})
 
 /**
  * Delete at the end of a line: the line after it joins it (`text` is this line's words as
  * typed), each keeping its words' times. The cursor stays where it was, before the joined words.
  */
-export async function joinNextCaptionLine(trackId: string, clipId: string, text: string) {
-  const info = captionTracks(await latest()).find((t) => t.track.id === trackId)
-  const i = info?.lines.findIndex((c) => c.id === clipId) ?? -1
-  if (!info || i < 0 || i + 1 >= info.lines.length) return
+export const joinNextCaptionLine = forProject(async (scope, trackId: string, clipId: string, text: string) => {
+  const row = await rowOf(scope, trackId)
+  const i = row?.info.lines.findIndex((c) => c.id === clipId) ?? -1
+  if (!row || i < 0 || i + 1 >= row.info.lines.length) return
+  const { cv, info } = row
   const [cur, next] = [info.lines[i], info.lines[i + 1]]
   const mine = text.trim()
   const shift = next.startUs - cur.startUs
-  // This line's word times hold only while its words are as they were.
-  const cw = mine === (cur.text?.content ?? '').trim() ? cur.text?.words : undefined
+  // This line's word times hold only while its words are as many as they were.
+  const cw = retimed(cur.text?.words, mine)
   const nw = next.text?.words
   const joined: Cue = {
     ...placeOf(cur),
@@ -834,9 +981,9 @@ export async function joinNextCaptionLine(trackId: string, clipId: string, text:
   }
   const cues = cuesFrom(info, true)
   cues.splice(i, 2, joined)
-  const r = await redraw(info, cues, lookOf(info), info.centerY, -1, i)
+  const r = await redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, i)
   return r && { ids: r.clipIds, index: i, caret: mine.length }
-}
+})
 
 // .srt
 

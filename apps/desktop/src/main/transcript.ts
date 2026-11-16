@@ -45,7 +45,7 @@ type ServerJob = { state: string; stage: string; progress: number; queue: number
 /** The server's stage names, as the progress line says them. */
 export function stageText(stage: string, queue: number): string {
   if (stage === 'waiting for the model') return queue > 0 ? `Waiting for the transcriber (${queue} ahead)` : 'Waiting for the transcriber'
-  const said: Record<string, string> = { queued: 'The server has the sound', 'preparing audio': 'The server is reading the sound', transcribing: 'The server is listening', 'proofreading against your script': 'Checking the words against the script', done: 'The server is done' }
+  const said: Record<string, string> = { queued: 'The server has the sound', 'preparing audio': 'The server is reading the sound', transcribing: 'The server is listening', 'proofreading against your script': 'Checking the words against the script', done: 'The server is done', 'waiting for the server to answer again': 'The server isn’t answering; asking again' }
   return said[stage] ?? `The server: ${stage}`
 }
 
@@ -59,30 +59,50 @@ async function readError(r: Response): Promise<string> {
   return `The transcript server answered HTTP ${r.status}.`
 }
 
+/** A time limit, ended sooner by `signal` when there is one. */
+const within = (ms: number, signal?: AbortSignal) => (signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms))
+
 /**
  * Transcribes `audio` (any format FFmpeg reads) and, with `script`, proofreads it. `progress`
  * hears each stage ("waiting for the model", "transcribing"…) and, while queued, the place.
  */
-export async function transcribe(o: { audio: Buffer; fileName: string; language?: string; script?: string; progress?: (stage: string, fraction: number, queue: number) => void }): Promise<ServerTranscript> {
+export async function transcribe(o: { audio: Buffer; fileName: string; language?: string; script?: string; progress?: (stage: string, fraction: number, queue: number) => void; signal?: AbortSignal }): Promise<ServerTranscript> {
   const form = new FormData()
   form.append('file', new Blob([new Uint8Array(o.audio)]), o.fileName)
   form.append('language', LANGUAGES[o.language ?? ''] ?? 'Auto')
   form.append('per_line', '0')
   let r: Response
   try {
-    r = await fetch(`${API}/jobs`, { method: 'POST', body: form, signal: AbortSignal.timeout(120_000) })
+    r = await fetch(`${API}/jobs`, { method: 'POST', body: form, signal: within(120_000, o.signal) })
   } catch (e) {
+    if (o.signal?.aborted) throw new TranscriptError('Cancelled.')
     throw new TranscriptError(`The transcript server couldn't be reached: ${(e as Error).message}`)
   }
   if (!r.ok) throw new TranscriptError(await readError(r))
   const { id } = (await r.json()) as { id: string }
   try {
     // A job reports its stage and progress; long sound can take a few minutes in the queue.
+    // A question that gets no answer (the network, a restart, a busy server) is asked again for
+    // up to three minutes in a row; only the server saying the job is gone or failed ends it.
     const deadline = Date.now() + 60 * 60_000
     let job: ServerJob
+    let missedSince = 0
     for (;;) {
-      await new Promise((res) => setTimeout(res, 1000))
-      const s = await fetch(`${API}/jobs/${id}`, { signal: AbortSignal.timeout(30_000) })
+      await new Promise((res) => setTimeout(res, missedSince ? 3000 : 1000))
+      if (o.signal?.aborted) throw new TranscriptError('Cancelled.')
+      let s: Response | null = null
+      try {
+        s = await fetch(`${API}/jobs/${id}`, { signal: within(30_000, o.signal) })
+      } catch {
+        if (o.signal?.aborted) throw new TranscriptError('Cancelled.')
+      }
+      if (!s || s.status >= 500 || s.status === 429) {
+        missedSince ||= Date.now()
+        if (Date.now() - missedSince > 3 * 60_000) throw new TranscriptError(s ? await readError(s) : 'The transcript server stopped answering.')
+        o.progress?.('waiting for the server to answer again', 0, 0)
+        continue
+      }
+      missedSince = 0
       if (!s.ok) throw new TranscriptError(await readError(s))
       job = (await s.json()) as ServerJob
       o.progress?.(job.stage, job.progress ?? 0, job.queue ?? 0)
@@ -95,10 +115,11 @@ export async function transcribe(o: { audio: Buffer; fileName: string; language?
     if (!script) return { ...words(job), unchecked: null }
     o.progress?.('proofreading against your script', 0.9, 0)
     try {
-      const p = await fetch(`${API}/jobs/${id}/proofread`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ script }), signal: AbortSignal.timeout(10 * 60_000) })
+      const p = await fetch(`${API}/jobs/${id}/proofread`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ script }), signal: within(10 * 60_000, o.signal) })
       if (!p.ok) throw new TranscriptError(await readError(p))
       return { ...words((await p.json()) as ServerJob), unchecked: null }
     } catch (e) {
+      if (o.signal?.aborted) throw new TranscriptError('Cancelled.')
       // The words stand as heard: the check is the extra.
       const why = (e as Error).message.replace(/^The proofreader could not finish:\s*/i, '').replace(/\.$/, '')
       return { ...words(job), changes: [], summary: null, unchecked: /no credits|HTTP 402/i.test(why) ? 'the server’s AI account has no credits left' : why }

@@ -13,11 +13,12 @@ import { LibraryPanel } from './Library'
 import { MenuBar } from './Menus'
 import { PlayerPanel } from './Player'
 import { installShortcuts } from './shortcuts'
-import { call, closeProject, importPaths, setLayout, setState, startStore, useStore, type Layout } from './store'
+import { closeProject, importPaths, projectScope, setLayout, setState, startStore, useStore, type Layout, type ProjectScope } from './store'
 import { initDub } from './dub'
 import { MEDIA_MIME } from './LibraryBlocks'
 import { TEXT_MIME } from './LibraryTabs'
 import { initTranslate } from './translate'
+import { initDownloads } from './downloads'
 import { initCapcut } from './capcutImport'
 import { TimelinePanel } from './Timeline'
 
@@ -88,6 +89,9 @@ function engineTone(s: EngineStatus): { tone: 'ok' | 'warn' | 'bad'; text: strin
 /** The editor: four panels in the layout's grid, with draggable gaps. */
 function EditorGrid() {
   const layout = useStore((s) => s.layout)
+  // The timeline starts afresh with each project: clip and media ids start again in every one,
+  // so a clip view kept from the last project would show its filmstrip and waveform here.
+  const projectDir = useStore((s) => s.snap?.dir ?? '')
   const fullPlayer = useStore((s) => s.fullPlayer)
   const locked = useStore((s) => s.layoutLocked)
   const hidden = useStore((s) => s.hiddenPanels)
@@ -187,7 +191,7 @@ function EditorGrid() {
       )}
       {shown('tl') && (
         <section className="area area-tl" style={{ gridArea: 'tl' }} aria-label="Timeline">
-          <TimelinePanel />
+          <TimelinePanel key={projectDir} />
         </section>
       )}
       {/* With panels hidden, only the gap above the timeline still means the same thing. */}
@@ -215,6 +219,7 @@ function EditorGrid() {
 export function App() {
   const [engine, setEngine] = useState<EngineStatus>({ link: 'connecting' })
   const project = useStore((s) => s.snap?.project)
+  const dir = useStore((s) => s.snap?.dir)
   const page = useStore((s) => s.page)
   const layout = useStore((s) => s.layout)
   const exporting = useStore((s) => s.exports).filter((j) => j.state === 'running' || j.state === 'queued')
@@ -225,6 +230,7 @@ export function App() {
     startStore()
     initDub()
     initTranslate()
+    initDownloads()
     initCapcut()
     return installShortcuts()
   }, [])
@@ -280,7 +286,7 @@ export function App() {
         <div className="titlebar-center">
           {project && (
             <>
-              <ProjectName name={project.name} />
+              <ProjectName key={dir} name={project.name} />
               <span className="project-meta">
                 {aspect ? `${aspect} · ` : ''}
                 {project.width} × {project.height} · {project.fps} fps
@@ -348,6 +354,8 @@ export function App() {
 function ProjectName({ name }: { name: string }) {
   const [text, setText] = useState<string | null>(null)
   const open = useRef(false)
+  // The project being renamed: if another is opened while the field is up, the name isn't given to it.
+  const scope = useRef<ProjectScope | null>(null)
   const field = useRef<HTMLInputElement>(null)
   // The whole name selected to type over (not left to the focus event, which waits for the window's focus).
   const editing = text !== null
@@ -359,7 +367,7 @@ function ProjectName({ name }: { name: string }) {
     open.current = false
     const next = text?.trim()
     setText(null)
-    if (keep && next && next !== name) void call('project.setOptions', { name: next })
+    if (keep && next && next !== name && scope.current?.live()) void scope.current.call('project.setOptions', { name: next }).catch(() => undefined)
   }
   if (text === null)
     return (
@@ -368,6 +376,7 @@ function ProjectName({ name }: { name: string }) {
         title="Double-click to rename"
         onDoubleClick={() => {
           open.current = true
+          scope.current = projectScope()
           setText(name)
         }}
       >

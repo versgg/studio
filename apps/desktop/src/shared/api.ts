@@ -7,6 +7,11 @@ import type { TrItem, TrJob, TrLine, TrStems, TrText, TrVoice, TrVoiceChoice } f
 import type { CcDraft, CcProject } from './capcut'
 export type { Stem, StemsJob } from './stems'
 
+/** A link looked up for Media › Download (main/download.ts `Probe`). */
+export type DownloadProbe = { probe: string; url: string; platform: string; platformLabel: string; title: string; uploader?: string; duration: number; ladder: { id: string; label: string; res?: string }[]; thumb: string | null }
+/** A download into a project (main/download.ts `DownloadJob`). */
+export type DownloadJob = { id: string; project: string; url: string; title: string; platform: string; kind: 'mp4' | 'mp3'; quality: string; vmake: string; serverId: string; state: 'queued' | 'working' | 'saving' | 'saved' | 'failed' | 'cancelled'; stage: string; fraction: number; file?: string; bytes?: number; error?: string; imported?: boolean; startedAt: number }
+
 /** A sound the Translations tab can speak again: the voice that spoke it and what it says. */
 export type TrSound = {
   voiceId?: string
@@ -190,6 +195,10 @@ export interface StudioApi {
   platform: string
   /** Tests run with STUDIO_SILENT=1: previews make no sound. */
   silent: boolean
+  /** STUDIO_DEBUG_DRAG=1: every step of a clip drag is written to the log. */
+  debugDrag: boolean
+  /** A line for Studio's log (userData/logs): what went wrong, or a drag traced. */
+  log(kind: string, what: unknown): void
   engine: {
     call(method: string, params?: Record<string, unknown>): Promise<any>
     onStatus(cb: (status: EngineStatus) => void): () => void
@@ -242,6 +251,8 @@ export interface StudioApi {
      * proofread against `script` when there is one. Progress arrives as `taskId`'s task:progress.
      */
     transcribeParts(o: { taskId: string; parts: { path: string; startUs: number; durationUs: number }[]; language?: string; script?: string }): Promise<Transcript | ServiceError>
+    /** Stops the captions being heard for that task (it ends with "Cancelled."). */
+    cancelTranscribe(taskId: string): Promise<void>
     /** The scripts these sounds were read from (voiceovers keep theirs), joined in order; "" if none. */
     scriptsFor(paths: string[]): Promise<string>
     /**
@@ -274,7 +285,9 @@ export interface StudioApi {
     dubRemoveAgain(id: string): Promise<DubJob | { error: string }>
     dubCancel(id: string): Promise<DubJob | null>
     /** A ready dub's scan, readings and looks. */
-    dubResult(id: string): Promise<{ job: DubJob; scan: DubScan | null; texts: DubText[]; looks: DubLook[]; speech: { language: string; lines: DubSpoken[] } | null; said: { id: string; text: string; translation: string }[]; voice: { lines: DubVoiceLine[] } | null } | ServiceError>
+    dubResult(id: string): Promise<{ job: DubJob; scan: DubScan | null; texts: DubText[]; looks: DubLook[]; speech: { language: string; lines: DubSpoken[] } | null; said: { id: string; text: string; translation: string }[]; voice: { lines: DubVoiceLine[] } | null; draft: { texts: string[]; lines: string[]; edits: Record<string, string> } | null; says: Record<string, string> | null } | ServiceError>
+    /** Saves (null: deletes) a dub's draft as it's typed: the review's picks and words, or What she says' changed sentences. */
+    dubDraft(id: string, which: 'review' | 'says', value: unknown): Promise<void | ServiceError>
     dubApplied(id: string): Promise<void>
     /** Reroll: dubbed sentences spoken again by the same voice as a new take (with `edits`' words where given); the lines as they'll play. */
     dubReroll(id: string, lineIds: string[], edits?: Record<string, string>): Promise<DubVoiceLine[] | ServiceError>
@@ -292,6 +305,15 @@ export interface StudioApi {
     translateStart(o: { source: string; name: string; from: string; langs: string[]; voice: TrVoice; items: TrItem[]; durationUs: number }): Promise<TrJob[] | ServiceError>
     /** A voiceover Studio didn't make, heard once (what it says, which ElevenLabs voice speaks it); then `translateContext` knows it. */
     translateReadVoice(project: string, file: string): Promise<{ ok: true; sentences: number } | ServiceError>
+    /** Media › Download: what a link is (title, length, qualities, picture), nothing fetched. */
+    downloadProbe(url: string): Promise<DownloadProbe | ServiceError>
+    /** Starts a download per pick into the project's downloads folder. */
+    downloadStart(project: string, picks: { probe: string; url: string; title: string; platform: string; kind: 'mp4' | 'mp3'; quality: string; vmake: string }[]): Promise<DownloadJob[] | ServiceError>
+    downloadList(project: string): Promise<DownloadJob[]>
+    downloadCancel(id: string): Promise<DownloadJob | null>
+    /** The page put a saved download in its project's library. */
+    downloadImported(id: string): Promise<void>
+    onDownloadJob(cb: (job: DownloadJob) => void): () => void
     /** What speaks a voice (by its key in the tab): an ElevenLabs voice, a clone from a sound, or its old sound; null: the one found. */
     translateChooseVoice(project: string, key: string, choice: TrVoiceChoice | null): Promise<void>
     /** The ElevenLabs account's own voices, to pick from. */
@@ -302,7 +324,9 @@ export interface StudioApi {
     translateGo(id: string, o: { picks: string[]; edits?: Record<string, string> }): Promise<TrJob | null>
     translateRetry(id: string): Promise<TrJob | null>
     translateCancel(id: string): Promise<TrJob | null>
-    translateResult(id: string): Promise<{ job: TrJob; items: TrItem[]; texts: TrText[]; voice: TrLine[] | null; stems: Record<string, TrStems> } | ServiceError>
+    translateResult(id: string): Promise<{ job: TrJob; items: TrItem[]; texts: TrText[]; voice: TrLine[] | null; stems: Record<string, TrStems>; draft: { off: string[]; edits: Record<string, string> } | null } | ServiceError>
+    /** Saves (null: deletes) a language's review draft as it's typed: its unticked lines and changed words. */
+    translateDraft(id: string, value: { off: string[]; edits: Record<string, string> } | null): Promise<void | ServiceError>
     translateApplied(id: string): Promise<void>
     translateFailed(id: string, reason: string): Promise<void>
     onTranslateJob(cb: (job: TrJob) => void): () => void
@@ -323,6 +347,10 @@ export interface StudioApi {
     /** A PNG into a project's text/, masks/ or stickers/ folder. */
     writeAsset(path: string, data: Uint8Array): Promise<{ out: string } | ServiceError>
     exists(path: string): Promise<boolean>
+    /** A draft kept in a project (`<project>/drafts/<name>.json`): what the user typed or picked that isn't in the project yet. Null when there's none. */
+    readDraft<T = unknown>(project: string, name: string): Promise<T | null>
+    /** Saves a draft (null deletes it). */
+    writeDraft(project: string, name: string, value: unknown): Promise<{ ok: true } | ServiceError>
     /** Copies a PNG, GIF, WebP or WebM into the project's stickers folder. */
     importSticker(src: string, projectDir: string): Promise<{ out: string } | ServiceError>
     writeSrt(path: string, text: string): Promise<{ out: string } | ServiceError>
@@ -371,6 +399,10 @@ export interface StudioApi {
   }
   app: {
     paths(): Promise<AppPaths>
+    /** The app zoom (Ctrl/Cmd+Shift + and −): the window's size factor now. */
+    getZoom(): Promise<number>
+    /** Sets the app zoom (kept for next time); `limited` when the screen couldn't hold that much. */
+    setZoom(factor: number): Promise<{ factor: number; limited: boolean }>
     openMedia(): Promise<string[]>
     chooseFolder(defaultPath?: string, title?: string): Promise<string | null>
     chooseFile(o: { title?: string; defaultPath?: string; filters?: FileFilter[] }): Promise<string | null>
@@ -391,6 +423,12 @@ export interface StudioApi {
     projectStill(dir: string): Promise<string | null>
     /** Copies a project under a new name (optionally into a folder you pick); its new folder. */
     saveProjectAs(dir: string, name: string, pick: boolean): Promise<string | null>
+    /** Share project: asks where, then writes the project, every file it uses and the logs to read as one zip. Null when cancelled. */
+    shareProject(dir: string, report: string, to?: string): Promise<{ out: string; bytes: number; files: number; outside: number } | ServiceError | null>
+    /** Open shared project: a zip from Share project (asks for one when not given), unzipped into the projects folder. */
+    openSharedProject(zip?: string): Promise<{ dir: string } | ServiceError | null>
+    /** How far a share or an open is (bytes). */
+    onShareProgress(cb: (p: { done: number; total: number }) => void): () => void
     renameProject(dir: string, name: string): Promise<boolean>
     /** Size on disk, and how many files Studio made in each subfolder (voiceovers, recordings…). */
     projectSize(dir: string): Promise<{ bytes: number; made: Record<string, number> } | null>

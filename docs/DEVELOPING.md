@@ -35,7 +35,7 @@
 
 - **Footage:** the e2e and UI checks make their own short test clips. To test on real footage, pass a folder (`node scripts/ui-check.mjs <folder>`) or set `STUDIO_TEST_CLIPS`; its first three videos are used.
 - **Stand-ins for outside services:** the UI check never calls a paid or online service unless told to. Steps that need one run on a stand-in when it's switched on, and are skipped otherwise:
-  - `STUDIO_VMAKE_FAKE=1` (Vmake), `STUDIO_ELEVEN_FAKE=1` (ElevenLabs), `STUDIO_STEMS_FAKE=1` (stems server), `STUDIO_CLAUDE_FAKE=1` (Claude Code's reading and translating).
+  - `STUDIO_VMAKE_FAKE=1` (Vmake), `STUDIO_ELEVEN_FAKE=1` (ElevenLabs), `STUDIO_STEMS_FAKE=1` (stems server), `STUDIO_CLAUDE_FAKE=1` (Claude Code's reading and translating), `STUDIO_DOWNLOAD_FAKE=1` (Media › Download's server; the UI check always sets it).
   - `STUDIO_UI_CHECK_ONLINE=0` skips the one step that uses the real transcript server.
 - **Other switches:** `STUDIO_SILENT=1` keeps tests quiet. `STUDIO_UI_ONLY=<pattern>` runs only matching UI-check steps, without the window-chrome run, which shows a real window. `STUDIO_UI_APP=<dir>` tests a staged copy of the app, so a Studio that's open keeps its files.
 - **Every stand-in at once:**
@@ -51,7 +51,10 @@
 | `STUDIO_FFMPEG_DIR` | Folder holding `ffmpeg` and `ffprobe`, when they aren't on the PATH |
 | `STUDIO_ENGINE` | A different engine binary than `target/release/studio-engine` |
 | `STUDIO_PROJECTS_DIR`, `STUDIO_USER_DATA` | Where projects and the app's settings live (tests use throwaway folders) |
-| `STUDIO_TRANSCRIPT_URL`, `STUDIO_STEMS_URL` | Other servers for captions and stems |
+| `STUDIO_TRANSCRIPT_URL`, `STUDIO_STEMS_URL`, `STUDIO_DOWNLOAD_URL` | Other servers for captions, stems and Media › Download |
+| `STUDIO_DEBUG_DRAG=1` | Writes every step of a clip drag to Studio's log (read by `scripts/mac-report.mjs`) |
+
+Studio keeps a log of what went wrong, one file a day for 7 days, in the app's data folder under `logs/` (macOS: `~/Library/Application Support/@studio/desktop/logs`; Linux: `~/.config/@studio/desktop/logs`; Windows: `%APPDATA%\@studio\desktop\logs`). Keys never go in it. It holds file names and errors, so don't post it publicly; `scripts/mac-report.mjs` prints what's safe to share.
 
 ## Rules the code follows
 

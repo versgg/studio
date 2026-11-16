@@ -919,7 +919,9 @@ pub fn timeline_window(p: &Project, from_us: Us, to_us: Us, use_proxy: bool, exp
     }
     let layers = compose::layers_in(p, from, to, use_proxy);
     let mut audio = vec![];
-    for (bus, t) in p.tracks.iter().enumerate().filter(|(_, t)| !t.main && p.audible(t)) {
+    // A hidden track over the video is hidden in sound too (its pictures' own sound used to
+    // play on with the track hidden).
+    for (bus, t) in p.tracks.iter().enumerate().filter(|(_, t)| !t.main && p.audible(t) && !(t.hidden && t.kind != studio_engine_core::model::TrackKind::Audio)) {
         for c in &t.clips {
             if c.end_us() <= from || c.start_us >= to {
                 continue;
@@ -1516,6 +1518,22 @@ mod tests {
         let fc = args.last().unwrap();
         assert!(fc.contains("color=c=black:s=1080x1080"));
         assert!(fc.contains("anullsrc"));
+    }
+
+    /// A video on a track over the video plays its own sound, and hiding that track hides its
+    /// sound too (it used to play on).
+    #[test]
+    fn a_hidden_overlay_track_is_silent() {
+        let mut p = project();
+        let a = p.main_track().clips[0].id.clone();
+        p.move_clip(&a, 0, Some("above")).unwrap();
+        let ti = p.find_clip(&a).unwrap().0;
+        assert!(!p.tracks[ti].main);
+        let sounds = |p: &Project| timeline_from(p, 0, false).audio.iter().map(|c| c.path.clone()).collect::<Vec<_>>();
+        assert!(sounds(&p).contains(&"/m/a".to_string()), "the overlay's own sound plays");
+        p.tracks[ti].hidden = true;
+        assert!(!sounds(&p).contains(&"/m/a".to_string()), "hidden, it's silent");
+        assert!(sounds(&p).contains(&"/m/vo".to_string()), "the voiceover plays on");
     }
 
     #[test]

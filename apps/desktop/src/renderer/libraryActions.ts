@@ -9,7 +9,7 @@ import { DEFAULT_TEXT, scaleSpec } from './textPresets'
 import { previewTextLook, setEditLook } from './liveText'
 import { renderTextClip, textPlaceOf, type TextLook } from './textRender'
 import { setUi } from './ui-state'
-import { call, findClip, getState, mediaById, setBeforePlay, setState, subscribeStore, toast, type Clip, type Project } from './store'
+import { call, findClip, getState, mediaById, onProjectSwitch, projectChanged, projectScope, setBeforePlay, setState, subscribeStore, toast, type Clip, type Project } from './store'
 import { findTrackTargets } from './vision'
 
 export { addSticker, addYourSticker, uploadSticker }
@@ -124,6 +124,8 @@ interface TextJob {
   done: (() => void)[]
 }
 const textJobs = new Map<string, TextJob>()
+// By clip id: one still waiting is for the last project (its own run ends there, refused).
+onProjectSwitch(() => textJobs.forEach((j, id) => !j.running && textJobs.delete(id)))
 
 let allGesture = { id: '', last: 0 }
 /** The gesture of a change going to every text clip (Apply to all text): one for a whole drag of a slider. */
@@ -165,6 +167,8 @@ export function updateText(clipId: string, patch: Partial<TextLook>, together?: 
 /** Draws and sends a clip's pending changes until none are left, at most every COMMIT_EVERY ms. */
 async function sendText(clipId: string, j: TextJob) {
   j.running = true
+  // For the project the change was made in: another one opened meanwhile has its own clip with this id.
+  const scope = projectScope()
   try {
     while (Object.keys(j.pending).length) {
       const wait = j.lastSent + COMMIT_EVERY - performance.now()
@@ -180,18 +184,18 @@ async function sendText(clipId: string, j: TextJob) {
       j.pending = {}
       j.lastSent = performance.now()
       // The engine's copy as it is now (the store's may be a step behind).
-      const now = await window.studio.engine.call('project.current').catch(() => getState().snap)
+      const now = await scope.latest()
       const clip = findClip(now, clipId)?.clip
       if (!clip?.text) break
-      const look = await renderTextClip({ ...(clip.text as TextLook), ...next }, clipId, textPlaceOf(clip, now.project.width))
+      const look = await renderTextClip({ ...(clip.text as TextLook), ...next }, clipId, textPlaceOf(clip, now.project.width), { dir: scope.dir, width: now.project.width, height: now.project.height })
       const changed = Object.fromEntries(Object.keys(next).map((k) => [k, (look as unknown as Record<string, unknown>)[k]]))
-      await window.studio.engine.call('text.set', { clipId, text: { ...changed, png: look.png, boxW: look.boxW, boxH: look.boxH }, gesture: j.gesture, ...(j.together ? { together: true } : {}) })
+      await scope.engine('text.set', { clipId, text: { ...changed, png: look.png, boxW: look.boxW, boxH: look.boxH }, gesture: j.gesture, ...(j.together ? { together: true } : {}) })
       j.png = look.png
     }
   } catch (e) {
     j.failed = true
     j.pending = {}
-    toast(`Couldn’t draw the text: ${(e as Error).message}`, 'error')
+    if (!projectChanged(e)) toast(`Couldn’t draw the text: ${(e as Error).message}`, 'error')
   } finally {
     j.running = false
     j.hurry = false

@@ -242,7 +242,7 @@ export interface Toast {
   text: string
 }
 
-export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design'
+export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download'
 
 /** Where the library is looking: everything, loose imports, or a linked folder's id. */
 export type LibraryScope = 'all' | 'loose' | string
@@ -257,7 +257,8 @@ export interface PasteItem {
 }
 
 /** What Ctrl+C / Ctrl+X last took: timeline clips, or library media (cut ones are out of the library until pasted). */
-export type Clipboard = { kind: 'clips'; items: PasteItem[] } | { kind: 'media'; media: Media[]; cut: boolean } | null
+/** What Copy keeps, with the project it came from (`dir`) and the files its clips play, so it pastes into another project too. */
+export type Clipboard = { kind: 'clips'; items: PasteItem[]; dir: string; media: Media[] } | { kind: 'media'; media: Media[]; cut: boolean; dir: string } | null
 
 /** A clip's look and sound, for copy and paste attributes. */
 /** A clip's look and sound settings, as Copy attributes keeps them (clip.set params). */
@@ -479,6 +480,54 @@ export async function closeProject() {
   setState({ page: 'home', selection: [], playing: false, source: null })
 }
 
+const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.max(0.1, b / 1e6).toFixed(1)} MB`)
+
+/** A task that shows only once there's progress to show (the save or open dialog came and went first). */
+function progressTask(label: string) {
+  let task = ''
+  const off = window.studio.app.onShareProgress((p) => {
+    task ||= startTask(label, 'share')
+    patchTask(task, { fraction: p.total ? p.done / p.total : 0, stage: `${mb(p.done)} of ${mb(p.total)}` })
+  })
+  return { end: (error?: string) => (off(), task && endTask(task, error)) }
+}
+
+/**
+ * Share project: the open project, every file it uses (most media live outside its folder) and
+ * Studio's logs of the days it was worked on, as one zip to send (Open shared project opens it on
+ * another computer, every path pointed at its new place). Never keys or the app's own settings.
+ */
+export async function shareProject() {
+  const snap = state.snap
+  if (!snap) return
+  const c = state.caps
+  const report = [
+    `System: ${window.studio.platform} · ${navigator.userAgent}`,
+    `FFmpeg: ${c?.ffmpeg ?? 'not found'}`,
+    `Encoders: ${c?.encoders?.join(', ') || 'none'}`,
+    `Sound output: ${c?.audioDevice ?? 'none'}`,
+    `Project: ${snap.project.name} (${snap.project.width}×${snap.project.height}, ${snap.project.tracks.reduce((n, t) => n + t.clips.length, 0)} clips, ${snap.project.media.length} files)`,
+  ].join('\n')
+  const p = progressTask(`Sharing ${snap.project.name}`)
+  const r = await window.studio.app.shareProject(snap.dir, report)
+  if (!r) return p.end()
+  if ('error' in r) return p.end(`Couldn’t share the project: ${r.error}`)
+  p.end()
+  toast(`Saved ${basename(r.out)} (${mb(r.bytes)}): the project with ${r.outside} file${r.outside === 1 ? '' : 's'} from outside its folder, and the logs to read.`)
+  window.studio.app.showItem(r.out)
+}
+
+/** Open shared project: a zip from Share project (picked, or `zip`), unzipped into the projects folder and opened. */
+export async function openSharedProject(zip?: string) {
+  const p = progressTask('Opening the shared project')
+  const r = await window.studio.app.openSharedProject(zip)
+  if (!r) return p.end()
+  if ('error' in r) return p.end(`Couldn’t open the shared project: ${r.error}`)
+  p.end()
+  await openProjectAt(r.dir)
+  toast(`Opened ${basename(r.dir).replace(/\.studio$/i, '')}: its files are inside its folder now (external/).`)
+}
+
 export async function openProjectAt(dir: string) {
   await hush()
   const snap = await call<Snapshot>('project.open', { path: dir })
@@ -600,10 +649,148 @@ export async function call<T = any>(method: string, params?: Record<string, unkn
   }
 }
 
+// Work tied to the project it started in. The engine has one project open, and its ids (t3, c57,
+// m1) start again in every project, so work that outlives a moment (a transcript, a voice, a
+// drawing run, a dub landing) would otherwise land in whatever project is open when it ends.
+// A scope's engine calls carry the folder they're meant for; the engine refuses them once
+// another project is open (crates/engine/src/rpc.rs `expected`), so they never land there.
+
+/** The start of the engine's refusal (rpc.rs `PROJECT_CHANGED_TEXT`). */
+const PROJECT_CHANGED_TEXT = 'Another project was opened since this started'
+
+/** Thrown when work's project isn't the open one any more: the work stops, nothing lands elsewhere. */
+export class ProjectChanged extends Error {
+  constructor() {
+    super(`${PROJECT_CHANGED_TEXT}, so it wasn't done there.`)
+    this.name = 'ProjectChanged'
+  }
+}
+/** Whether an error is that refusal (from a scope, or from the engine itself). */
+export const projectChanged = (e: unknown) => e instanceof ProjectChanged || String((e as Error)?.message ?? e).startsWith(PROJECT_CHANGED_TEXT)
+
+/** Two project folders are the same (letter case counts except on Windows). */
+export function sameFolder(a: string, b: string) {
+  const n = (d: string) => {
+    const x = d.replace(/[\\/]+$/, '').replace(/\\/g, '/')
+    // Windows and macOS don't tell upper and lower case apart in names; Linux does.
+    return window.studio.platform === 'win32' || window.studio.platform === 'darwin' ? x.toLowerCase() : x
+  }
+  return !!a && !!b && n(a) === n(b)
+}
+
+export interface ProjectScope {
+  /** The project's folder. */
+  dir: string
+  /** Whether it's still the open project. */
+  live(): boolean
+  /** Throws `ProjectChanged` when it isn't. */
+  check(): void
+  /** The engine, for this project only: refused (`ProjectChanged`) once another is open. */
+  engine<T = any>(method: string, params?: Record<string, unknown>): Promise<T>
+  /** `call` for this project: failures toast and give undefined; another project open throws `ProjectChanged`. */
+  call<T = any>(method: string, params?: Record<string, unknown>): Promise<T | undefined>
+  /** The project as the engine has it now (a change a moment ago included). */
+  latest(): Promise<Snapshot>
+  /** A path inside the project's folder. */
+  path(...parts: string[]): string
+}
+
+/** The open project (or `dir`), for work that may still be running when another is opened. */
+export function projectScope(dir = state.snap?.dir ?? ''): ProjectScope {
+  const live = () => sameFolder(state.snap?.dir ?? '', dir)
+  const check = () => {
+    if (!live()) throw new ProjectChanged()
+  }
+  const engine = async <T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+    check()
+    try {
+      return (await window.studio.engine.call(method, { ...params, _project: dir })) as T
+    } catch (e) {
+      throw projectChanged(e) ? new ProjectChanged() : e
+    }
+  }
+  return {
+    dir,
+    live,
+    check,
+    engine,
+    async call<T = any>(method: string, params?: Record<string, unknown>) {
+      try {
+        return await engine<T>(method, params)
+      } catch (e) {
+        if (e instanceof ProjectChanged) throw e
+        toast((e as Error).message, 'error')
+        return undefined
+      }
+    },
+    latest: () => engine<Snapshot>('project.current'),
+    path: (...parts: string[]) => [dir, ...parts].join(dir.includes('\\') ? '\\' : '/'),
+  }
+}
+
+/** Files made for a project while another one was open (a voiceover, a recording), kept in it until it's opened (a draft). */
+const WAITING_FILES = 'files-waiting'
+type WaitingFile = { file: string; atUs: Us | null; what: string }
+const projectLabel = (dir: string) => dir.split(/[\\/]/).filter(Boolean).pop()?.replace(/\.studio$/i, '') ?? 'that project'
+
+/**
+ * A file made for the scope's project (a voiceover, a recording) brought into it, and put on the
+ * timeline at `atUs` when given. Another project open by then: it waits in its own project and
+ * goes in when that's opened again (`what` names it in the note). Returns the media id.
+ */
+export async function bringInFor(scope: ProjectScope, file: string, atUs: Us | null, what: string): Promise<string | undefined> {
+  try {
+    const imp = await scope.call<{ imported: string[] }>('media.import', { paths: [file] })
+    const id = imp?.imported?.[0]
+    if (id && atUs != null) await scope.call('timeline.insert', { mediaId: id, atUs: Math.round(atUs) })
+    return id
+  } catch (e) {
+    if (!projectChanged(e)) throw e
+    const list = (await window.studio.files.readDraft<WaitingFile[]>(scope.dir, WAITING_FILES)) ?? []
+    await window.studio.files.writeDraft(scope.dir, WAITING_FILES, [...list, { file, atUs, what }])
+    toast(`${what} is saved for ${projectLabel(scope.dir)}: it goes on its timeline when you open it.`)
+    return undefined
+  }
+}
+
+/** What runs when a project is opened (`from` is '' for the first): each module forgets what it kept by the old one's ids, and picks up what waited for the new one. */
+const switchHooks = new Set<(from: string, to: string) => void>()
+export function onProjectSwitch(f: (from: string, to: string) => void) {
+  switchHooks.add(f)
+  return () => void switchHooks.delete(f)
+}
+
+// Files that waited for their project go in as it's opened.
+onProjectSwitch((_from, to) => {
+  void (async () => {
+    const list = await window.studio.files.readDraft<WaitingFile[]>(to, WAITING_FILES)
+    if (!list?.length) return
+    const scope = projectScope(to)
+    // Taken out of the draft first, so one that waits again (another switch) is added back by itself.
+    await window.studio.files.writeDraft(to, WAITING_FILES, null)
+    let n = 0
+    for (const w of list) {
+      if (!(await window.studio.files.exists(w.file))) continue
+      try {
+        if (await bringInFor(scope, w.file, w.atUs, w.what)) n++
+      } catch (e) {
+        toast(`${w.what} couldn’t go in: ${(e as Error).message}`, 'error')
+      }
+    }
+    if (n) toast(n === 1 ? `${list[0].what} made while this project was closed is on the timeline.` : `${n} files made while this project was closed are in.`)
+  })()
+})
+
 // Lookups
 
+/** Each snapshot's media by id, made once (the timeline asks for every clip on every redraw). */
+const mediaIndex = new WeakMap<Media[], Map<string, Media>>()
 export function mediaById(snap: Snapshot | null, id: string): Media | undefined {
-  return snap?.project.media.find((m) => m.id === id)
+  const list = snap?.project.media
+  if (!list) return undefined
+  let index = mediaIndex.get(list)
+  if (!index) mediaIndex.set(list, (index = new Map(list.map((m) => [m.id, m]))))
+  return index.get(id)
 }
 export function findClip(snap: Snapshot | null, id: string): { clip: Clip; track: Track } | undefined {
   for (const track of snap?.project.tracks ?? []) {
@@ -619,11 +806,20 @@ export const ffmpegShort = (v: string | null | undefined) => v?.replace(/^ffmpeg
 // Engine events
 
 /** Each object's JSON, worked out once. */
-const shapes = new WeakMap<object, string>()
-const shape = (o: object) => {
-  let s = shapes.get(o)
-  if (s == null) shapes.set(o, (s = JSON.stringify(o)))
-  return s
+/** Whether two values parsed from JSON are the same, stopping at the first difference (no strings made). */
+export function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return false
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false
+    for (let i = 0; i < a.length; i++) if (!same(a[i], b[i])) return false
+    return true
+  }
+  if (Array.isArray(b)) return false
+  const ka = Object.keys(a)
+  if (ka.length !== Object.keys(b).length) return false
+  for (const k of ka) if (!same((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false
+  return true
 }
 
 /**
@@ -639,20 +835,20 @@ function share(prev: Snapshot | null, next: Snapshot): Snapshot {
   const tracks = next.project.tracks.map((t) => {
     const clips = t.clips.map((c) => {
       const o = oldClips.get(c.id)
-      return o && shape(o) === shape(c) ? o : c
+      return o && same(o, c) ? o : c
     })
     const o = oldTracks.get(t.id)
     if (o && o.clips.length === clips.length && clips.every((c, i) => c === o.clips[i])) {
       const { clips: _n, ...restNew } = t
       const { clips: _o, ...restOld } = o
-      if (JSON.stringify(restNew) === JSON.stringify(restOld)) return o
+      if (same(restNew, restOld)) return o
     }
     return { ...t, clips }
   })
   const oldMedia = new Map(prev.project.media.map((m) => [m.id, m]))
   const media = next.project.media.map((m) => {
     const o = oldMedia.get(m.id)
-    return o && shape(o) === shape(m) ? o : m
+    return o && same(o, m) ? o : m
   })
   return { ...next, project: { ...next.project, tracks, media } }
 }
@@ -765,7 +961,23 @@ export function startStore() {
   window.studio.services.onStemsJob(onStemsJob)
   let jobsFor = ''
   let revision = 0
+  let openDir = ''
   subscribe(() => {
+    // Another project open: nothing of the last one's (picked, previewed, open dialogs, its tasks,
+    // what modules kept by its ids) carries over, as ids start again in every project.
+    const now = state.snap?.dir ?? ''
+    if (now && !sameFolder(now, openDir)) {
+      const from = openDir
+      openDir = now
+      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
+      for (const f of switchHooks) {
+        try {
+          f(from, now)
+        } catch (e) {
+          console.error('project switch:', e)
+        }
+      }
+    }
     const dir = state.link === 'connected' && state.snap ? state.snap.dir : ''
     // The same project opened again (a version restored) starts its revisions again.
     const reopened = !!dir && (state.snap?.revision ?? 0) < revision
@@ -788,8 +1000,20 @@ export function startStore() {
     if (s.link === state.link) return
     setState({ link: s.link })
     if (s.link !== 'connected') return
-    // (Re)connected: the engine may be fresh after a restart, so ask for everything again.
-    const [snap, caps, status] = await Promise.all([call<Snapshot>('project.openLatest'), call<Capabilities>('engine.capabilities'), call('playback.status')])
+    // (Re)connected: the engine may be fresh after a restart, so ask for everything again. The
+    // project the page had open comes back (the newest project.json can be another one: a
+    // translation or dub copy that a background job wrote to), else the newest.
+    const had = state.snap?.dir
+    const open = async () => {
+      if (had) {
+        const now = (await window.studio.engine.call('project.current').catch(() => null)) as Snapshot | null
+        if (now?.dir && sameFolder(now.dir, had)) return now
+        const back = await call<Snapshot>('project.open', { path: had })
+        if (back) return back
+      }
+      return call<Snapshot>('project.openLatest')
+    }
+    const [snap, caps, status] = await Promise.all([open(), call<Capabilities>('engine.capabilities'), call('playback.status')])
     setState({ snap: snap ?? null, caps: caps ?? null, playing: !!status?.playing, positionUs: status?.positionUs ?? 0 })
     syncFolders(true)
   })
@@ -942,28 +1166,45 @@ function reportFolders(folders: FolderResult[]) {
 }
 
 /** Imports files and links folders. Files dropped on the timeline land at `insertAt`; folders never do. */
-export async function importPaths(paths: string[], insertAt?: Us) {
-  if (!paths.length) return
+/**
+ * Imports files and folders into the open project (and onto its timeline at `insertAt`).
+ * Returns the media ids made or found for the files, in the order given (none when it failed,
+ * or another project was opened while it ran: the import is refused there).
+ */
+export async function importPaths(paths: string[], insertAt?: Us): Promise<string[]> {
+  if (!paths.length) return []
+  const scope = projectScope()
   // Shown in the library while it runs, so nobody drops the same folders in again.
   const label = paths.length === 1 ? basename(paths[0]) : `${paths.length} items`
   setState({ importing: [...state.importing, label] })
-  const r = await call<{ imported: string[]; failed: { path: string; error: string }[]; folders?: FolderResult[] }>('media.import', { paths }).finally(() => {
-    const i = state.importing.indexOf(label)
-    setState({ importing: state.importing.filter((_, k) => k !== i) })
-  })
-  if (!r) return
+  const r = await scope
+    .call<{ imported: string[]; failed: { path: string; error: string }[]; folders?: FolderResult[] }>('media.import', { paths })
+    .catch((e) => {
+      if (!projectChanged(e)) throw e
+      return undefined
+    })
+    .finally(() => {
+      const i = state.importing.indexOf(label)
+      setState({ importing: state.importing.filter((_, k) => k !== i) })
+    })
+  if (!r) return []
   reportFolders(r.folders ?? [])
   const linked = r.folders?.filter((f) => f.folderId).pop()
   if (linked) setState({ libraryScope: linked.folderId!, libraryDir: '' })
   if (r.failed.length) toast(`${r.failed.length} file${r.failed.length === 1 ? '' : 's'} could not be imported: ${r.failed.map((f) => f.path.split(/[\\/]/).pop()).join(', ')}`, 'error')
   if (insertAt != null) {
     let at = insertAt
-    for (const id of r.imported) {
-      await call('timeline.insert', { mediaId: id, atUs: at })
-      const m = mediaById(state.snap, id)
-      at += m?.kind === 'image' ? 3_000_000 : (m?.durationUs ?? 0)
+    try {
+      for (const id of r.imported) {
+        await scope.call('timeline.insert', { mediaId: id, atUs: at })
+        const m = mediaById(state.snap, id)
+        at += m?.kind === 'image' ? 3_000_000 : (m?.durationUs ?? 0)
+      }
+    } catch (e) {
+      if (!projectChanged(e)) throw e
     }
   }
+  return r.imported
 }
 
 export async function importDialog() {
@@ -1032,13 +1273,30 @@ export async function deleteSide(side: 'left' | 'right') {
 }
 
 /** Ctrl+Shift+S: the selected video clips' sound (or the main clip under the playhead) goes to an audio track. */
+/**
+ * Ctrl+Shift+S: the selected video clips' sound, each onto a track of its own, on any layer
+ * (the main track or a track over it). With nothing selected, the clip with sound under the
+ * playhead, the top one first. A selection with no video sound in it says so (it used to take
+ * the main clip under the playhead instead, another clip than the one picked).
+ */
 export function extractAudio() {
-  const t = state.positionUs
-  const main = state.snap?.project.tracks.find((tr) => tr.main)
+  const snap = state.snap
   const sel = editableSelection()
-  if (!sel) return
-  const picked = sel.filter((id) => main?.clips.some((c) => c.id === id))
-  const ids = picked.length ? picked : (main?.clips.filter((c) => t >= c.startUs && t < c.startUs + c.durationUs).map((c) => c.id) ?? [])
+  if (!sel || !snap) return
+  const withSound = (c: Clip) => {
+    const m = mediaById(snap, c.mediaId)
+    return m?.kind === 'video' && m.hasAudio && !c.detached
+  }
+  const picked = sel.filter((id) => {
+    const f = findClip(snap, id)
+    return !!f && f.track.kind === 'video' && withSound(f.clip)
+  })
+  if (sel.length && !picked.length) return void toast('Select a video clip with sound to extract its audio.', 'error')
+  const t = state.positionUs
+  // The last track in the project is drawn on top.
+  const top = [...snap.project.tracks].reverse().filter((tr) => tr.kind === 'video' && !tr.hidden)
+  const under = top.map((tr) => tr.clips.find((c) => t >= c.startUs && t < c.startUs + c.durationUs && withSound(c))).find(Boolean)
+  const ids = picked.length ? picked : under ? [under.id] : []
   call('clip.extractAudio', { clipIds: ids })
 }
 
@@ -1197,7 +1455,7 @@ export function copy(): boolean {
   if (state.focus === 'library') {
     const media = state.snap?.project.media.filter((m) => state.libraryPicked.includes(m.id)) ?? []
     if (!media.length) return false
-    setState({ clipboard: { kind: 'media', media, cut: false } })
+    setState({ clipboard: { kind: 'media', media, cut: false, dir: state.snap!.dir } })
     return true
   }
   if (!editableSelection()) return false
@@ -1205,7 +1463,9 @@ export function copy(): boolean {
   const found = ids.map((id) => findClip(state.snap, id)).filter((x): x is { clip: Clip; track: Track } => !!x)
   if (!found.length) return false
   const start = Math.min(...found.map((f) => f.clip.startUs))
-  setState({ clipboard: { kind: 'clips', items: found.map((f) => ({ clip: f.clip, main: f.track.main, offsetUs: f.clip.startUs - start, ...(f.track.role && !f.track.main ? { role: f.track.role } : {}) })) } })
+  const used = new Set(found.map((f) => f.clip.mediaId))
+  const media = state.snap!.project.media.filter((m) => used.has(m.id))
+  setState({ clipboard: { kind: 'clips', items: found.map((f) => ({ clip: f.clip, main: f.track.main, offsetUs: f.clip.startUs - start, ...(f.track.role && !f.track.main ? { role: f.track.role } : {}) })), dir: state.snap!.dir, media } })
   return true
 }
 
@@ -1225,17 +1485,48 @@ export async function cut() {
   }
 }
 
+/**
+ * The files copied in another project, brought into this one: each copied media id → this
+ * project's id for the same file (ids start again in every project, so `m3` there is another
+ * file here). Null when none could be brought in.
+ */
+async function mediaHere(media: Media[]): Promise<Map<string, string> | null> {
+  const files = media.filter((m) => m.path)
+  if (!files.length) return new Map()
+  const scope = projectScope()
+  const r = await scope.call<{ imported: string[]; ids?: Record<string, string>; failed?: { path: string; error: string }[] }>('media.import', { paths: files.map((m) => m.path) })
+  if (!r) return null
+  const map = new Map(files.filter((m) => r.ids?.[m.path]).map((m) => [m.id, r.ids![m.path]]))
+  const lost = files.length - map.size
+  if (lost) toast(`${lost} copied file${lost === 1 ? ' is' : 's are'} no longer on this computer.`, 'error')
+  return map.size ? map : null
+}
+
 /** Ctrl+V: clips go back on the timeline at the playhead; library items go back in the library, and onto the timeline if it was clicked last. */
 export async function paste() {
   const cb = state.clipboard
-  if (!cb) return
+  const here = state.snap?.dir ?? ''
+  if (!cb || !here) return
+  // Copied in another project: its files are brought in here first, and the clips play those.
+  const elsewhere = !sameFolder(cb.dir, here)
   if (cb.kind === 'clips') {
-    const r = await call<{ clipIds: string[] }>('clips.paste', { items: cb.items, atUs: state.positionUs })
+    let items = cb.items
+    if (elsewhere) {
+      const map = await mediaHere(cb.media)
+      if (!map) return
+      items = items.filter((it) => !it.clip.mediaId || map.has(it.clip.mediaId)).map((it) => (it.clip.mediaId ? { ...it, clip: { ...it.clip, mediaId: map.get(it.clip.mediaId)! } } : it))
+      if (!items.length) return
+    }
+    const r = await call<{ clipIds: string[] }>('clips.paste', { items, atUs: state.positionUs })
     if (r) setState({ selection: r.clipIds })
     return
   }
   let ids = cb.media.map((m) => m.id)
-  if (cb.cut) {
+  if (elsewhere) {
+    const map = await mediaHere(cb.media)
+    if (!map) return
+    ids = [...map.values()]
+  } else if (cb.cut) {
     const r = await call<{ mediaIds: string[] }>('media.restore', { media: cb.media })
     if (!r) return
     ids = r.mediaIds
@@ -1489,8 +1780,12 @@ async function loadVmakeJobs(dir: string) {
  */
 async function settleVmakeJob(job: VmakeJob) {
   if (vmakeSettling.has(job.id) || state.link !== 'connected') return
+  // Its own project only: opened another meanwhile, the engine refuses, and it's settled the
+  // next time its project is open (its record stays until then, so nothing paid is lost).
+  const scope = projectScope(job.project)
+  if (!scope.live()) return
   vmakeSettling.add(job.id)
-  const engine = window.studio.engine
+  const engine = { call: scope.engine }
   const found = job.clipId ? findClip(state.snap, job.clipId)?.clip : undefined
   // Its clip, still waiting for it.
   const ours = found?.busy === job.id ? found : undefined
@@ -1511,6 +1806,10 @@ async function settleVmakeJob(job: VmakeJob) {
       else toast(job.reason ?? 'Text removal cancelled.')
     }
   } catch (e) {
+    if (projectChanged(e)) {
+      vmakeSettling.delete(job.id)
+      return
+    }
     // The result couldn't come in (its file gone, say): the clip is freed all the same.
     if (ours) await engine.call('clip.release', { clipId: ours.id, job: job.id }).catch(() => {})
     toast(`The text removal for ${job.name} couldn't be applied: ${(e as Error).message}`, 'error')

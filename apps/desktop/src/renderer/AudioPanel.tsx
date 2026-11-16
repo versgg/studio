@@ -537,8 +537,13 @@ function VoiceTab() {
 function FromVideoTab() {
   const snap = useStore((s) => s.snap)
   const selection = useStore((s) => s.selection)
-  const main = snap?.project.tracks.find((t) => t.main)
-  const clips = (main?.clips ?? []).map((c) => ({ c, m: mediaById(snap, c.mediaId) })).filter((x): x is { c: typeof x.c; m: Media } => x.m?.kind === 'video')
+  // Every video clip, on the main track and the tracks over it, in time order.
+  const clips = (snap?.project.tracks ?? [])
+    .filter((t) => t.kind === 'video')
+    .flatMap((t) => t.clips)
+    .sort((a, b) => a.startUs - b.startUs)
+    .map((c) => ({ c, m: mediaById(snap, c.mediaId) }))
+    .filter((x): x is { c: typeof x.c; m: Media } => x.m?.kind === 'video')
   return (
     <>
       <Note>Pull the sound out of a clip onto its own track, so you can edit it on the Audio page.</Note>
@@ -695,11 +700,13 @@ const DESIGN_MODELS: [string, string][] = [
 export function DesignDialogBody({ close }: { close: () => void }) {
   const [description, setDescription] = useUi('audio.design.description', '')
   const [model, setModel] = useUi('audio.design.model', 'eleven_ttv_v3')
-  const [text, setText] = useState('')
-  const [round, setRound] = useState<DesignRound | null>(null)
-  const [picked, setPicked] = useState('')
-  const [heard, setHeard] = useState<string[]>([])
-  const [name, setName] = useState('')
+  const [text, setText] = useUi('audio.design.text', '')
+  // The three previews (paid for) and the pick stay while Studio runs: closing the window (a click
+  // beside it, Esc) and opening it again shows them as they were.
+  const [round, setRound] = useUi<DesignRound | null>('audio.designRound', null)
+  const [picked, setPicked] = useUi('audio.designPicked', '')
+  const [heard, setHeard] = useUi<string[]>('audio.designHeard', [])
+  const [name, setName] = useUi('audio.designName', '')
   const [busy, setBusy] = useState<'' | 'designing' | 'keeping'>('')
   const [error, setError] = useState('')
   useEffect(() => () => playPreview(null), [])
@@ -721,7 +728,7 @@ export function DesignDialogBody({ close }: { close: () => void }) {
   const hear = (p: DesignRound['previews'][number]) => {
     playPreview(p.audio)
     setPicked(p.id)
-    setHeard((h) => (h.includes(p.id) ? h : [...h, p.id]))
+    if (!heard.includes(p.id)) setHeard([...heard, p.id])
   }
   const keep = async () => {
     playPreview(null)
@@ -730,6 +737,11 @@ export function DesignDialogBody({ close }: { close: () => void }) {
     const failed = await keepDesignedVoice(name.trim(), desc, picked, heard.filter((h) => h !== picked))
     setBusy('')
     if (failed) return setError(failed)
+    // Kept: these previews are done with.
+    setRound(null)
+    setPicked('')
+    setHeard([])
+    setName('')
     close()
   }
   return (

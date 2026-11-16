@@ -15,6 +15,9 @@ let check = 'ok'
 let posted = []
 let deleted = []
 let jobs = 0
+// Status questions the stand-in drops (HTTP 503) before answering, and whether it never finishes.
+let dropPolls = 0
+let never = false
 
 const server = http.createServer((req, res) => {
   const send = (status, body) => {
@@ -31,6 +34,11 @@ const server = http.createServer((req, res) => {
       posted.push({ script: /name="script"/.test(body) })
       return send(200, { id: `job${++jobs}` })
     }
+    if (req.method === 'GET' && dropPolls > 0) {
+      dropPolls--
+      return send(503, { detail: 'Busy' })
+    }
+    if (req.method === 'GET' && never) return send(200, { state: 'running', stage: 'transcribing', progress: 0.5, queue: 0 })
     if (req.method === 'GET') return send(200, { state: 'done', stage: 'done', progress: 1, queue: 0, words: HEARD, language: 'en', changes: [], summary: null, error: null })
     if (req.method === 'DELETE') {
       deleted.push(m[1])
@@ -89,4 +97,25 @@ test('without a script there is no check', async () => {
   assert.equal(r.words.length, 4)
   assert.equal(r.unchecked, null)
   assert.deepEqual(posted, [{ script: false }])
+})
+
+test('a status question that gets no answer is asked again instead of failing the captions', async () => {
+  check = 'ok'
+  dropPolls = 2
+  const stages = []
+  const r = await transcribe({ audio: Buffer.from('fLaC'), fileName: 'captions.flac', language: 'en', progress: (s) => stages.push(s) })
+  assert.deepEqual(r.words.map((w) => w.word), ['Order', 'yours', 'at', 'corvel'])
+  assert.equal(dropPolls, 0)
+  assert.ok(stages.includes('waiting for the server to answer again'))
+})
+
+test('Cancel stops waiting for the server and frees the job there', async () => {
+  never = true
+  deleted = []
+  const stop = new AbortController()
+  setTimeout(() => stop.abort(), 1500)
+  await assert.rejects(transcribe({ audio: Buffer.from('fLaC'), fileName: 'captions.flac', language: 'en', signal: stop.signal }), /Cancelled/)
+  never = false
+  await new Promise((res) => setTimeout(res, 100))
+  assert.ok(deleted.includes(`job${jobs}`), 'nothing stays on the server')
 })

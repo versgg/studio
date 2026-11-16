@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from 'react'
 import type { Voice } from '../shared/api'
 import { basename } from './format'
-import { alreadyRunning, call, endTask, findClip, freshName, getState, mediaById, patchTask, projectPath, setState, startTask, toast, togglePlay, type Us } from './store'
+import { alreadyRunning, bringInFor, endTask, findClip, freshName, getState, mediaById, patchTask, projectChanged, projectScope, setState, startTask, toast, togglePlay } from './store'
 
 /** The voice list's sections, in order: the user's own clones first. */
 export const VOICE_GROUPS: [string, string][] = [
@@ -107,18 +107,12 @@ async function refreshCredits() {
   if (!isError(a)) setState({ eleven: { ...getState().eleven, account: a } })
 }
 
-/** Imports a file and, if asked, puts it on an audio track at `at`. Returns the media id. */
-async function bringIn(file: string, at: Us | null): Promise<string | undefined> {
-  const imp = await call<{ imported: string[] }>('media.import', { paths: [file] })
-  const id = imp?.imported?.[0]
-  if (id && at != null) await call('timeline.insert', { mediaId: id, atUs: Math.round(at) })
-  return id
-}
 
 /** A voiceover from text, saved in the project's `voiceovers` folder. */
 export async function generateVoiceover(o: { voice: Voice; text: string; modelId: string; stability: number; similarity: number; speed?: number; languageCode?: string; atPlayhead: boolean }) {
   const words = o.text.replace(/\[[^\]]*\]/g, ' ').trim().split(/\s+/).slice(0, 5).join(' ')
-  const out = projectPath('voiceovers', freshName(`${o.voice.name} - ${words}`, '.mp3'))
+  const scope = projectScope()
+  const out = scope.path('voiceovers', freshName(`${o.voice.name} - ${words}`, '.mp3'))
   if (alreadyRunning('voiceover')) return
   const at = o.atPlayhead ? getState().positionUs : null
   const id = startTask(`Voiceover: ${o.voice.name}`, 'voiceover')
@@ -132,8 +126,12 @@ export async function generateVoiceover(o: { voice: Voice; text: string; modelId
     loadEleven()
   }
   patchTask(id, { stage: 'Adding it', fraction: 0.9, waiting: false })
-  await bringIn(r.out, at)
-  endTask(id)
+  try {
+    await bringInFor(scope, r.out, at, `The voiceover "${basename(r.out)}"`)
+    endTask(id)
+  } catch (e) {
+    endTask(id, (e as Error).message)
+  }
   refreshCredits()
 }
 
@@ -148,25 +146,28 @@ export async function changeVoice(target: { mediaId: string; clipId?: string }, 
   const stem = media.name.replace(/\.[^.]+$/, '')
   if (alreadyRunning('voice-changer', target.clipId ?? target.mediaId)) return
   const id = startTask(`Voice changer: ${voice.name}`, 'voice-changer', target.clipId ?? target.mediaId)
+  const scope = projectScope()
   try {
     let input = media.path
     if (clip || media.kind !== 'audio') {
       patchTask(id, { stage: 'Cutting out the sound', fraction: 0.05 })
-      const r = await window.studio.engine.call('media.extractRange', { mediaId: media.id, inUs: clip?.inUs ?? 0, durationUs: length, out: projectPath('voiceovers', `${stem}-${id}-part.m4a`) })
+      const r = await scope.engine('media.extractRange', { mediaId: media.id, inUs: clip?.inUs ?? 0, durationUs: length, out: scope.path('voiceovers', `${stem}-${id}-part.m4a`) })
       input = r.out
     }
     patchTask(id, { stage: 'ElevenLabs is changing the voice', fraction: 0.3, waiting: true })
-    const out = projectPath('voiceovers', freshName(`${stem} as ${voice.name}`, '.mp3'))
+    const out = scope.path('voiceovers', freshName(`${stem} as ${voice.name}`, '.mp3'))
     const r = await window.studio.services.elevenChangeVoice({ voiceId: voice.id, input, out, removeNoise })
     if (isError(r)) throw new Error(r.error)
     patchTask(id, { stage: 'Adding it', fraction: 0.9 })
-    const newId = await bringIn(r.out, null)
-    if (clip && newId && findClip(getState().snap, clip.id)) await call('clip.replaceMedia', { clipId: clip.id, mediaId: newId, label: 'Change voice' })
+    refreshCredits()
+    // Another project open by now: the new voice waits for this one, in its library.
+    const newId = await bringInFor(scope, r.out, null, `"${basename(r.out)}"`)
+    if (!newId) return endTask(id)
+    if (clip && findClip(await scope.latest(), clip.id)) await scope.call('clip.replaceMedia', { clipId: clip.id, mediaId: newId, label: 'Change voice' })
     endTask(id)
     toast(clip ? `The clip now speaks as ${voice.name} (Ctrl+Z goes back).` : `"${basename(r.out)}" is in the library.`)
-    refreshCredits()
   } catch (e) {
-    endTask(id, (e as Error).message)
+    endTask(id, projectChanged(e) ? undefined : (e as Error).message)
   }
 }
 
@@ -225,19 +226,21 @@ export async function startRecording(deviceId: string | undefined, alongTimeline
   rec.ondataavailable = (e) => e.data.size && chunks.push(e.data)
   const at = getState().positionUs
   const playing = alongTimeline && !!getState().snap?.durationUs && !getState().playing
+  // A recording belongs to the project it was made in, even if another is opened before it stops.
+  const scope = projectScope()
   rec.onstop = async () => {
     stream.getTracks().forEach((t) => t.stop())
     ctx.close()
     if (playing && getState().playing) togglePlay()
     const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ').replace(':', '.')
     const name = freshName(`Recording ${stamp}`, '.m4a')
-    const raw = projectPath('recordings', name.replace(/\.m4a$/, '.webm'))
+    const raw = scope.path('recordings', name.replace(/\.m4a$/, '.webm'))
     try {
       const r = await window.studio.services.saveRecording(raw, await new Blob(chunks, { type: mime }).arrayBuffer())
       if ('error' in r) throw new Error(r.error)
       // The recorder's WebM has no length in it; the engine re-saves it as an .m4a that does.
-      const m = await window.studio.engine.call('media.toAudio', { input: r.out, out: projectPath('recordings', name) })
-      await bringIn(m.out, alongTimeline ? at : getState().positionUs)
+      const m = await window.studio.engine.call('media.toAudio', { input: r.out, out: scope.path('recordings', name) })
+      await bringInFor(scope, m.out, alongTimeline || !scope.live() ? at : getState().positionUs, `The recording "${name}"`)
     } catch (e) {
       toast(`The recording couldn’t be saved: ${(e as Error).message}`, 'error')
     }

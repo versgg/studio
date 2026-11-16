@@ -10,7 +10,7 @@
 // snapshot, so the old look never flashes. Captions are hidden by track: setting the lines
 // again gives every line a new id.
 
-import { getState, subscribeStore, type Clip, type Project, type Us } from './store'
+import { getState, onProjectSwitch, subscribeStore, type Clip, type Project, type Us } from './store'
 import { fontOf, layoutText, paintText, textPlaceOf, type TextLayout, type TextLook } from './textRender'
 import { loadFont } from './textFonts'
 
@@ -86,6 +86,14 @@ const ahead = new Map<string, { patch: Partial<TextLook>; n: number; end?: { rev
 /** Places from a drag on the player. */
 const places = new Map<string, Place>()
 let aheadCalls = 0
+// Kept by clip id, and ids start again in every project: nothing shown ahead carries over.
+onProjectSwitch(() => {
+  if (!edits.size && !ahead.size && !places.size) return
+  edits.clear()
+  ahead.clear()
+  places.clear()
+  bump()
+})
 
 // The player's boxes follow these too (a bigger size is a bigger box): React reads them through
 // `useSyncExternalStore(subscribeLive, liveVersion)`.

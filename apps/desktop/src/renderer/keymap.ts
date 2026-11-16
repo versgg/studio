@@ -41,6 +41,7 @@ import {
 } from './store'
 import { addText } from './libraryActions'
 import { setUi } from './ui-state'
+import { keyChar } from './keyboardLayout'
 
 export type Group = 'Timeline' | 'Playback' | 'Tools' | 'Workspace' | 'Edit' | 'File'
 
@@ -102,6 +103,10 @@ export const ACTIONS: Action[] = [
   { id: 'editPage', group: 'Workspace', label: 'Edit page', keys: 'Shift+4', run: () => setState({ page: 'edit' }) },
   { id: 'audioPage', group: 'Workspace', label: 'Audio page', keys: 'Shift+6', run: () => setState({ page: 'audio' }) },
   { id: 'export', group: 'Workspace', label: 'Export', keys: 'Ctrl+E', run: () => total() && setState({ dialog: 'export' }) },
+  // The whole app's size: caught before everything else (appZoom.ts), so these rows are for reading.
+  { id: 'appZoomIn', group: 'Workspace', label: 'Zoom the app in', keys: 'Shift+Ctrl+=', fixed: true },
+  { id: 'appZoomOut', group: 'Workspace', label: 'Zoom the app out', keys: 'Shift+Ctrl+−', fixed: true },
+  { id: 'appZoomReset', group: 'Workspace', label: 'App at 100 %', keys: 'Shift+Ctrl+0', fixed: true },
 
   { id: 'cut', group: 'Edit', label: 'Cut', keys: 'Ctrl+X', run: cut },
   { id: 'copy', group: 'Edit', label: 'Copy', keys: 'Ctrl+C', run: copy },
@@ -192,6 +197,12 @@ function keyName(e: KeyboardEvent): string | null {
   if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return null
   if (e.code === 'Backquote') return '§'
   if (/^Digit\d$/.test(e.code)) return e.code.slice(5)
+  // + − / , \ by what the key types: on a Swedish keyboard + is where an American one has −
+  // (Ctrl+'+' zoomed the timeline out) and − where it has / (it opened this list).
+  const ch = /^(Minus|Equal|Slash|Comma|Backslash|IntlBackslash|BracketRight|Quote|Semicolon)$/.test(e.code) ? keyChar(e) : null
+  if (ch === '-') return '−'
+  if (ch === '+' || ch === '=') return '='
+  if (ch === '/' || ch === ',' || ch === '\\') return ch
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') return '−'
   if (e.code === 'Equal' || e.code === 'NumpadAdd') return '='
   if (e.code === 'Backslash' || e.code === 'IntlBackslash') return '\\'
@@ -241,6 +252,15 @@ function rebuild() {
 }
 rebuild()
 
+// On a Mac, keys are written as its keyboard names them: Cmd is ⌘ (it does what Ctrl does here),
+// Option ⌥, Shift ⇧, run together ("⇧⌘Z" for Shift+Ctrl+Z).
+const MAC = window.studio?.platform === 'darwin'
+const MAC_KEYS: Record<string, string> = { Ctrl: '⌘', Cmd: '⌘', Alt: '⌥', Shift: '⇧' }
+/** One key as this computer's keyboard names it. */
+export const keyLabel = (k: string) => (MAC ? (MAC_KEYS[k] ?? k) : k)
+/** Keys as this computer writes them: "Shift+Ctrl+Z", or "⇧⌘Z" on a Mac. */
+export const keysLabel = (keys: string) => (MAC && keys ? keys.split(/\+(?!$)/).map(keyLabel).join('') : keys)
+
 /** The keys an action has now ('' when another action took them). */
 export const keysFor = (id: string) => keysById.get(id) ?? ACTIONS.find((a) => a.id === id)?.keys ?? ''
 /** Whether the keys differ from the default, by preset or by hand. */
@@ -257,7 +277,7 @@ export function actionFor(e: KeyboardEvent): Action | undefined {
   if (e.key === 'Backspace') return byCombo.get(canon(keysFor('del')))
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.code === 'KeyY') return ACTIONS.find((x) => x.id === 'redo')
   // Ctrl+/ and "?" open the list too, whatever Ctrl+K is set to.
-  if (e.key === '?' || ((e.ctrlKey || e.metaKey) && e.code === 'Slash')) return ACTIONS.find((x) => x.id === 'keys')
+  if (e.key === '?' || ((e.ctrlKey || e.metaKey) && (keyChar(e) ?? (e.code === 'Slash' ? '/' : '')) === '/')) return ACTIONS.find((x) => x.id === 'keys')
 }
 
 /** The list as text, for "Export as file". */

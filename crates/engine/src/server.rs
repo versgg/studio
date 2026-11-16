@@ -53,7 +53,10 @@ where
 /// app awaits an import's answer before using what it imported). In turn, a link held up every
 /// request and every event behind it: Space, clicks and the screen's updates, for minutes, and
 /// the app looked crashed (2026-11-07). Everything else stays in order, as edits must.
-const ALONGSIDE: [&str; 2] = ["media.import", "media.syncFolder"];
+/// Cutting a stretch out of a file (`media.extractRange`, for Vmake and voice changes) and
+/// re-saving a recording (`media.toAudio`) run FFmpeg for as long as the file is long and don't
+/// change the project, so they're answered alongside too.
+const ALONGSIDE: [&str; 4] = ["media.import", "media.syncFolder", "media.extractRange", "media.toAudio"];
 
 async fn handle<S: AsyncRead + AsyncWrite>(stream: S, engine: Arc<Engine>, conn: u64) -> anyhow::Result<()> {
     let (reader, mut writer) = tokio::io::split(stream);

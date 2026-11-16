@@ -11,6 +11,7 @@ import { clipMenu, openMenu, timelineMenu } from './ContextMenu'
 import { addToTimeline, MEDIA_MIME } from './Library'
 import { TEXT_MIME } from './LibraryTabs'
 import { usePeaks, useStrip, type Peaks } from './media-cache'
+import { useDevicePixelRatio } from './dpr'
 import { DEFAULT_TEXT, scaleSpec } from './textPresets'
 import { renderTextClip } from './textRender'
 import {
@@ -63,6 +64,12 @@ const EDGE_PX = 40
 const EDGE_SPEED = 18
 const MIN_CLIP = 100_000
 const SNAP_PX = 8
+/** With STUDIO_DEBUG_DRAG=1, every step of a clip drag goes to the log (scripts/mac-report.mjs reads it). */
+const dragLog = window.studio.debugDrag ? (o: Record<string, unknown>) => window.studio.log('drag', { ...o, dpr: window.devicePixelRatio }) : null
+/** How far past its row a dragged clip may go before it changes rows (px). */
+const STAY_PX = 8
+/** How far into a neighbour a dragged clip may be pushed and still stop against it, on its row (px). */
+const NUDGE_PX = 24
 const S = 1_000_000
 const MIN_PPS = 2
 const MAX_PPS = 800
@@ -422,12 +429,18 @@ export function TimelinePanel() {
   timelineApi.setHeight = (v) => setScale(clamp(v, 0.5, 1.8))
   timelineApi.fitHeight = () => setScale(clamp((view.h - RULER_H - PAD_TOP - PAD_BOTTOM - 28) / Math.max(1, baseH), 0.5, 1.8))
 
-  // A new project starts fitted; afterwards the view only widens when clips outgrow it.
+  // A project opened starts fitted to the panel (zoomed in or out: the last project's zoom
+  // isn't carried over); afterwards the view only widens when clips outgrow it.
+  const fittedFor = useRef('')
   useEffect(() => {
     autoFit.current = true
   }, [snap?.dir])
   useEffect(() => {
-    if (autoFit.current && durationUs > 0 && (durationUs / S) * ppsRef.current > fitWidth()) fit()
+    if (!snap?.dir || durationUs <= 0) return
+    if (fittedFor.current !== snap.dir) {
+      fittedFor.current = snap.dir
+      fit()
+    } else if (autoFit.current && (durationUs / S) * ppsRef.current > fitWidth()) fit()
   }, [snap?.dir, durationUs, view.w])
 
   // Wheel: Alt or Ctrl zooms around the pointer, Shift changes track height, plain scrolls sideways.
@@ -435,6 +448,12 @@ export function TimelinePanel() {
     const el = scrollRef.current
     if (!el) return
     const onWheel = (e: WheelEvent) => {
+      // While a clip is being dragged, the wheel (a trackpad's scroll still gliding on) doesn't
+      // scroll the timeline: the drag re-ran under the pointer and the clip jumped.
+      if (dragRef.current?.type === 'move' && dragRef.current.started) {
+        e.preventDefault()
+        return
+      }
       const delta = e.deltaY || e.deltaX
       if (e.altKey || e.ctrlKey) {
         e.preventDefault()
@@ -486,8 +505,12 @@ export function TimelinePanel() {
     return out
   }, [tracks, scale, draggingAudio, snap])
   const tracksH = rows.length ? rows[rows.length - 1].top + rows[rows.length - 1].height : 0
-  // The tracks sit in the middle of the panel, under the ruler, until they fill it.
-  const tracksTop = RULER_H + Math.max(PAD_TOP, Math.floor((view.h - RULER_H - tracksH - 28) / 2))
+  // The tracks sit in the middle of the panel, under the ruler, until they fill it. The empty
+  // "new track" row a sound drag adds under them doesn't count: it moved every row up under a
+  // still pointer (up to 19 px), so a sound clip dragged sideways jumped onto the row or the
+  // line below it (the drag that "hesitates and wants to move a layer up or down" on a Mac).
+  const centredH = draggingAudio ? Math.max(0, tracksH - NEW_ROW_H - GAP) : tracksH
+  const tracksTop = RULER_H + Math.max(PAD_TOP, Math.floor((view.h - RULER_H - centredH - 28) / 2))
   const contentH = Math.max(view.h, tracksTop + tracksH + 28 + PAD_BOTTOM)
 
   // Where every clip sits, with the active drag applied.
@@ -598,10 +621,14 @@ export function TimelinePanel() {
    * that has no room. Sound stays among the sound rows (the empty one under them is a new
    * track), the rest among the rows over the video (at the video or below it: just above it).
    */
-  const aim = (lane: Lane, y: number, clip: { id: string; durationUs: Us; fadeInUs?: Us; fadeOutUs?: Us }, start: Us): Landing => {
+  const aim = (lane: Lane, y: number, clip: { id: string; durationUs: Us; fadeInUs?: Us; fadeOutUs?: Us }, start: Us, stay?: string): Landing => {
     const audio = lane === 'audio'
     const lanes = rows.filter((r) => (audio ? r.kind === 'audio' || r.kind === 'new' : r.kind === 'overlay' || r.kind === 'main'))
     if (!lanes.length) return { rowId: '', newAt: tracks.length, line: null }
+    // Within a few pixels of the row it's on now, it stays there (a trackpad's small shake up or
+    // down doesn't change rows).
+    const now = stay ? lanes.find((r) => r.id === stay) : undefined
+    if (now?.track && !now.track.locked && y >= now.top - STAY_PX && y < now.top + now.height + STAY_PX && fitsOn(now.track, clip, start)) return { rowId: now.id, newAt: null, line: null }
     const last = lanes.length - 1
     // A new track just above lanes[i]: the empty row under the sound, else a line.
     const above = (i: number): Landing => (lanes[i].kind === 'new' ? { rowId: 'new', newAt: tracks.length, line: null } : { rowId: '', newAt: indexAbove(lanes[i]), line: lanes[i].top - GAP / 2 })
@@ -750,6 +777,9 @@ export function TimelinePanel() {
       update({ type: 'scrub', snapUs: s.snapUs })
       return
     }
+    // On a Mac, Ctrl+click is the right-click: its menu opens (and picks the clip), nothing else
+    // here (it used to toggle the clip in the selection first). Cmd+click adds to the selection.
+    if (window.studio.platform === 'darwin' && e.ctrlKey && !e.metaKey) return
     const clipEl = target.closest<HTMLElement>('[data-clip]')
     if (clipEl) {
       const id = clipEl.dataset.clip!
@@ -894,9 +924,36 @@ export function TimelinePanel() {
     const s = snapTo([start, start + clip.durationUs], d.clipId)
     start = Math.max(-first, start + s.shift)
     const span = d.lift.length && !inMain ? { id: d.clipId, durationUs: Math.max(clip.durationUs, ...d.lift.map((l) => l.offUs + l.durationUs)) - first } : clip
+    // Pushed (or snapped) a little into a neighbour on the row it's over: it stops against that
+    // neighbour, on that row, as in CapCut, instead of going to a new track.
+    if (!inMain && !d.lift.length) start = Math.max(0, againstNeighbour(d.lane, y, span, start, d.rowId))
     // Anywhere else: a row of its kind with room, or a new track (see `aim`).
-    const to: Landing = inMain ? { rowId: video!.id, newAt: null, line: null } : aim(d.lane, y, span, start + first)
+    const to: Landing = inMain ? { rowId: video!.id, newAt: null, line: null } : aim(d.lane, y, span, start + first, d.started ? d.rowId : d.trackId)
+    if (dragLog) dragLog({ y: Math.round(y), tracksTop, start, rowId: to.rowId, newAt: to.newAt, line: to.line, snapUs: s.at, over: d.rowId })
     update({ ...d, started: true, dest, atUs: start, ...to, snapUs: s.at })
+  }
+
+  /**
+   * `start` moved to just touch the neighbour it runs into on the row under the pointer (or the
+   * row it's on), when it's in by at most NUDGE_PX and fits there: before the neighbour's start
+   * or after its end, whichever is nearer. Else `start` as it was.
+   */
+  const againstNeighbour = (lane: Lane, y: number, clip: { id: string; durationUs: Us; fadeInUs?: Us; fadeOutUs?: Us }, start: Us, current?: string): Us => {
+    const audio = lane === 'audio'
+    const lanes = rows.filter((r) => r.track && !r.track.locked && (audio ? r.kind === 'audio' : r.kind === 'overlay' && r.role === lane))
+    const row = lanes.find((r) => y >= r.top - STAY_PX && y < r.top + r.height + STAY_PX && (r.id === current || (y >= r.top && y < r.top + r.height))) ?? lanes.find((r) => y >= r.top && y < r.top + r.height)
+    if (!row?.track || fitsOn(row.track, clip, start)) return start
+    const reach = (NUDGE_PX / ppsRef.current) * S
+    const end = start + clip.durationUs
+    const tries: Us[] = []
+    for (const o of row.track.clips) {
+      if (o.id === clip.id) continue
+      const oEnd = o.startUs + o.durationUs
+      if (Math.min(end, oEnd) - Math.max(start, o.startUs) <= 0) continue
+      tries.push(oEnd, o.startUs - clip.durationUs)
+    }
+    const best = tries.filter((t) => t >= 0 && Math.abs(t - start) <= reach && fitsOn(row.track!, clip, t)).sort((a, b) => Math.abs(a - start) - Math.abs(b - start))[0]
+    return best ?? start
   }
 
   /** "Add text" from the library over the timeline: lands like a moved text clip, 3 s long, its start at the pointer. */
@@ -1654,10 +1711,10 @@ function Fades({ clip, w, top, h, fades }: { clip: Clip; w: number; top: number;
 
 function Waveform({ peaks, inUs, dur, w, h, volume, peak, avg, speed, reverse, fades }: { peaks: Peaks; inUs: Us; dur: Us; w: number; h: number; volume: number; peak: string; avg: string; speed: number; reverse: boolean; fades?: FadeShape }) {
   const ref = useRef<HTMLCanvasElement>(null)
+  const dpr = useDevicePixelRatio()
   useEffect(() => {
     const canvas = ref.current
     if (!canvas) return
-    const dpr = window.devicePixelRatio || 1
     const cw = Math.min(8192, Math.max(1, Math.round(w * dpr)))
     const ch = Math.max(1, Math.round(h * dpr))
     canvas.width = cw
@@ -1703,6 +1760,6 @@ function Waveform({ peaks, inUs, dur, w, h, volume, peak, avg, speed, reverse, f
     ctx.fillRect(0, Math.floor(ch / 2), cw, Math.max(1, Math.round(dpr)))
     draw(levels, peak)
     draw(means, avg)
-  }, [peaks, inUs, dur, w, h, volume, peak, avg, speed, reverse, fades?.inPx, fades?.outPx, fades?.curve])
-  return <canvas ref={ref} className="waveform" style={{ width: w, height: h }} />
+  }, [peaks, inUs, dur, w, h, volume, peak, avg, speed, reverse, fades?.inPx, fades?.outPx, fades?.curve, dpr])
+  return <canvas ref={ref} className="waveform" data-source={peaks.source} style={{ width: w, height: h }} />
 }

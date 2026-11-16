@@ -248,7 +248,8 @@ export function projectFile(...parts: string[]) {
 
 let counter = 0
 /** A fresh name for a drawn PNG: `<stem>-<n>.png`, never reused (undo needs the old ones). */
-export const freshPng = (folder: 'text' | 'masks' | 'stickers', stem: string) => projectFile(folder, `${stem}-${Date.now().toString(36)}${(++counter).toString(36)}.png`)
+const pngName = (stem: string) => `${stem}-${Date.now().toString(36)}${(++counter).toString(36)}.png`
+export const freshPng = (folder: 'text' | 'masks' | 'stickers', stem: string) => projectFile(folder, pngName(stem))
 
 /** Writes drawn PNG bytes through the main process; throws with its message on failure. */
 export async function savePng(path: string, png: Uint8Array) {
@@ -257,12 +258,16 @@ export async function savePng(path: string, png: Uint8Array) {
   return r.out
 }
 
-/** Draws a text clip's spec and saves it; returns the spec with png, boxW and boxH set. */
-export async function renderTextClip(spec: TextLook, stem: string, place?: number | TextPlace): Promise<TextLook> {
+/**
+ * Draws a text clip's spec and saves it; returns the spec with png, boxW and boxH set. `at`:
+ * the project it's for (its folder and frame), when that may not be the open one by the time
+ * it's drawn (work that started before another project was opened).
+ */
+export async function renderTextClip(spec: TextLook, stem: string, place?: number | TextPlace, at?: { dir: string; width: number; height: number }): Promise<TextLook> {
   const p = getState().snap?.project
-  const w = p?.width ?? 1080
+  const w = at?.width ?? p?.width ?? 1080
   const o = typeof place === 'number' ? { centerY: place, maxWidth: w * 0.94 } : (place ?? {})
-  const d = await drawText(spec, w, p?.height ?? 1920, o)
-  const png = await savePng(freshPng('text', stem), d.png)
+  const d = await drawText(spec, w, at?.height ?? p?.height ?? 1920, o)
+  const png = await savePng(at ? [at.dir, 'text', pngName(stem)].join(at.dir.includes('\\') ? '\\' : '/') : freshPng('text', stem), d.png)
   return { ...spec, png, boxW: d.boxW, boxH: d.boxH }
 }

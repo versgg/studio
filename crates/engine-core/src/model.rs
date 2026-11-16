@@ -1266,6 +1266,12 @@ impl Project {
     /// Puts media on the timeline. Video and images go into the main track at `at`;
     /// audio goes on an audio track starting at `at`. Returns the new clip's id.
     pub fn insert(&mut self, media_id: &str, at: Us) -> R<String> {
+        self.insert_on(media_id, at, None)
+    }
+
+    /// `insert`, a sound going on the sound track `prefer` when it has room there (else the first
+    /// free one, as `insert`): a dub's or a translation's new sentences on one track of their own.
+    pub fn insert_on(&mut self, media_id: &str, at: Us, prefer: Option<&str>) -> R<String> {
         let Some(media) = self.media(media_id).cloned() else { return err(format!("no media {media_id}")) };
         if media.kind != MediaKind::Audio {
             self.check_main_unlocked()?;
@@ -1274,7 +1280,7 @@ impl Project {
         let clip = Clip::new(id.clone(), media.id.clone(), at.max(0), 0, Self::default_duration(&media));
         let before = self.main_starts();
         if media.kind == MediaKind::Audio {
-            let ti = self.track_for(&Lane::Audio, &clip, None, None);
+            let ti = self.track_for(&Lane::Audio, &clip, prefer, None);
             self.tracks[ti].clips.push(clip);
         } else if self.magnet {
             let index = self.main_index_at(at);
@@ -1314,6 +1320,7 @@ impl Project {
         self.check_unlocked(&[clip_id.to_string()])?;
         // Pictures go up off the main track onto a track over it, and back down into it.
         let to_main = track_id.is_some_and(|id| self.track(id).is_some_and(|t| t.main));
+        let mut carried = None;
         match track_id {
             Some(id) if self.tracks[ti].main && !to_main => return self.lift_off_main(ti, ci, start_us, Onto::Track(id)),
             Some(_) if !self.tracks[ti].main && to_main => return self.drop_into_main(ti, ci, start_us),
@@ -1330,6 +1337,7 @@ impl Project {
         } else {
             let (lane, home) = (self.lane_of(ti), self.tracks[ti].id.clone());
             let mut clip = self.tracks[ti].clips.remove(ci);
+            carried = self.carried(ti, &clip, start_us);
             clip.start_us = start_us.max(0);
             // A picture dropped above every track (an id that names none) gets a new one on top.
             let target = match &lane {
@@ -1345,7 +1353,21 @@ impl Project {
         }
         self.normalize();
         self.follow_links(&before);
+        if let Some((link, shift)) = carried {
+            self.shift_links(&[(link, shift)], Some(clip_id));
+        }
         Ok(())
+    }
+
+    /// The sound an overlay picture moved by `start_us` takes along (its link and how far), when
+    /// linkage is on: a video's own sound extracted onto an audio track keeps its place under it,
+    /// as a main-track clip's does. Sound clips moved alone leave their pictures where they are.
+    fn carried(&self, ti: usize, clip: &Clip, start_us: Us) -> Option<(String, Us)> {
+        let t = &self.tracks[ti];
+        if !self.linkage || t.main || t.kind != TrackKind::Video {
+            return None;
+        }
+        Some((clip.link.clone()?, start_us.max(0) - clip.start_us))
     }
 
     /// Moves a clip, starting at `start_us`, onto a new track made at `index` in the track list:
@@ -1362,6 +1384,7 @@ impl Project {
             let before = self.main_starts();
             let lane = self.lane_of(ti);
             let mut clip = self.tracks[ti].clips.remove(ci);
+            let carried = self.carried(ti, &clip, start_us);
             clip.start_us = start_us.max(0);
             // Made before the old track goes (if this was its last clip), so `index` still
             // counts the tracks the caller saw.
@@ -1369,6 +1392,9 @@ impl Project {
             self.tracks[at].clips.push(clip);
             self.normalize();
             self.follow_links(&before);
+            if let Some((link, shift)) = carried {
+                self.shift_links(&[(link, shift)], Some(clip_id));
+            }
         }
         Ok(self.find_clip(clip_id).map(|(t, _)| self.tracks[t].id.clone()).unwrap_or_default())
     }
@@ -1669,14 +1695,14 @@ impl Project {
     }
 
     /// `ids` plus, while linkage is on, the clips linked to them. With `both_ways` off only
-    /// main-track clips pull in their linked audio (deleting extracted audio leaves the video).
+    /// video clips (on the main track or over it) pull in their linked audio (deleting extracted
+    /// audio leaves the video).
     fn with_linked(&self, ids: &[String], both_ways: bool) -> Vec<String> {
         let mut out = ids.to_vec();
         if !self.linkage {
             return out;
         }
-        let main = &self.main_track().id;
-        let links: Vec<String> = self.tracks.iter().filter(|t| both_ways || &t.id == main).flat_map(|t| &t.clips).filter(|c| ids.contains(&c.id)).filter_map(|c| c.link.clone()).collect();
+        let links: Vec<String> = self.tracks.iter().filter(|t| both_ways || t.kind == TrackKind::Video).flat_map(|t| &t.clips).filter(|c| ids.contains(&c.id)).filter_map(|c| c.link.clone()).collect();
         for c in self.tracks.iter().flat_map(|t| &t.clips) {
             if c.link.as_ref().is_some_and(|l| links.contains(l)) && !out.contains(&c.id) {
                 out.push(c.id.clone());
@@ -1738,7 +1764,9 @@ impl Project {
     }
 
     /// Puts each video clip's sound on an audio track of its own (same time, same range)
-    /// and silences the video. The two are linked. Returns the new audio clips.
+    /// and silences the video. The two are linked. Returns the new audio clips. Any video clip
+    /// with sound, on the main track or a track over it (it used to be the main track only, so an
+    /// overlay's sound couldn't be taken off until it was dragged down: the user, 2026-11-16).
     pub fn extract_audio(&mut self, clip_ids: &[String]) -> R<Vec<String>> {
         self.check_unlocked(clip_ids)?;
         let mut created = vec![];
@@ -1746,7 +1774,7 @@ impl Project {
             let Some((ti, ci)) = self.find_clip(id) else { continue };
             let c = self.tracks[ti].clips[ci].clone();
             let has_sound = self.media(&c.media_id).is_some_and(|m| m.has_audio && m.kind == MediaKind::Video);
-            if !self.tracks[ti].main || c.detached || !has_sound {
+            if self.tracks[ti].kind != TrackKind::Video || c.detached || !has_sound {
                 continue;
             }
             let link = match c.link.clone() {
@@ -2545,6 +2573,57 @@ mod tests {
         p.move_clip(&b, 6 * SECOND, Some("above")).unwrap();
         let (si, sc) = p.find_clip(&sound).unwrap();
         assert_eq!(p.tracks[si].clips[sc].start_us, 6 * SECOND, "the sound followed the picture up and along");
+    }
+
+    /// A sound put on the track asked for, when it has room there (a language's new voice on
+    /// one track of its own), else on the first free one as before.
+    #[test]
+    fn a_sound_goes_on_the_track_asked_for_when_it_fits() {
+        let mut p = project();
+        p.insert("a", 0).unwrap();
+        let first = p.insert("vo", 0).unwrap();
+        let own = p.insert_on_new_track("vo", 20 * SECOND).unwrap();
+        let own_track = p.tracks[p.find_clip(&own).unwrap().0].id.clone();
+        let first_track = p.tracks[p.find_clip(&first).unwrap().0].id.clone();
+        assert_ne!(own_track, first_track);
+        // Free on both: the one asked for.
+        let next = p.insert_on("vo", 40 * SECOND, Some(&own_track)).unwrap();
+        assert_eq!(p.tracks[p.find_clip(&next).unwrap().0].id, own_track);
+        // Taken there (over `own` at 20 s): the first free one instead.
+        let over = p.insert_on("vo", 25 * SECOND, Some(&own_track)).unwrap();
+        assert_ne!(p.tracks[p.find_clip(&over).unwrap().0].id, own_track);
+    }
+
+    /// A video on a track over the video gives up its sound like a main-track one (it used to
+    /// be refused until it was dragged down), and that sound keeps its place under it as it's
+    /// moved along its track or onto a new one.
+    #[test]
+    fn an_overlay_gives_up_its_sound_and_the_sound_follows_it() {
+        let mut p = project();
+        p.insert("a", 0).unwrap();
+        p.insert("b", 10 * SECOND).unwrap();
+        let b = p.main_track().clips[1].id.clone();
+        p.move_clip(&b, SECOND, Some("above")).unwrap();
+        assert!(!p.tracks[p.find_clip(&b).unwrap().0].main, "b is an overlay now");
+        let sound = p.extract_audio(std::slice::from_ref(&b)).unwrap();
+        assert_eq!(sound.len(), 1);
+        assert!(p.clip(&b).unwrap().detached);
+        let at = |p: &Project| p.clip(&sound[0]).unwrap().start_us;
+        assert_eq!(at(&p), SECOND);
+        // Along its own track.
+        let track = p.tracks[p.find_clip(&b).unwrap().0].id.clone();
+        p.move_clip(&b, 3 * SECOND, Some(&track)).unwrap();
+        assert_eq!(at(&p), 3 * SECOND, "the sound followed the overlay along");
+        // Onto a new track.
+        p.move_to_new_track(&b, 5 * SECOND, p.tracks.len()).unwrap();
+        assert_eq!(at(&p), 5 * SECOND, "and onto a new track");
+        // A sound clip moved alone leaves its picture where it is.
+        p.move_clip(&sound[0], 7 * SECOND, None).unwrap();
+        assert_eq!(p.clip(&b).unwrap().start_us, 5 * SECOND);
+        // With linkage off the overlay moves alone.
+        p.linkage = false;
+        p.move_clip(&b, 0, None).unwrap();
+        assert_eq!(at(&p), 7 * SECOND);
     }
 
     #[test]

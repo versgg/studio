@@ -3,7 +3,7 @@
 // are kept here. The project itself always comes from the engine's snapshot.
 
 import { useSyncExternalStore } from 'react'
-import { fileUrl, getState, mediaById, type Clip, type Media, type Project, type Snapshot, type Track, type Us } from './store'
+import { fileUrl, getState, mediaById, onProjectSwitch, type Clip, type Media, type Project, type Snapshot, type Track, type Us } from './store'
 
 // The engine's project, with the Audio page's fields (store.ts lists only what the editor uses).
 
@@ -286,50 +286,70 @@ export interface Levels {
   rms: Uint8Array
 }
 
-const levels = new Map<string, Levels | 'pending' | 'failed'>()
-const spectrograms = new Map<string, string | 'pending' | 'failed'>()
+// Levels and spectrograms are kept by the file they were made from (`fileKey`: its id and path):
+// ids start again in every project (and an undo hands one out again), so by id alone the last
+// project's `m2` drew its waveform on this one's. They're forgotten when another project opens,
+// and the engine's answers for a project that isn't open are let go. One that failed is asked
+// for again after a while (it used to stay blank until Studio restarted).
+const levels = new Map<string, Levels | 'pending' | { failed: number }>()
+const spectrograms = new Map<string, string | 'pending' | { failed: number }>()
+const fileKey = (m: { id: string; path: string }) => `${m.id}|${m.path}`
+const RETRY_MS = 15_000
+const stale = (have: unknown) => have === undefined || (typeof have === 'object' && have !== null && 'failed' in have && performance.now() - (have as { failed: number }).failed > RETRY_MS)
+/** The open project's file with this id, when `path` (a derived file) is in that project's cache. */
+function mediaHere(mediaId: string, path?: string): Media | undefined {
+  const snap = getState().snap
+  if (!snap || (path && !path.replace(/\\/g, '/').startsWith(snap.dir.replace(/\\/g, '/').replace(/\/+$/, '') + '/'))) return undefined
+  return mediaById(snap, mediaId)
+}
+onProjectSwitch(() => {
+  levels.clear()
+  spectrograms.clear()
+})
 
-async function loadLevels(mediaId: string, path: string) {
+async function loadLevels(key: string, path: string) {
   try {
-    const j: { rate: number; peak: number[]; rms: number[] } = await fetch(fileUrl(path)).then((r) => r.json())
-    levels.set(mediaId, { rate: j.rate, peak: Uint8Array.from(j.peak), rms: Uint8Array.from(j.rms) })
+    const j: { rate: number; peak: number[]; rms: number[] } = await fetch(`${fileUrl(path)}?v=${encodeURIComponent(key)}`, { cache: 'no-store' }).then((r) => r.json())
+    levels.set(key, { rate: j.rate, peak: Uint8Array.from(j.peak), rms: Uint8Array.from(j.rms) })
   } catch {
-    levels.set(mediaId, 'failed')
+    levels.set(key, { failed: performance.now() })
   }
   setUi({ files: ui.files + 1 })
 }
 
-/** A file's peak and RMS levels, asked for once; `undefined` until they arrive. */
+/** A file's peak and RMS levels, asked for once (again after a while if that failed); `undefined` until they arrive. */
 export function levelsFor(media: Media | undefined): Levels | undefined {
   if (!media?.hasAudio) return undefined
-  const have = levels.get(media.id)
-  if (have === undefined) {
-    levels.set(media.id, 'pending')
+  const key = fileKey(media)
+  const have = levels.get(key)
+  if (stale(have)) {
+    levels.set(key, 'pending')
     window.studio.engine
       .call('audio.levels', { mediaId: media.id })
-      .then((r) => r.path && loadLevels(media.id, r.path))
-      .catch(() => levels.set(media.id, 'failed'))
+      .then((r) => (r.path ? loadLevels(key, r.path) : undefined))
+      .catch(() => levels.set(key, { failed: performance.now() }))
   }
-  return typeof have === 'object' ? have : undefined
+  return have && typeof have === 'object' && 'peak' in have ? have : undefined
 }
 
-/** A file's spectrogram image, asked for once. */
+/** A file's spectrogram image, asked for once (again after a while if that failed). */
 export function spectrogramFor(media: Media | undefined): string | undefined {
   if (!media?.hasAudio) return undefined
-  const have = spectrograms.get(media.id)
-  if (have === undefined) {
-    spectrograms.set(media.id, 'pending')
+  const key = fileKey(media)
+  const have = spectrograms.get(key)
+  if (stale(have)) {
+    spectrograms.set(key, 'pending')
     window.studio.engine
       .call('audio.spectrogram', { mediaId: media.id })
       .then((r) => {
         if (r.path) {
-          spectrograms.set(media.id, r.path)
+          spectrograms.set(key, r.path)
           setUi({ files: ui.files + 1 })
         }
       })
-      .catch(() => spectrograms.set(media.id, 'failed'))
+      .catch(() => spectrograms.set(key, { failed: performance.now() }))
   }
-  return have && have !== 'pending' && have !== 'failed' ? fileUrl(have) : undefined
+  return typeof have === 'string' && have !== 'pending' ? `${fileUrl(have)}?v=${encodeURIComponent(key)}` : undefined
 }
 
 let measureTimer = 0
@@ -355,14 +375,21 @@ export function wireAudioEvents() {
   wired = true
   window.studio.engine.onEvent((method, params) => {
     if (method === 'audio.loudness') setUi({ loudness: params, loudnessBusy: false, loudnessError: null })
-    else if (method === 'audio.levels') loadLevels(params.mediaId, params.path)
-    else if (method === 'audio.spectrogram') {
-      spectrograms.set(params.mediaId, params.path)
-      setUi({ files: ui.files + 1 })
+    else if (method === 'audio.levels') {
+      // For the open project's file only (one asked for in the last project can arrive after a switch).
+      const m = mediaHere(params.mediaId, params.path)
+      if (m) loadLevels(fileKey(m), params.path)
+    } else if (method === 'audio.spectrogram') {
+      const m = mediaHere(params.mediaId, params.path)
+      if (m) {
+        spectrograms.set(fileKey(m), params.path)
+        setUi({ files: ui.files + 1 })
+      }
     } else if (method === 'audio.failed') {
+      const m = params.mediaId ? mediaHere(params.mediaId) : undefined
       if (params.what === 'loudness') setUi({ loudnessBusy: false, loudnessError: params.error })
-      else if (params.what === 'levels') levels.set(params.mediaId, 'failed')
-      else if (params.what === 'spectrogram') spectrograms.set(params.mediaId, 'failed')
+      else if (params.what === 'levels' && m) levels.set(fileKey(m), { failed: performance.now() })
+      else if (params.what === 'spectrogram' && m) spectrograms.set(fileKey(m), { failed: performance.now() })
     }
   })
 }
@@ -392,8 +419,8 @@ export function trackLevel(t: MixTrack, p: Project, at: Us, audible: boolean): [
   for (const c of t.clips as SoundClip[]) {
     if (at < c.startUs || at >= c.startUs + c.durationUs || c.detached) continue
     const m = p.media.find((x) => x.id === c.mediaId)
-    const lv = levels.get(c.mediaId)
-    if (!m || typeof lv !== 'object') continue
+    const lv = m && levels.get(fileKey(m))
+    if (!m || !lv || typeof lv !== 'object' || !('peak' in lv)) continue
     const src = c.inUs + (at - c.startUs)
     // The loudest 10 ms block of the last 60 ms, like a meter's fall-back.
     const i = Math.floor((src / S) * lv.rate)

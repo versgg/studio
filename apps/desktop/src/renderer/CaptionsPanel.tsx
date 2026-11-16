@@ -85,8 +85,9 @@ export function CaptionLinesTab({ track }: { track: Track }) {
   const [nowId, nowWord] = saying ? [saying.slice(0, saying.lastIndexOf(':')), Number(saying.slice(saying.lastIndexOf(':') + 1))] : ['', -1]
   const [perCaption, setPerCaption] = useUi('lib.capWords', 0)
   const [editing, setEditing] = useState<{ id: string; caret: number } | null>(null)
-  const [query, setQuery] = useState('')
-  const [replacing, setReplacing] = useState<string | null>(null)
+  // Find and Replace keep what's typed while another clip or tab is looked at.
+  const [query, setQuery] = useUi('insp.capFind', '')
+  const [replacing, setReplacing] = useUi<string | null>('insp.capReplace', null)
   const [hit, setHit] = useState(0)
   const list = useRef<HTMLOListElement>(null)
   const matches = useMemo(() => (query.trim() ? lines.filter((l) => findPattern(query).test(l.clip.text?.content ?? '')).map((l) => l.clip) : []), [lines, query])
@@ -197,7 +198,7 @@ export function CaptionLinesTab({ track }: { track: Track }) {
               </button>
             </>
           )}
-          <button type="button" className={`cap-tool${replacing != null ? ' on' : ''}`} aria-pressed={replacing != null} title="Replace a word in every line" onClick={() => setReplacing((r) => (r == null ? '' : null))}>
+          <button type="button" className={`cap-tool${replacing != null ? ' on' : ''}`} aria-pressed={replacing != null} title="Replace a word in every line" onClick={() => setReplacing(replacing == null ? '' : null)}>
             <span>Replace</span>
           </button>
         </div>

@@ -1602,6 +1602,305 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      return { selectedRow: lanes.indexOf(lane) + ' (labels row is ' + (lanes.length - 1) + ')', loopWasOn: on }`,
   )
 
+  // The flicker on opening (the user: "the timeline will flicker until I zoom in by like a
+  // pixel"): a short project at every width from 900 to 1300 px, one pixel at a time; at each,
+  // the scrollbars are watched for 300 ms and must not keep coming and going.
+  await step(
+    'Timeline: a short project, at any width, holds still (no scrollbars coming and going)',
+    `const S = window.__studio
+     const back = (await __t.snap()).dir
+     await S.newProject('Short one', '9:16')
+     await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'the new project')
+     const clip = ${JSON.stringify(clips[0] ?? '')}
+     const r = await window.studio.engine.call('media.import', { paths: [clip] })
+     await window.studio.engine.call('timeline.insert', { mediaId: r.imported[0], atUs: 0 })
+     await __t.until(() => __t.q('.tl-scroll .clip'), 5000, 'the clip on the timeline')
+     const panel = __t.q('.timeline')
+     const sc = __t.q('.tl-scroll')
+     const was = panel.getAttribute('style') ?? ''
+     const bars = () => (sc.scrollWidth > sc.clientWidth ? 'x' : '-') + (sc.scrollHeight > sc.clientHeight ? 'y' : '-')
+     const restless = []
+     let widths = 0
+     for (let w = 900; w <= 1300; w++) {
+       panel.style.width = w + 'px'
+       panel.style.flex = '0 0 ' + w + 'px'
+       await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)))
+       await __t.sleep(60)
+       let last = bars(), flips = 0
+       for (let i = 0; i < 12; i++) {
+         await new Promise((res) => requestAnimationFrame(res))
+         await __t.sleep(16)
+         const b = bars()
+         if (b !== last) flips++
+         last = b
+       }
+       widths++
+       if (flips > 1) restless.push(w + 'px: ' + flips + ' flips')
+     }
+     panel.setAttribute('style', was)
+     await S.openProjectAt(back)
+     await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+     if (restless.length) throw new Error(restless.length + ' of ' + widths + ' widths flicker: ' + restless.slice(0, 8).join(', '))
+     return { widths, still: true }`,
+  )
+
+  // Waveforms between projects (the user: "the audiowaves are from a previous project"): two
+  // projects whose sounds have the same media id; each timeline only ever draws its own file's.
+  const tones = [path.join(path.dirname(exportDir), 'tone-first.wav'), path.join(path.dirname(exportDir), 'tone-second.wav')]
+  if (tones.every((f) => fs.existsSync(f)))
+    await step(
+      'Timeline: switching between projects whose sounds share a media id, each draws only its own waveform',
+      `const S = window.__studio
+       const back = (await __t.snap()).dir
+       const files = ${JSON.stringify(tones)}
+       const made = []
+       for (const [i, f] of files.entries()) {
+         const before = (await __t.snap()).dir
+         await S.newProject('Waves ' + (i + 1), '9:16')
+         await __t.until(async () => (await __t.snap()).dir !== before, 5000, 'project ' + (i + 1))
+         const r = await window.studio.engine.call('media.import', { paths: [f] })
+         await window.studio.engine.call('timeline.insert', { mediaId: r.imported[0], atUs: 0 })
+         made.push({ dir: (await __t.snap()).dir, id: r.imported[0], file: f })
+       }
+       if (made[0].id !== made[1].id) throw new Error('the test needs the same id in both: ' + made.map((m) => m.id).join(', '))
+       const name = (f) => f.split(/[\\/]/).pop()
+       // From the second to the first and back, watching every waveform drawn for 2 s after each switch.
+       const seen = []
+       for (const m of [made[0], made[1], made[0]]) {
+         await S.openProjectAt(m.dir)
+         await __t.until(async () => (await __t.snap()).dir === m.dir, 5000, 'the project open')
+         const t0 = performance.now()
+         let drawn = 0
+         while (performance.now() - t0 < 2000) {
+           for (const c of __t.qa('.tl-scroll canvas.waveform')) {
+             const src = c.getAttribute('data-source') ?? ''
+             if (!src.startsWith(m.file + '|')) throw new Error(name(m.file) + "'s project drew " + (name(src.split('|')[0]) || 'nothing'))
+             drawn++
+           }
+           await __t.sleep(50)
+         }
+         if (!drawn) throw new Error('no waveform drawn in ' + name(m.file) + "'s project")
+         seen.push(name(m.file) + ': ' + drawn)
+       }
+       await S.openProjectAt(back)
+       await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+       return { sharedId: made[0].id, seen }`,
+    )
+
+  // Taking the sound off a clip on any layer (the user: "it doesn't work until the clip is on
+  // the main timeline"): Ctrl+Shift+S on an overlay video, its sound follows a move, and hiding
+  // its track leaves the overlay's own sound out of the mix (the mix itself is tested in Rust).
+  const overlaySound = path.join(path.dirname(exportDir), 'speaks-with-music.mp4')
+  if (fs.existsSync(overlaySound))
+    await step(
+      'Timeline: Ctrl+Shift+S takes the sound off a video on a track over the video, and the sound follows it when it moves',
+      `const S = window.__studio
+       const back = (await __t.snap()).dir
+       await S.newProject('Overlay sound', '9:16')
+       await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+       const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(clips[0] ?? '')}, ${JSON.stringify(overlaySound)}] })
+       const [base, talk] = r.imported
+       await window.studio.engine.call('timeline.insert', { mediaId: base, atUs: 0 })
+       await window.studio.engine.call('timeline.insert', { mediaId: talk, atUs: 10000000 })
+       let s = await __t.snap()
+       const clip = __t.main(s).find((c) => c.mediaId === talk)
+       await window.studio.engine.call('timeline.move', { clipId: clip.id, startUs: 500000, trackId: 'above' })
+       s = await __t.snap()
+       const where = s.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
+       if (!where || where.main) throw new Error('the clip didn’t go above the main track')
+       // Selected, Ctrl+Shift+S: its sound goes on a track of its own.
+       window.__studioDev.store.setState({ selection: [clip.id], focus: 'timeline' })
+       await __t.sleep(50)
+       __t.key('S', { code: 'KeyS', ctrlKey: true, shiftKey: true })
+       s = await __t.until(async () => { const x = await __t.snap(); const c = x.project.tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id); return c?.detached && x }, 5000, 'its sound taken off')
+       const pic = s.project.tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)
+       const sound = s.project.tracks.filter((t) => t.kind === 'audio').flatMap((t) => t.clips).find((c) => c.link && c.link === pic.link)
+       if (!sound || sound.mediaId !== talk || sound.startUs !== pic.startUs) throw new Error('no sound under it: ' + JSON.stringify(sound))
+       // Moved along its track: the sound follows.
+       await window.studio.engine.call('timeline.move', { clipId: clip.id, startUs: 2500000, trackId: where.id })
+       s = await __t.snap()
+       const moved = s.project.tracks.flatMap((t) => t.clips).find((c) => c.id === sound.id)
+       if (moved.startUs !== 2500000) throw new Error('the sound stayed at ' + moved.startUs)
+       await S.openProjectAt(back)
+       await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+       return { overlay: where.id, soundAt: moved.startUs / 1e6 + ' s' }`,
+    )
+
+  // App zoom (the user's choice: Ctrl/Cmd+Shift + and −; Ctrl/Cmd + and − stay the timeline's).
+  // The keys are found by what they type on this computer's keyboard (Swedish: + is the Minus key).
+  await step(
+    'App zoom: Ctrl+Shift+= makes the whole app bigger and Ctrl+Shift+0 puts it back; Ctrl+= still zooms the timeline, not the app',
+    `const lm = navigator.keyboard?.getLayoutMap ? await navigator.keyboard.getLayoutMap() : new Map()
+     const codeOf = (chars, fallback) => [...lm.entries()].find(([, ch]) => chars.includes(ch))?.[0] ?? fallback
+     // With the layout known, its keys for + and −; without it (this hidden window may have none),
+     // an American keyboard's, with what Shift makes of them.
+     const plus = codeOf(['+', '='], 'Equal')
+     const minus = codeOf(['-'], 'Minus')
+     const shifted = (code) => (lm.size ? lm.get(code) : code === 'Equal' ? '+' : code === 'Minus' ? '_' : ')')
+     const press = (code, o) => window.dispatchEvent(new KeyboardEvent('keydown', { code, key: o.shiftKey ? shifted(code) : (lm.get(code) ?? (code === 'Minus' ? '-' : '=')), bubbles: true, cancelable: true, ...o }))
+     const z0 = await window.studio.app.getZoom()
+     if (Math.abs(z0 - 1) > 0.01) throw new Error('it starts at ' + z0)
+     // Smaller always works; bigger only as far as the screen holds the smallest layout (this
+     // hidden window's screen may hold no more, and then the note says so).
+     press(minus, { ctrlKey: true, shiftKey: true })
+     const z1 = await __t.until(async () => { const z = await window.studio.app.getZoom(); return z < 0.99 && z }, 3000, 'the app smaller')
+     press('Digit0', { ctrlKey: true, shiftKey: true })
+     await __t.until(async () => Math.abs((await window.studio.app.getZoom()) - 1) < 0.01, 3000, 'the app back at 100 %')
+     press(plus, { ctrlKey: true, shiftKey: true })
+     const bigger = await __t.until(async () => { const z = await window.studio.app.getZoom(); const full = __t.qa('.toast').some((t) => /as big as this screen fits/.test(t.textContent)); return (z > 1.01 || full) && { z, full } }, 3000, 'the app bigger, or the note that the screen is full')
+     press('Digit0', { ctrlKey: true, shiftKey: true })
+     await __t.until(async () => Math.abs((await window.studio.app.getZoom()) - 1) < 0.01, 3000, 'the app back at 100 % again')
+     // Ctrl+= alone: the timeline's zoom, the app stays.
+     const content = __t.q('.tl-content')
+     const w0 = content.getBoundingClientRect().width
+     __t.q('.tl-scroll').focus?.()
+     window.__studioDev.store.setState({ focus: 'timeline' })
+     press(plus, { ctrlKey: true })
+     const w1 = await __t.until(() => { const w = content.getBoundingClientRect().width; return Math.abs(w - w0) > 1 && w }, 3000, 'the timeline zoomed')
+     if (Math.abs((await window.studio.app.getZoom()) - 1) > 0.01) throw new Error('Ctrl+= zoomed the app')
+     press(minus, { ctrlKey: true })
+     return { keys: plus + ' / ' + minus, smaller: Math.round(z1 * 100) + ' %', bigger: bigger.full ? 'screen full' : Math.round(bigger.z * 100) + ' %', timeline: Math.round(w0) + ' → ' + Math.round(w1) + ' px' }`,
+  )
+
+  // The Mac drag (the user: a sound dragged to close a gap "hesitates, and wants to move above a
+  // layer or below a layer, like it's being collided"): the rows hold still when the drag starts,
+  // a small shake up or down keeps the row, and pushed a little into its neighbour it stops
+  // against it on the same row.
+  if (tones.every((f) => fs.existsSync(f)))
+    await step(
+      'Timeline: a sound dragged into its neighbour stops against it on the same row, and the rows hold still while it moves',
+      `const S = window.__studio
+       const back = (await __t.snap()).dir
+       await S.newProject('Drag sounds', '9:16')
+       await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+       const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(clips[0] ?? '')}, ...${JSON.stringify(tones)}] })
+       const [pic, one, two] = r.imported
+       await window.studio.engine.call('timeline.insert', { mediaId: pic, atUs: 0 })
+       const a = await window.studio.engine.call('timeline.insert', { mediaId: one, atUs: 0, newTrack: true })
+       const b = await window.studio.engine.call('timeline.insert', { mediaId: two, atUs: 6000000, trackId: a.trackId })
+       if (b.trackId !== a.trackId) throw new Error('the two sounds aren’t on one track')
+       const elA = await __t.until(() => __t.clipEl(a.clipId), 5000, 'the first sound')
+       const elB = await __t.until(() => __t.clipEl(b.clipId), 5000, 'the second sound')
+       await __t.sleep(300)
+       const ra = __t.rect(elA), rb = __t.rect(elB)
+       const pps = ra.width / 4
+       // B's start to 0.13 s before A's end: past the snapping distance, into A.
+       const dx = (3.87 - 6) * pps
+       const x0 = rb.left + rb.width / 2, y0 = rb.top + rb.height / 2
+       const cap = elB.closest('.tl-content')
+       __t.pointer(elB, 'pointerdown', x0, y0)
+       const tops = []
+       for (let i = 1; i <= 12; i++) {
+         await __t.sleep(16)
+         __t.pointer(cap, 'pointermove', x0 + (dx * i) / 12, y0 + (i % 2 ? 4 : -4))
+         tops.push(Math.round(__t.rect(__t.clipEl(a.clipId)).top))
+       }
+       const moved = tops.filter((t) => Math.abs(t - Math.round(ra.top)) > 1)
+       await __t.sleep(16)
+       __t.pointer(cap, 'pointerup', x0 + dx, y0 + 4)
+       const s = await __t.until(async () => { const x = await __t.snap(); const c = x.project.tracks.flatMap((t) => t.clips).find((c) => c.id === b.clipId); return c && c.startUs !== 6000000 && x }, 3000, 'the second sound moved')
+       const t = s.project.tracks.find((t) => t.clips.some((c) => c.id === b.clipId))
+       const clipB = t.clips.find((c) => c.id === b.clipId)
+       const clipA = s.project.tracks.flatMap((x) => x.clips).find((c) => c.id === a.clipId)
+       await S.openProjectAt(back)
+       await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+       if (moved.length) throw new Error('the rows moved under the pointer: ' + tops.join(', ') + ' (from ' + Math.round(ra.top) + ')')
+       if (t.id !== a.trackId) throw new Error('it went to another track')
+       if (clipB.startUs !== clipA.startUs + clipA.durationUs) throw new Error('it starts at ' + clipB.startUs + ', not against the first (' + (clipA.startUs + clipA.durationUs) + ')')
+       return { row: 'same', startsAt: clipB.startUs / 1e6 + ' s', rowsStill: true }`,
+    )
+
+  // Share project and Open shared project: a project with a clip from outside its folder and a
+  // text, shared as one zip, opened again as a new project whose every path points inside it.
+  const shareZip = path.join(out, 'shared', 'Share test.studio.zip')
+  fs.mkdirSync(path.dirname(shareZip), { recursive: true })
+  fs.rmSync(shareZip, { force: true })
+  await step(
+    'Share project: one zip with the project and the files it uses; Open shared project makes it a project of its own whose paths all point inside it, and it plays',
+    `const S = window.__studio
+     const back = (await __t.snap()).dir
+     await S.newProject('Share test', '9:16')
+     const a = await __t.until(async () => { const x = await __t.snap(); return x.dir !== back && x }, 5000, 'its own project')
+     const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(clips[0] ?? '')}] })
+     await window.studio.engine.call('timeline.insert', { mediaId: r.imported[0], atUs: 0 })
+     const look = await window.__studioDev.textRender.renderTextClip({ ...window.__studioDev.presets.DEFAULT_TEXT, content: 'Shared' }, 'share-test')
+     await window.studio.engine.call('text.add', { atUs: 0, durationUs: 1000000, text: look })
+     const z = await window.studio.app.shareProject(a.dir, 'UI check', ${JSON.stringify(shareZip)})
+     if (!z || z.error) throw new Error('share: ' + JSON.stringify(z))
+     if (z.outside !== 1) throw new Error(z.outside + ' outside files, not 1')
+     const o = await window.studio.app.openSharedProject(z.out)
+     if (!o || o.error) throw new Error('open: ' + JSON.stringify(o))
+     await S.openProjectAt(o.dir)
+     const b = await __t.until(async () => { const x = await __t.snap(); return x.dir === o.dir && x }, 8000, 'the shared project open')
+     const paths = [...b.project.media.map((m) => m.path), ...b.project.tracks.flatMap((t) => t.clips).map((c) => c.text?.png).filter(Boolean)]
+     const outside = paths.filter((p) => !p.startsWith(o.dir))
+     if (outside.length) throw new Error('paths outside the new project: ' + outside.join(', '))
+     for (const p of paths) if (!(await window.studio.files.exists(p))) throw new Error('missing: ' + p)
+     await window.studio.engine.call('playback.play', { fromUs: 0 })
+     await __t.until(() => S.getState().positionUs > 200000, 8000, 'it playing')
+     await window.studio.engine.call('playback.pause')
+     await S.openProjectAt(back)
+     await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+     return { zipMB: (z.bytes / 1e6).toFixed(1), files: z.files, opened: o.dir.split(/[\\/]/).pop() }`,
+  )
+
+  // Media › Download on the stand-in (STUDIO_DOWNLOAD_FAKE, set by scripts/ui-check.mjs; never the
+  // real server): links pasted, looked up, one as MP3, both saved into the project and its library.
+  if (process.env.STUDIO_DOWNLOAD_FAKE === '1') {
+    await step(
+      'Media › Download: the button next to Import opens it; pasted links are looked up once each, and one can be set to MP3',
+      `const S = window.__studio
+       const back = (await __t.snap()).dir
+       await S.newProject('Download test', '9:16')
+       const a = await __t.until(async () => { const x = await __t.snap(); return x.dir !== back && x }, 5000, 'its own project')
+       window.__dl = { back, dir: a.dir }
+       ${cat('Media')}
+       const open = await __t.until(() => __t.qa('.lib-actions button').find((b) => b.textContent.trim() === 'Download' && !b.disabled), 3000, 'the Download button next to Import')
+       if (open.previousElementSibling?.textContent.trim() !== 'Import') throw new Error('Download isn’t next to Import')
+       open.click()
+       const area = await __t.until(() => __t.q('.modal textarea.dl-links'), 3000, 'the Download dialog')
+       const type = (el, v) => { Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value').set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })) }
+       type(area, 'https://www.tiktok.com/@x/video/111111\\nhttps://www.youtube.com/watch?v=222222 and some words\\nhttps://www.tiktok.com/@x/video/111111')
+       const rows = await __t.until(() => { const r = __t.qa('.modal .dl-row'); return r.length === 2 && r.every((x) => x.textContent.includes('Stand-in clip')) && r }, 6000, 'two links looked up')
+       rows[1].querySelectorAll('.pills button')[1].click()
+       await __t.until(() => rows[1].querySelector('.dsel-value')?.textContent === 'Sound only', 2000, 'the second as sound only')
+       return { rows: rows.length }`,
+    )
+    await shot('27-download-links')
+    await step(
+      'Media › Download: both are saved in the project’s downloads folder and its library, and listed as in the library',
+      `const a = window.__dl
+       const go = await __t.until(() => __t.qa('.modal footer button').find((b) => b.textContent.trim() === 'Download 2' && !b.disabled), 3000, 'Download 2')
+       go.click()
+       const s = await __t.until(async () => { const x = await __t.snap(); return x.project.media.length === 2 && x }, 20000, 'both in the library')
+       const sep = a.dir.includes('\\\\') ? '\\\\' : '/'
+       const wrong = s.project.media.filter((m) => !m.path.startsWith(a.dir + sep + 'downloads' + sep))
+       if (wrong.length) throw new Error('not in the downloads folder: ' + wrong.map((m) => m.path).join(', '))
+       const mp3 = s.project.media.find((m) => m.path.endsWith('.mp3'))
+       const mp4 = s.project.media.find((m) => m.path.endsWith('.mp4'))
+       if (!mp3 || mp3.kind !== 'audio' || !mp4 || mp4.kind !== 'video') throw new Error('kinds: ' + s.project.media.map((m) => m.kind + ' ' + m.name).join(', '))
+       await __t.until(() => { const j = __t.qa('.modal .dl-job'); return j.length === 2 && j.every((x) => x.textContent.includes('In the library')) }, 5000, 'both shown as in the library')
+       return { files: s.project.media.map((m) => m.name) }`,
+    )
+    await shot('27b-download-done')
+    await step(
+      'Media › Download: opening the project again doesn’t bring the downloads in twice',
+      `const S = window.__studio
+       const a = window.__dl
+       __t.q('.modal header .icon-button').click()
+       await S.openProjectAt(a.back)
+       await __t.until(async () => (await __t.snap()).dir === a.back, 8000, 'the test project again')
+       await S.openProjectAt(a.dir)
+       await __t.until(async () => (await __t.snap()).dir === a.dir, 8000, 'the download test again')
+       await __t.sleep(1500)
+       const again = (await __t.snap()).project.media.length
+       if (again !== 2) throw new Error(again + ' files after opening it again, not 2')
+       await S.openProjectAt(a.back)
+       await __t.until(async () => (await __t.snap()).dir === a.back, 8000, 'the test project again')
+       return { files: again }`,
+    )
+  }
+
   await step(
     'Timeline: a clip dragged above the tracks goes on a new track over the video, and back down into it',
     `let s = await __t.snap(); const main = __t.main(s); const n = main.length; const c = main[n - 1]
@@ -2185,6 +2484,47 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await window.studio.engine.call('captions.set', { trackId: caps.id, lines: [], style: {} })
        await window.studio.engine.call('timeline.delete', { clipIds: track.clips.map((c) => c.id) })
        return { captions: all, note }`,
+    )
+    // Another project opened while captions are being made: they never land there (ids start
+    // again in every project), and they go on in their own project when it's opened again.
+    await fetch(`${process.env.STUDIO_TRANSCRIPT_URL}/standin-slow?ms=5000`, { method: 'POST' }).catch(() => {})
+    await step(
+      'Captions: started in one project and another opened before they come, they never land in that one; they go on in their own project when it is opened again',
+      `const S = window.__studio
+       const a = (await __t.snap()).dir
+       const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(scripted)}] })
+       const mediaId = r.imported[0]
+       await window.studio.engine.call('timeline.insertNewTrack', { mediaId, atUs: 0 })
+       const s = await __t.until(async () => { const x = await __t.snap(); return x.project.tracks.some((t) => t.clips.some((c) => c.mediaId === mediaId)) && x }, 5000, 'the voiceover track')
+       const track = s.project.tracks.find((t) => t.clips.some((c) => c.mediaId === mediaId))
+       const before = s.project.tracks.filter((t) => t.role === 'captions').map((t) => t.id)
+       ${cat('Captions')}
+       const from = await __t.until(() => __t.q('select[aria-label="Made from"]'), 3000, 'the Made from list')
+       from.value = track.id
+       from.dispatchEvent(new Event('change', { bubbles: true }))
+       await __t.sleep(100)
+       ;[...__t.qa('.lib-add')].find((b) => /Make captions/.test(b.textContent)).click()
+       await __t.until(() => S.getState().tasks.some((t) => t.kind === 'captions' && t.state === 'running'), 3000, 'the captions being made')
+       // Another project, opened while the server works.
+       await S.newProject('Switched away', '9:16')
+       const b = await __t.until(async () => { const x = await __t.snap(); return x.dir !== a && x }, 5000, 'the other project')
+       const bTracks = b.project.tracks.map((t) => t.id).join()
+       await __t.sleep(6500)
+       const b2 = await __t.snap()
+       if (b2.dir !== b.dir) throw new Error('it left the other project')
+       if (b2.project.tracks.some((t) => t.role === 'captions' && t.clips.length)) throw new Error('the captions landed in the other project')
+       if (b2.project.tracks.map((t) => t.id).join() !== bTracks) throw new Error('the other project changed: ' + b2.project.tracks.map((t) => t.id).join())
+       const waiting = await window.studio.files.readDraft(a, 'captions-waiting')
+       if (!waiting?.cues?.length) throw new Error('nothing waiting in the first project')
+       // Back to the first: they go on there.
+       await S.openProjectAt(a)
+       const caps = await __t.until(async () => (await __t.snap()).project.tracks.find((t) => t.role === 'captions' && !before.includes(t.id) && t.clips.length), 15000, 'the captions in their own project')
+       const words = [...caps.clips].sort((x, y) => x.startUs - y.startUs).map((c) => c.text.content).join(' ')
+       if (!/today at corvel/.test(words)) throw new Error('the captions: ' + words)
+       await __t.until(async () => !(await window.studio.files.readDraft(a, 'captions-waiting')), 3000, 'the draft gone')
+       await window.studio.engine.call('captions.set', { trackId: caps.id, lines: [], style: {} })
+       await window.studio.engine.call('timeline.delete', { clipIds: track.clips.map((c) => c.id) })
+       return { other: b.project.name, waited: waiting.cues.length + ' lines', words }`,
     )
   } else console.log('[ui-check] skip Captions when the script check fails: only on the stand-in transcript server (STUDIO_UI_CHECK_ONLINE=0)')
 
@@ -3181,6 +3521,29 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        return { note, tabs: __t.qa('.tr-tabs button').map((b) => b.textContent), rows: __t.qa('.tr-item').length }`,
     )
     await shot('23-translations-review')
+    // The user: changing a review's words and looking elsewhere put Claude's words back. Now
+    // they're kept as typed (in the language's job folder): another Library tab and back, and
+    // the draft on disk; Back to Claude's undoes it.
+    await step(
+      'Translations review: words changed are kept through another Library tab (and saved with the job), and Back to Claude’s puts Claude’s back',
+      `const area = () => __t.qa('.tr-item textarea.dub-edit').find((t) => !t.disabled)
+       const first = await __t.until(area, 5000, 'a line to change')
+       const was = first.value
+       const set = (el, v) => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(el, v); el.dispatchEvent(new Event('input', { bubbles: true })) }
+       set(first, was + ' (changed)')
+       const { dir } = window.__tr
+       const job = (await window.studio.services.translateJobs(dir)).find((j) => j.source === dir && j.state === 'review')
+       const saved = await __t.until(async () => { const r = await window.studio.services.translateResult(job.id); return Object.values(r.draft?.edits ?? {}).some((t) => t.endsWith('(changed)')) && r.draft }, 3000, 'the draft saved with the job')
+       ${cat('Captions')}
+       await __t.sleep(200)
+       ${cat('Translations')}
+       const again = await __t.until(() => __t.qa('.tr-item textarea.dub-edit').find((t) => t.value.endsWith('(changed)')), 5000, 'the changed words back in the review')
+       const back = await __t.until(() => again.closest('.tr-item')?.querySelector('.tr-claude'), 2000, 'Back to Claude’s')
+       back.click()
+       await __t.until(() => !__t.qa('.tr-item textarea.dub-edit').some((t) => t.value.endsWith('(changed)')), 2000, 'Claude’s words again')
+       await __t.until(async () => !Object.values((await window.studio.services.translateResult(job.id)).draft?.edits ?? {}).some((t) => t.endsWith('(changed)')), 3000, 'the draft without it')
+       return { kept: Object.keys(saved.edits).length + ' line', back: 'Claude’s' }`,
+    )
     await step(
       'Translations: the review shows each line with its back-translation, and Translate lands the language in its own project',
       `const backs = __t.qa('.tr-back').length

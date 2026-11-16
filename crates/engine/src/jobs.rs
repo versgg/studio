@@ -363,6 +363,10 @@ fn worker(queue: Arc<Queue>, ff: Arc<Ffmpeg>, doc: Arc<Mutex<Option<Doc>>>, even
         let made = |name: &str, make: &dyn Fn(&Path) -> anyhow::Result<()>| -> anyhow::Result<PathBuf> {
             let out = dir.join(name);
             if !fetch(shared.as_deref(), name, &out) {
+                // Made afresh, never written into the file that's there: it may be a hard link
+                // to the shared cache (another file's, under a media id given out again), and
+                // writing through it would change that file's copy in every project.
+                let _ = std::fs::remove_file(&out);
                 make(&out)?;
                 keep(shared.as_deref(), name, &out);
             }

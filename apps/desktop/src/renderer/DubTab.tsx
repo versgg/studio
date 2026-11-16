@@ -17,6 +17,7 @@ import { LANG_NAMES, cancelDub, cleanFor, dubOf, dubText, goDub, lineClip, pickL
 import { Icon } from './icons'
 import { call, fileUrl, mediaById, openProjectAt, seek, taskElapsed, toast, useStore, type Clip, type Media, type Task } from './store'
 import { useUi } from './ui-state'
+import { writeSoon } from './drafts'
 
 const LANGS = ['sv', 'no', 'da', 'fi', 'de', 'en', 'nl', 'fr', 'es', 'it', 'pt', 'pl']
 const time = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`
@@ -223,8 +224,21 @@ function WhatSheSays({ job }: { job: DubJob }) {
   const [lines, setLines] = useState<DubVoiceLine[] | null>(null)
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string[]>([])
-  const load = () => window.studio.services.dubResult(job.id).then((r) => void (!('error' in r) && setLines((r.voice?.lines ?? []).filter((l) => !l.own))))
-  useEffect(() => void load(), [job.id])
+  const load = () =>
+    window.studio.services.dubResult(job.id).then((r) => {
+      if ('error' in r) return
+      setLines((r.voice?.lines ?? []).filter((l) => !l.own))
+      return r
+    })
+  // Sentences changed and not said again yet are kept with the dub as they're typed (selecting
+  // another clip, another project or closing Studio loses nothing).
+  useEffect(() => {
+    void load().then((r) => r?.says && setEdits((e) => (Object.keys(e).length ? e : r.says!)))
+  }, [job.id])
+  const keepEdits = (next: Record<string, string>) => {
+    setEdits(next)
+    writeSoon(`says|${job.id}`, () => window.studio.services.dubDraft(job.id, 'says', Object.keys(next).length ? next : null))
+  }
   if (!lines?.length) return null
   // The take a sentence's clip plays now (Ctrl+Z can put an earlier one back), else the dub's record.
   const playing = (l: DubVoiceLine) => {
@@ -237,7 +251,7 @@ function WhatSheSays({ job }: { job: DubJob }) {
   const words = (l: DubVoiceLine) => edits[l.id]?.trim() || said(l)
   const changed = lines.filter((l) => edits[l.id]?.trim() && edits[l.id].trim() !== said(l).trim())
   const settle = async (ids: string[], done: unknown) => {
-    if (done) setEdits((e) => Object.fromEntries(Object.entries(e).filter(([id]) => !ids.includes(id))))
+    if (done) keepEdits(Object.fromEntries(Object.entries(edits).filter(([id]) => !ids.includes(id))))
     await load()
     setBusy([])
   }
@@ -268,7 +282,7 @@ function WhatSheSays({ job }: { job: DubJob }) {
           return (
             <div key={l.id} className={`dub-item line${changed.includes(l) ? ' on' : ''}`} data-line={l.id}>
               <span className="dub-when">{time(l.at)}</span>
-              <textarea className="dub-edit" rows={2} value={edits[l.id] ?? said(l)} disabled={busy.length > 0} onChange={(e) => setEdits({ ...edits, [l.id]: e.target.value })} />
+              <textarea className="dub-edit" rows={2} value={edits[l.id] ?? said(l)} disabled={busy.length > 0} onChange={(e) => keepEdits({ ...edits, [l.id]: e.target.value })} />
               <div className="dub-takes">
                 <button className="dub-btn icon" title="Play it on the timeline" aria-label="Play it on the timeline" onClick={() => play(l)}>
                   <Icon name="play" size={12} />
@@ -315,27 +329,41 @@ function Review({ job }: { job: DubJob }) {
     window.studio.services.dubResult(job.id).then((x) => {
       if ('error' in x) return toast(x.error, 'error')
       setR(x)
-      setTexts(new Set(x.texts.filter((t) => t.kind === 'edit' && !unchanged(t)).map((t) => t.id)))
-      setLines(new Set(x.said.map((l) => l.id)))
+      // The picks and words left from before (kept as they're made), else what's suggested.
+      setTexts(new Set(x.draft?.texts ?? x.texts.filter((t) => t.kind === 'edit' && !unchanged(t)).map((t) => t.id)))
+      setLines(new Set(x.draft?.lines ?? x.said.map((l) => l.id)))
+      if (x.draft) setEdits(x.draft.edits)
     })
     if (job.text && job.model !== 'skip') vmakeCheck().then((a) => 'error' in a || setAccount(a))
   }, [job.id])
   const sep = job.dir.includes('\\') ? '\\' : '/'
   const shown = useMemo(() => r?.texts.filter((t) => t.kind !== 'part') ?? [], [r])
   if (!r) return <Note>Loading what was found…</Note>
+  /** The review's picks and words kept with the dub as they change. */
+  const keep = (t: Set<string>, l: Set<string>, e: Record<string, string>) => writeSoon(`dub|${job.id}`, () => window.studio.services.dubDraft(job.id, 'review', { texts: [...t], lines: [...l], edits: e }))
   const toggle = (set: Set<string>, id: string, put: (s: Set<string>) => void) => {
     const n = new Set(set)
     if (n.has(id)) n.delete(id)
     else n.add(id)
     put(n)
+    keep(put === setTexts ? n : texts, put === setLines ? n : lines, edits)
   }
+  const type = (id: string, text: string | null) => {
+    const next = { ...edits }
+    if (text === null) delete next[id]
+    else next[id] = text
+    setEdits(next)
+    keep(texts, lines, next)
+  }
+  // A text or sentence whose words were all taken out stays as it is.
+  const emptied = (id: string) => edits[id] != null && !edits[id].trim()
   const chars = r.said.filter((l) => lines.has(l.id)).reduce((a, l) => a + (edits[l.id] ?? l.translation).length, 0)
   // Vmake started (and was paid) with the dub; only a dub whose removal never started still pays for it here.
   const removing = !!(job.vmakeJob || job.clean)
   const credits = texts.size && job.model !== 'skip' && !removing ? account?.prices[job.model]?.credits : 0
   const speaks = job.voice !== 'keep'
   const cost = [credits ? `${credits} Vmake credits` : texts.size && job.model !== 'skip' && !removing ? 'Vmake credits' : '', speaks && lines.size ? `about ${chars} ElevenLabs characters${job.voice === 'clone' && !job.voiceId ? ' and one voice clone' : ''}` : ''].filter(Boolean).join(' and ')
-  const go = () => goDub(job.id, { texts: [...texts], lines: speaks || job.captions ? [...lines] : [], edits })
+  const go = () => goDub(job.id, { texts: [...texts].filter((id) => !emptied(id)), lines: speaks || job.captions ? [...lines].filter((id) => !emptied(id)) : [], edits })
   return (
     <>
       <Sec title={`Into ${LANG_NAMES[job.lang] ?? job.lang}: pick what to dub`} first />
@@ -357,7 +385,12 @@ function Review({ job }: { job: DubJob }) {
                   {b && <img className="dub-crop" src={fileUrl(`${job.dir}${sep}${b.crop}`)} alt="" />}
                   <span className="dub-when">{b ? time(b.startUs / 1e6) : ''}</span>
                   <span className="dub-orig">{t.text.replace(/\n/g, ' / ')}</span>
-                  {scene ? <span className="dub-note">Filmed on the product: stays</span> : same && !on ? <span className="dub-note">Same in {LANG_NAMES[job.lang] ?? job.lang}: stays as it is</span> : <textarea className="dub-edit" rows={Math.max(1, t.translation.split('\n').length)} value={edits[t.id] ?? t.translation} disabled={!on} onChange={(e) => setEdits({ ...edits, [t.id]: e.target.value })} />}
+                  {scene ? <span className="dub-note">Filmed on the product: stays</span> : same && !on ? <span className="dub-note">Same in {LANG_NAMES[job.lang] ?? job.lang}: stays as it is</span> : <textarea className="dub-edit" rows={Math.max(1, t.translation.split('\n').length)} value={edits[t.id] ?? t.translation} disabled={!on} onChange={(e) => type(t.id, e.target.value)} />}
+                  {on && edits[t.id] != null && edits[t.id] !== t.translation && (
+                    <button type="button" className="lib-link tr-claude" title={`Claude's: ${t.translation}`} onClick={() => type(t.id, null)}>
+                      {emptied(t.id) ? 'Empty: stays as it is · Back to Claude’s' : 'Back to Claude’s'}
+                    </button>
+                  )}
                 </div>
               )
             })}
@@ -380,7 +413,12 @@ function Review({ job }: { job: DubJob }) {
                   </button>
                   <span className="dub-when">{s ? time(s.start) : ''}</span>
                   <span className="dub-orig">{l.text}</span>
-                  <textarea className="dub-edit" rows={2} value={edits[l.id] ?? l.translation} disabled={!on} onChange={(e) => setEdits({ ...edits, [l.id]: e.target.value })} />
+                  <textarea className="dub-edit" rows={2} value={edits[l.id] ?? l.translation} disabled={!on} onChange={(e) => type(l.id, e.target.value)} />
+                  {on && edits[l.id] != null && edits[l.id] !== l.translation && (
+                    <button type="button" className="lib-link tr-claude" title={`Claude's: ${l.translation}`} onClick={() => type(l.id, null)}>
+                      {emptied(l.id) ? 'Empty: stays as it is · Back to Claude’s' : 'Back to Claude’s'}
+                    </button>
+                  )}
                 </div>
               )
             })}

@@ -245,6 +245,7 @@ function MediaBin() {
         <Actions
           items={[
             { label: 'Import', icon: LIB_ICONS.import, onClick: importDialog, disabled: !hasProject, title: 'Import files (Ctrl+I)' },
+            { label: 'Download', icon: LIB_ICONS.link, onClick: () => setState({ dialog: 'download' }), disabled: !hasProject, title: 'Download TikTok, Instagram, YouTube or ad library links into the project' },
             { label: 'Folder', icon: LIB_ICONS.folder, onClick: importFolderDialog, disabled: !hasProject, title: 'Link a folder (Ctrl+Shift+I). Its subfolders become a map here; the files stay where they are.' },
             { label: 'Record', icon: LIB_ICONS.mic, onClick: openRecorder, disabled: !hasProject, title: 'Record a voiceover (Audio › Voice)' },
           ]}

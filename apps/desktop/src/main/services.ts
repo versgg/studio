@@ -18,6 +18,7 @@ import { registerSounds } from './sounds'
 import * as dub from './dub'
 import * as stems from './stems'
 import * as translate from './translate'
+import * as download from './download'
 import { accountVoices, readVoice } from './voice-read'
 import * as capcut from './capcut'
 import { Vmake, VmakeAuthError } from './vmake'
@@ -42,6 +43,8 @@ async function eleven<T>(f: (el: ElevenLabs) => Promise<T>) {
 }
 
 /** The script a voiceover was read from, kept beside it, so its captions can be checked against it. */
+/** Captions being heard, by the page's task: Cancel stops them. */
+const transcribing = new Map<string, AbortController>()
 const scriptFile = (sound: string) => `${sound.replace(/\.[^.\\/]+$/, '')}.script.txt`
 /** What the voice actually says: ElevenLabs' audio tags ("[whispers]") and SSML breaks are not words. */
 const spoken = (text: string) => text.replace(/\[[^\]]*\]|<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').replace(/ *\n */g, '\n').trim()
@@ -144,6 +147,7 @@ export function registerServices() {
   ipcMain.handle('dub:removeAgain', (_e, id: string) => tried(() => dub.removeAgain(id)))
   ipcMain.handle('dub:cancel', (_e, id: string) => dub.cancel(id))
   ipcMain.handle('dub:result', (_e, id: string) => tried(() => dub.result(id)))
+  ipcMain.handle('dub:draft', (_e, id: string, which: 'review' | 'says', value: unknown) => tried(() => dub.saveDraft(id, which, value)))
   ipcMain.handle('dub:applied', (_e, id: string) => dub.applied(id))
   ipcMain.handle('dub:failed', (_e, id: string, reason: string) => dub.failed(id, reason))
 
@@ -164,6 +168,12 @@ export function registerServices() {
       return failure(e)
     }
   })
+  // Media › Download (download.ts): links looked up, downloaded on the server, saved into the project.
+  ipcMain.handle('download:probe', (_e, url: string) => tried(() => download.probe(url)))
+  ipcMain.handle('download:start', (_e, project: string, picks: Parameters<typeof download.start>[1]) => tried(() => download.start(project, picks)))
+  ipcMain.handle('download:list', (_e, project: string) => download.list(project))
+  ipcMain.handle('download:cancel', (_e, id: string) => download.cancel(id))
+  ipcMain.handle('download:imported', (_e, id: string) => download.imported(id))
   ipcMain.handle('translate:chooseVoice', (_e, project: string, key: string, choice: Parameters<typeof translate.chooseVoice>[2]) => translate.chooseVoice(project, key, choice))
   ipcMain.handle('translate:jobs', (_e, project: string) => translate.list(project))
   ipcMain.handle('translate:summary', (_e, projects: string[]) => translate.summary(projects))
@@ -171,6 +181,7 @@ export function registerServices() {
   ipcMain.handle('translate:retry', (_e, id: string) => translate.retry(id))
   ipcMain.handle('translate:cancel', (_e, id: string) => translate.cancel(id))
   ipcMain.handle('translate:result', (_e, id: string) => tried(() => translate.result(id)))
+  ipcMain.handle('translate:draft', (_e, id: string, value: translate.TrDraft | null) => tried(() => translate.saveDraft(id, value)))
   ipcMain.handle('translate:applied', (_e, id: string) => translate.applied(id))
   ipcMain.handle('translate:failed', (_e, id: string, reason: string) => translate.failed(id, reason))
 
@@ -249,8 +260,11 @@ export function registerServices() {
   // joined with a moment of silence between them, go to the transcript server as one recording
   // (one job however many clips, so the hourly limit lasts), with the script they were read
   // from. Each word comes back with its stretch and its time from that stretch's start.
+  ipcMain.handle('captions:cancel', (_e, taskId: string) => void transcribing.get(taskId)?.abort())
   ipcMain.handle('captions:transcribe', async (e, o: { taskId: string; parts: { path: string; startUs: number; durationUs: number }[]; language?: string; script?: string }) => {
     const send = (stage: string, fraction: number) => !e.sender.isDestroyed() && e.sender.send('task:progress', { taskId: o.taskId, stage, fraction })
+    const stop = new AbortController()
+    transcribing.set(o.taskId, stop)
     try {
       const rate = 16_000
       const gap = Buffer.alloc(Math.round(rate * 0.8) * 2)
@@ -259,6 +273,7 @@ export function registerServices() {
       let bytes = 0
       let sound = 0
       for (const [i, p] of o.parts.entries()) {
+        if (stop.signal.aborted) throw new Error('Cancelled.')
         if (!p.path || !fs.existsSync(p.path)) throw new Error(`${path.basename(p.path || 'A sound')} is missing.`)
         send(o.parts.length > 1 ? `Cutting the sound (${i + 1} of ${o.parts.length})` : 'Cutting the sound', 0.02 + (0.06 * i) / o.parts.length)
         const raw = await ffmpeg(['-ss', (Math.max(0, p.startUs) / 1e6).toFixed(3), '-t', Math.max(0.2, p.durationUs / 1e6).toFixed(3), '-i', p.path, '-vn', '-ac', '1', '-ar', String(rate), '-f', 's16le', 'pipe:1'])
@@ -274,7 +289,7 @@ export function registerServices() {
       if (sound < rate * 2 * 0.2) throw new Error('That part has no sound.')
       const audio = await ffmpeg(['-f', 's16le', '-ar', String(rate), '-ac', '1', '-i', 'pipe:0', '-c:a', 'flac', '-f', 'flac', 'pipe:1'], { stdin: Buffer.concat(pcm) })
       send('Sending the sound to the server', 0.1)
-      const r = await transcribe({ audio, fileName: 'captions.flac', language: o.language, script: o.script, progress: (stage, f, queue) => send(stageText(stage, queue), 0.1 + 0.55 * f) })
+      const r = await transcribe({ audio, fileName: 'captions.flac', language: o.language, script: o.script, progress: (stage, f, queue) => send(stageText(stage, queue), 0.1 + 0.55 * f), signal: stop.signal })
       // The stretch a time falls in; a word in a gap belongs to the stretch before it.
       const partOf = (t: number) => {
         let k = 0
@@ -296,6 +311,8 @@ export function registerServices() {
       }
     } catch (err) {
       return failure(err)
+    } finally {
+      transcribing.delete(o.taskId)
     }
   })
   // The scripts these sounds were read from (each voiceover keeps its own), joined in order.

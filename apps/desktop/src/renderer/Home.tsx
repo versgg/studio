@@ -10,7 +10,7 @@ import type { ProjectInfo } from '../shared/api'
 import { FORMATS } from './format'
 import { openMenu } from './ContextMenu'
 import { openCapcut } from './CapcutDialog'
-import { askNewProject, fileUrl, forgetProject, freeProjectName, getState, newProject, openProjectAt, recentProjects, setState, toast, useStore } from './store'
+import { askNewProject, fileUrl, forgetProject, freeProjectName, getState, newProject, openProjectAt, openSharedProject, recentProjects, setState, toast, useStore } from './store'
 import { useBoxSelect } from './boxSelect'
 import { Slider } from './Slider'
 import './project-dialogs.css'
@@ -322,7 +322,14 @@ export function Home() {
     if (!e.dataTransfer.types.includes('Files')) return
     e.preventDefault()
     setOver(false)
-    await askNewProject('9:16', [...e.dataTransfer.files].map((f) => window.studio.app.pathForFile(f)).filter(Boolean))
+    const paths = [...e.dataTransfer.files].map((f) => window.studio.app.pathForFile(f)).filter(Boolean)
+    // A shared project (Share project's zip) opens as a project of its own.
+    const zips = paths.filter((p) => /\.zip$/i.test(p))
+    if (zips.length) {
+      for (const z of zips) await openSharedProject(z)
+      return
+    }
+    await askNewProject('9:16', paths)
   }
 
   return (
@@ -379,6 +386,17 @@ export function Home() {
               <span className="home-tile-text">
                 <span className="name">From CapCut</span>
                 <span className="sub">Import a CapCut project</span>
+              </span>
+            </button>
+            <button type="button" className="home-tile" onClick={() => void openSharedProject()} title="Open a project someone sent with Share project (a .studio.zip); you can drop it here too">
+              <span className="home-capcut" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2.5 5.5h11v8h-11z M4 5.5l1.5-3h5l1.5 3 M6.5 8.5h3" />
+                </svg>
+              </span>
+              <span className="home-tile-text">
+                <span className="name">Shared project</span>
+                <span className="sub">Open a .studio.zip</span>
               </span>
             </button>
           </div>

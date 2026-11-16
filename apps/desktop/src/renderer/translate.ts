@@ -12,7 +12,7 @@ import type { TrSound } from '../shared/api'
 import { captionTracks, cuesOf, setCaptionLines, wordsPerCaptionOf } from './captions'
 import { loadFont } from './textFonts'
 import { fontOf, layoutText, renderTextClip, textPlaceOf, type TextLook } from './textRender'
-import { findClip, getState, mediaById, openProjectAt, subscribeStore as subscribe, toast, type Clip, type Snapshot } from './store'
+import { findClip, getState, mediaById, openProjectAt, projectChanged, projectScope, subscribeStore as subscribe, toast, type Clip, type ProjectScope, type Snapshot } from './store'
 
 // The jobs of the open project: those translating it, and its own when it's a copy.
 
@@ -332,11 +332,15 @@ export function onTranslateJob(job: TrJob, loading = false) {
 async function applyTranslation(job: TrJob) {
   if (applying.has(job.id)) return
   applying.add(job.id)
+  // For the copy only: if another project is opened while it's put on, it stops there (the
+  // engine refuses the rest) and goes on again the next time the copy is opened.
+  const scope = projectScope(job.project)
   try {
+    if (!scope.live()) return
     const r = await window.studio.services.translateResult(job.id)
     if ('error' in r) throw new Error(r.error)
-    const engine = window.studio.engine
-    const snap = await latest()
+    const engine = { call: scope.engine }
+    const snap = await scope.latest()
     if (!snap || !same(snap.dir, job.project)) return
     const p = snap.project
     const tr = new Map(r.texts.map((t) => [t.id, t.translation]))
@@ -358,14 +362,14 @@ async function applyTranslation(job: TrJob) {
       const wide = (s: TextLook) => Math.max(0, ...layoutText(s, p.width, p.height, place).widths)
       const room = wide(old) * 1.1
       for (let n = 0; n < 12 && wide(spec) > room && spec.size > old.size * 0.8; n++) spec.size = Math.round(spec.size * 0.97 * 10) / 10
-      const look = await renderTextClip(spec, `tr-${clip.id}`, place)
+      const look = await renderTextClip(spec, `tr-${clip.id}`, place, { dir: job.project, width: p.width, height: p.height })
       await engine.call('text.set', { clipId: clip.id, text: look, gesture: `translate ${job.id}` })
       await engine.call('clip.set', { clipId: clip.id, label: look.content.split('\n')[0].slice(0, 40) }).catch(() => {})
       texts++
     }
 
     // Captions in the project's language: made again from the new voice's words, or line by line.
-    const rows = captionTracks(await latest()).filter((t) => !job.from || !t.lang || t.lang === job.from)
+    const rows = captionTracks(await scope.latest()).filter((t) => !job.from || !t.lang || t.lang === job.from)
     let captions = 0
     if (rows.length && job.captionsFromVoice && r.voice?.length) {
       const words: { text: string; start: number; end: number }[] = []
@@ -383,14 +387,14 @@ async function applyTranslation(job: TrJob) {
       }
       words.sort((a, b) => a.start - b.start)
       const cues = cuesOf(words, wordsPerCaptionOf(rows[0]))
-      await setCaptionLines(rows[0].track.id, cues, job.lang)
+      await setCaptionLines(rows[0].track.id, cues, job.lang, scope)
       const rest = rows.slice(1).flatMap((row) => row.lines.map((c) => c.id))
       if (rest.length) await engine.call('timeline.delete', { clipIds: rest })
       captions = cues.length
     } else
       for (const row of rows) {
         const cues = row.lines.map((c) => ({ startUs: c.startUs, endUs: c.startUs + c.durationUs, text: picked(`c:${c.id}`) ? tr.get(`c:${c.id}`)! : (c.text?.content ?? ''), posX: c.posX ?? 0, posY: c.posY ?? 0, scale: c.scale ?? 100, rotation: c.rotation ?? 0 }))
-        await setCaptionLines(row.track.id, cues, job.lang)
+        await setCaptionLines(row.track.id, cues, job.lang, scope)
         captions += cues.filter((_, i) => picked(`c:${row.lines[i].id}`)).length
       }
 
@@ -402,7 +406,7 @@ async function applyTranslation(job: TrJob) {
     // speaks. A video clip's own voice on its own is taken off the clip first (Extract audio).
     const lines = r.voice ?? []
     if (lines.length) {
-      const before = await latest()
+      const before = await scope.latest()
       const clipOf = (id: string) => id.slice(2).replace(/~\d+$/, '')
       const whole: string[] = []
       const imported = new Map<string, string>()
@@ -429,31 +433,38 @@ async function applyTranslation(job: TrJob) {
             const made = (await engine.call('timeline.addStems', { clipId: id, stems: [...bed.map((mediaId) => ({ mediaId, role: 'music' })), ...(voice ? [{ mediaId: voice, role: 'voice' }] : [])], fromUs: sep.fromUs, replace: true })) as { clipIds: string[] }
             const v = voice ? made.clipIds[made.clipIds.length - 1] : ''
             if (v && every) whole.push(v)
-            else if (v) await cutOut(v, ranges)
+            else if (v) await cutOut(scope, v, ranges)
           }
         } else if (found.track.kind === 'video') {
           const ex = (await engine.call('clip.extractAudio', { clipIds: [cid] })) as { clipIds: string[] }
           for (const a of ex.clipIds ?? []) {
             if (every) whole.push(a)
-            else await cutOut(a, ranges)
+            else await cutOut(scope, a, ranges)
           }
         } else if (every) whole.push(cid, ...all.flatMap((i) => i.pieces ?? []).filter((x) => findClip(before, x)))
-        else await cutOut(cid, ranges)
+        else await cutOut(scope, cid, ranges)
       }
       if (whole.length) await engine.call('timeline.delete', { clipIds: whole })
-      const now = await latest()
+      const now = await scope.latest()
       // Lines already on it (an earlier try that stopped part way) aren't put on twice.
       const placed = new Set((now?.project.tracks ?? []).flatMap((t) => t.clips).map((c) => norm(mediaById(now, c.mediaId)?.path ?? '')))
       const todo = lines.filter((l) => !placed.has(norm(l.file)))
       const imp = todo.length ? await engine.call('media.import', { paths: todo.map((l) => l.file) }) : { imported: [] }
       if (imp.failed?.length || imp.imported?.length !== todo.length) throw new Error(imp.failed?.[0]?.error ?? 'the new voice couldn’t be imported')
-      for (const [k, l] of todo.entries()) await engine.call('timeline.insert', { mediaId: imp.imported[k], atUs: l.atUs })
+      // The new voice on one sound track of its own (it used to go wherever there was room, so a
+      // track looked full of gaps that weren't there and sentences got dragged across).
+      let track = ''
+      for (const [k, l] of todo.entries()) {
+        const put = (await engine.call('timeline.insert', { mediaId: imp.imported[k], atUs: l.atUs, ...(track ? { trackId: track } : { newTrack: true }) })) as { trackId: string }
+        track ||= put.trackId
+      }
     }
 
     await window.studio.services.translateApplied(job.id)
     const what = [texts ? `${texts} text${texts === 1 ? '' : 's'}` : '', captions ? `${captions} caption line${captions === 1 ? '' : 's'}` : '', lines.length ? `${lines.length} sentence${lines.length === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ')
     toast(`${what ? what.replace(/^./, (c) => c.toUpperCase()) : 'Nothing'} in ${trLangName(job.lang)}. Each is its own clip you can change.${gone.length ? ` ${gone.length} text${gone.length === 1 ? ' was' : 's were'} no longer here.` : ''}${job.notes?.length ? ` Note: ${job.notes.join(' ')}` : ''}`)
   } catch (e) {
+    if (projectChanged(e)) return
     await window.studio.services.translateFailed(job.id, `It couldn’t go on the timeline: ${(e as Error).message}`)
   } finally {
     applying.delete(job.id)
@@ -461,8 +472,9 @@ async function applyTranslation(job: TrJob) {
 }
 
 /** Takes stretches [a, b) of the timeline out of a sound clip: split at each edge, the piece between deleted. */
-async function cutOut(clipId: string, ranges: [number, number][]) {
-  const engine = window.studio.engine
+async function cutOut(scope: ProjectScope, clipId: string, ranges: [number, number][]) {
+  const engine = { call: scope.engine }
+  const latest = scope.latest
   const first = findClip(await latest(), clipId)
   if (!first) return
   const { track, clip } = first

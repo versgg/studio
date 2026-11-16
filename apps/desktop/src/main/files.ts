@@ -30,7 +30,7 @@ function projectDir(dir: unknown): string {
 // Settings
 
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json')
-const SETTING_KEYS = ['looks', 'musicFolder', 'textPresets'] as const
+const SETTING_KEYS = ['looks', 'musicFolder', 'textPresets', 'appZoom'] as const
 export type SettingKey = (typeof SETTING_KEYS)[number]
 
 export function readSettings(): Partial<Record<SettingKey, unknown>> {
@@ -238,7 +238,45 @@ async function samples(o: { path: string; startUs: number; durationUs: number; r
 
 const win = (e: Electron.IpcMainInvokeEvent) => BrowserWindow.fromWebContents(e.sender) ?? undefined
 
+// Drafts: what the user typed or picked that isn't in the project yet (review edits, a script,
+// captions made while another project was open), kept in `<project>.studio/drafts/<name>.json`
+// so nothing is lost to a closed tab, another project or a restart.
+
+/** The draft file for `name` in a project folder (only a real project's, only plain names). */
+function draftFile(project: string, name: string) {
+  const dir = clean(project)
+  if (!dir || !fs.existsSync(path.join(dir, 'project.json'))) throw new Error('That project folder is missing.')
+  if (!/^[\w.-]{1,120}$/.test(name) || name.startsWith('.')) throw new Error('That isn’t a draft name.')
+  return path.join(dir, 'drafts', `${name}.json`)
+}
+
+export function readDraft(project: string, name: string): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(draftFile(project, name), 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** Saves a draft (written to a temp file, then renamed: never half a file); null deletes it. */
+export function writeDraft(project: string, name: string, value: unknown) {
+  const f = draftFile(project, name)
+  if (value == null) return fs.rmSync(f, { force: true })
+  fs.mkdirSync(path.dirname(f), { recursive: true })
+  fs.writeFileSync(`${f}.tmp`, JSON.stringify(value))
+  fs.renameSync(`${f}.tmp`, f)
+}
+
 export function registerFiles() {
+  ipcMain.handle('draft:read', (_e, project: string, name: string) => readDraft(project, name))
+  ipcMain.handle('draft:write', (_e, project: string, name: string, value: unknown) => {
+    try {
+      writeDraft(project, name, value)
+      return { ok: true as const }
+    } catch (e) {
+      return fail(e)
+    }
+  })
   ipcMain.handle('file:writeAsset', (_e, file: string, data: ArrayBuffer | Uint8Array) => {
     try {
       const f = clean(file)

@@ -18,7 +18,7 @@ import { MASK_DEFAULTS, maskValues, type Mask, type MaskShape } from './masks'
 import { FONTS, WEIGHTS, fontDef, fontLabel, nearestWeight, projectFontFamilies } from './textFonts'
 import type { TextLook } from './textRender'
 import { autoReframe, followTarget, hasTrackTargets, matteInfo, removeBackground, reSmooth, resetReframe, setMatteEdge, stopFollowing, trackTargets, wasReframed, type MatteMethod } from './vision'
-import { call, cancelTextRemoval, deleteSelection, ffmpegShort, findClip, mediaById, setState, splitAtPlayhead, taskElapsed, toast, useRunningTask, useStore, useVmakeJob, vmakeProgress, type Clip, type Media, type Task, type Track } from './store'
+import { call, cancelTextRemoval, deleteSelection, ffmpegShort, findClip, mediaById, setState, shareProject, splitAtPlayhead, taskElapsed, toast, useRunningTask, useStore, useVmakeJob, vmakeProgress, type Clip, type Media, type Task, type Track } from './store'
 import { setUi, useUi } from './ui-state'
 
 export const FORMATS: [string, number, number][] = [
@@ -389,7 +389,7 @@ function AudioTab({ clip, media, track }: { clip: Clip; media?: Media; track: Tr
   ]
   const target = LOUD.find(([, n]) => n === Math.round(master?.targetLufs ?? -14))?.[0] ?? `${master?.targetLufs ?? -14} LUFS`
   const effects = (patch: Record<string, unknown>) => call('track.set', { trackId: track.id, effects: patch })
-  const canDetach = track.main && media?.kind === 'video' && hasSound && !clip.detached
+  const canDetach = track.kind === 'video' && media?.kind === 'video' && hasSound && !clip.detached
   // Muted by "Use only these" (Stems tab): its stems play in its place.
   const byStems = useStore((s) => !!clip.detached && ((!track.main && track.kind === 'audio') || (!!clip.link && !!s.snap?.project.tracks.some((t) => t.clips.some((c) => c.link === clip.link && c.id !== clip.id && /[\\/]stems[\\/]/.test(mediaById(s.snap, c.mediaId)?.path ?? ''))))))
   const note = !hasSound ? 'This clip has no sound.' : byStems ? 'This clip is muted: its stems play instead (Stems tab).' : clip.detached ? 'This clip is muted. Its sound is on its own audio track.' : clip.volume === 0 ? 'This clip is muted.' : null
@@ -857,16 +857,26 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
   const place = (values: Record<string, unknown>, label?: string) => setLook(toAll ? textClips() : [clip.id], values, label ?? (toAll ? 'Apply to all text' : undefined))
   // Typing: a text clip follows every key. A caption line shows each key in the player at once
   // and is saved 0.6 s after the last one (or when the field is left); its words are its own,
-  // whatever Apply to all says.
+  // whatever Apply to all says. A saved caption line comes back with a new id (its track's lines
+  // are set again), so the box goes by the line's place, not its id, and saves to the line as it
+  // is then: keys typed while it was being saved used to be lost.
+  const live = useRef({ clip, track })
+  live.current = { clip, track }
   const commit = (text: string) => {
     clearTimeout(timer.current)
-    if (text === clip.text?.content) return
-    if (clip.caption) editCaptionLine(track.id, clip.id, text)
-    else updateText(clip.id, { content: text })
+    const { clip: c, track: t } = live.current
+    if (text === c.text?.content) return
+    if (c.caption) editCaptionLine(t.id, c.id, text)
+    else updateText(c.id, { content: text })
   }
+  const lineKey = clip.caption ? `${track.id}|${clip.startUs}` : clip.id
   useEffect(() => {
     setDraft(null)
-  }, [clip.id])
+  }, [lineKey])
+  // Saved: the box shows the line's own words again (unless more was typed meanwhile).
+  useEffect(() => {
+    if (draft != null && draft === spec.content) setDraft(null)
+  }, [spec.content])
   useEffect(() => {
     const onEdit = (e: Event) => {
       if ((e as CustomEvent).detail !== clip.id) return
@@ -1094,7 +1104,12 @@ function ProjectView() {
       </Note>
       <Sec title="Saved in" />
       <Info label="Folder" value={basename(snap.dir)} title={snap.dir} />
-      <Buttons items={[{ label: 'Show in folder', onClick: () => window.studio.app.showItem(snap.dir) }]} />
+      <Buttons
+        items={[
+          { label: window.studio.platform === 'darwin' ? 'Show in Finder' : 'Show in folder', onClick: () => window.studio.app.showItem(snap.dir) },
+          { label: 'Share project…', onClick: () => void shareProject(), title: 'One zip with the project, every file it uses and the logs to read: to send it on' },
+        ]}
+      />
       {caps && (
         <>
           <Sec title="Engine" />

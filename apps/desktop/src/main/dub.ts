@@ -36,6 +36,7 @@ import { buildBase, measureLooks } from './dub-look'
 import { ClaudeSignedOut, langName, readTexts, translateSpeech, type SpeechText } from './dub-read'
 import { scanText } from './dub-scan'
 import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cloneVoice, cutTake, fitLines, iso2, listen, mixBed, removeClone, retime, speakTake, type Spoken } from './dub-voice'
+import { timingOf } from '../shared/speech-timing'
 import { ElevenLabs } from './elevenlabs'
 import { ffmpeg, probeVideo } from './ffmpeg'
 import { getSecret } from './secrets'
@@ -43,6 +44,7 @@ import * as stems from './stems'
 import * as vmakeJobs from './vmake-jobs'
 import { trProjectName } from '../shared/translate'
 import { copyProject, freeDir, relocate } from './translate'
+import { pathKey } from './path-key'
 
 const jobs = new Map<string, DubJob>()
 const live = new Map<string, AbortController>()
@@ -65,7 +67,7 @@ function patch(job: DubJob, p: Partial<DubJob>) {
   send(job)
 }
 
-const key = (p: string) => path.resolve(p).toLowerCase()
+const key = pathKey
 const safeName = (s: string) => s.replace(/[<>:"/\\|?*\x00-\x1f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || 'clip'
 const readJson = <T>(f: string): T => JSON.parse(fs.readFileSync(f, 'utf8'))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -567,6 +569,8 @@ async function dubVoice(job: DubJob, o: { part: string; partEnd: number; speech:
     seed += 7
   }
   if (best!.long.length) o.notes.push(`${best!.long.length} sentence${best!.long.length === 1 ? ' runs' : 's run'} a little past ${best!.long.length === 1 ? 'its' : 'their'} moment at 12 % faster: ${best!.long.join(', ')}.`)
+  // Where each take went, numbers only (scripts/mac-report.mjs reads it to measure gaps).
+  fs.writeFileSync(file('timing.json'), JSON.stringify({ kind: 'dub', lang: job.lang, partEnd: o.partEnd, lines: timingOf(best!.placed, spoken, best!.cut) }, null, 1))
 
   // The sentences as they'll play, and her own voice for those not picked.
   const lines: DubVoiceLine[] = []
@@ -695,6 +699,8 @@ export function go(id: string, o: { texts: string[]; lines: string[]; edits?: Re
       fs.writeFileSync(sf, JSON.stringify(s, null, 1))
     }
   }
+  // The review's words are in the job's own files now.
+  fs.rmSync(file(DRAFTS.review), { force: true })
   if (!o.texts.length && !o.lines.length && !job.captions && !job.removeText) {
     patch(job, { state: 'cancelled', stage: 'Cancelled', reason: 'Nothing was picked to dub.' })
     return job
@@ -765,7 +771,28 @@ export function result(id: string) {
     speech: opt<{ language: string; lines: Spoken[] }>('speech.json'),
     said: opt<{ lines: SpeechText[] }>(`speech-${job.lang}.json`)?.lines ?? [],
     voice: opt<{ lines: DubVoiceLine[] }>('voice.json'),
+    // What was changed in the review and in What she says, not used yet (saved as it's typed).
+    draft: opt<DubDraft>(DRAFTS.review),
+    says: opt<Record<string, string>>(DRAFTS.says),
   }
+}
+
+/** The review's picks and changed words as they're being made (`review-draft.json`), and What she says' (`says-draft.json`). */
+export type DubDraft = { texts: string[]; lines: string[]; edits: Record<string, string> }
+const DRAFTS = { review: 'review-draft.json', says: 'says-draft.json' } as const
+
+/**
+ * Saves (null: deletes) a dub's draft in its folder: the review's picks and words, or What she
+ * says' changed sentences, as they're typed, so they're there after switching clips, projects
+ * or closing Studio (the user's rule, 2026-11-16).
+ */
+export function saveDraft(id: string, which: keyof typeof DRAFTS, value: unknown) {
+  const job = jobs.get(id)
+  if (!job || !fs.existsSync(job.dir)) return
+  const f = path.join(job.dir, DRAFTS[which])
+  if (value == null) return fs.rmSync(f, { force: true })
+  fs.writeFileSync(`${f}.tmp`, JSON.stringify(value))
+  fs.renameSync(`${f}.tmp`, f)
 }
 
 /**

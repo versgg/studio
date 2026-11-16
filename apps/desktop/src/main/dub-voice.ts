@@ -281,44 +281,8 @@ export async function cutTake(take: Take, ids: string[], dir: string, round: num
   return out
 }
 
-/**
- * Places each sentence at its moment: at its original start if it fits before the next one
- * starts; else a little earlier into the pause before it (up to 0.4 s, never over the previous
- * sentence), then a little faster (up to `maxTempo`, pitch kept). Returns the lines and the ids
- * that still don't fit.
- */
-export function fitLines(cut: { id: string; dur: number }[], spoken: Spoken[], partEnd: number, maxTempo: number) {
-  const placed: { id: string; at: number; tempo: number; dur: number }[] = []
-  const long: string[] = []
-  let prevEnd = 0
-  for (const [i, c] of cut.entries()) {
-    const k = spoken.findIndex((x) => x.id === c.id)
-    const s = spoken[k]
-    const next = spoken[k + 1]
-    const room = (next ? next.start : partEnd) - s.start
-    const early = Math.max(0, Math.min(0.4, s.start - (prevEnd + 0.06)))
-    // When the sentence before came out shorter than hers, this one moves up (up to 0.6 s), so the
-    // pause between them is about the one she left, not dead air (Wendy's dub: 0.97 s for her 0.32 s).
-    const before = spoken[k - 1]
-    const pause = before ? Math.max(0.1, s.start - before.end) : 0
-    let at = i ? Math.min(s.start, Math.max(prevEnd + pause, s.start - 0.6)) : s.start
-    let tempo = 1
-    if (c.dur > room) {
-      at = s.start - Math.min(early, c.dur - room)
-      const left = room + (s.start - at)
-      if (c.dur > left) tempo = c.dur / left
-    }
-    if (tempo > maxTempo) {
-      long.push(c.id)
-      tempo = maxTempo
-    }
-    at = Math.max(at, prevEnd + (i ? 0.04 : 0))
-    const dur = c.dur / tempo
-    placed.push({ id: c.id, at, tempo, dur })
-    prevEnd = at + dur
-  }
-  return { placed, long }
-}
+// Placing each sentence at its moment (with the gap rules): shared/speech-timing.ts.
+export { fitLines } from '../shared/speech-timing'
 
 /** A sentence played `tempo` × faster, pitch kept (FFmpeg's atempo), as WAV. */
 export async function retime(file: string, tempo: number, out: string) {

@@ -24,15 +24,37 @@ use studio_media::Ffmpeg;
 use studio_media::graph::{self, Quality};
 
 const EDIT_FAILED: i64 = -32000;
+/// A request meant for one project (its `_project`) after another one was opened.
+const PROJECT_CHANGED: i64 = -32010;
+/// The words the app looks for to tell this refusal from a failure (renderer/store.ts).
+pub const PROJECT_CHANGED_TEXT: &str = "Another project was opened since this started, so it wasn't done there.";
 
 thread_local! {
     /// Who the request being handled on this thread comes from: "you" (the app) or an MCP
     /// client's `_actor`. Edits are logged in the history under it.
     static ACTOR: RefCell<String> = RefCell::new("you".into());
+    /// The project folder the request on this thread is meant for (its `_project`), if it said.
+    /// Work that outlives a moment (a transcript, a voice, a dub landing) sends it, so it never
+    /// lands in a project opened while it ran: ids repeat across projects.
+    static EXPECT: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 fn actor() -> String {
     ACTOR.with(|a| a.borrow().clone())
+}
+
+/// A folder as the app writes it, for comparing: no trailing separator.
+fn folder_key(p: &str) -> &str {
+    p.trim_end_matches(['/', '\\'])
+}
+
+/// Refuses the request when it was meant for another project than `doc`'s (its `_project`).
+fn expected(doc: Option<&Doc>) -> Result<(), RpcError> {
+    EXPECT.with(|e| match (e.borrow().as_deref(), doc) {
+        (None, _) => Ok(()),
+        (Some(want), Some(d)) if folder_key(want) == folder_key(&d.dir.to_string_lossy()) => Ok(()),
+        _ => Err(RpcError::new(PROJECT_CHANGED, PROJECT_CHANGED_TEXT)),
+    })
 }
 
 struct Services {
@@ -250,6 +272,7 @@ impl Engine {
     fn edit_merging<T: serde::Serialize>(&self, label: &str, merge: Option<&str>, f: impl FnOnce(&mut Project) -> Result<T, EditError>) -> Result<Value, RpcError> {
         let result = {
             let mut g = self.doc.lock().unwrap();
+            expected(g.as_ref())?;
             let doc = g.as_mut().ok_or_else(no_project)?;
             doc.edit_merging(&actor(), label, merge, f).map_err(|e| RpcError::new(EDIT_FAILED, e.0))?
         };
@@ -302,14 +325,20 @@ impl Engine {
         let _one_at_a_time = self.imports.lock().unwrap_or_else(|e| e.into_inner());
         let m = self.services()?;
         let (dirs, files): (Vec<String>, Vec<String>) = paths.into_iter().partition(|p| Path::new(p).is_dir());
-        let mut imported = vec![];
         let mut failed = vec![];
         let mut folders = vec![];
 
         // Files already in the project aren't added twice; their ids come back as imported.
+        // `imported` follows the order the files were asked for (callers match them up by
+        // index), and `ids` says which id each path got.
         let known = self.known_paths();
-        let (old, new): (Vec<String>, Vec<String>) = files.into_iter().partition(|p| known.contains_key(p));
-        imported.extend(old.iter().map(|p| known[p].clone()));
+        let mut ids: BTreeMap<String, String> = files.iter().filter_map(|p| Some((p.clone(), known.get(p)?.clone()))).collect();
+        let mut new: Vec<String> = vec![];
+        for p in &files {
+            if !known.contains_key(p) && !new.contains(p) {
+                new.push(p.clone());
+            }
+        }
         let probes = m.ff.probe_many(&new.iter().map(PathBuf::from).collect::<Vec<_>>(), 8);
         let mut probed = vec![];
         for (path, probe) in new.into_iter().zip(probes) {
@@ -335,7 +364,15 @@ impl Engine {
             for media in &added {
                 m.jobs.submit(job_for(media, &cache, true, false, true));
             }
-            imported.extend(added.into_iter().map(|x| x.id));
+            ids.extend(added.into_iter().map(|x| (x.path, x.id)));
+        }
+        let mut imported: Vec<String> = vec![];
+        for p in &files {
+            if let Some(id) = ids.get(p) {
+                if !imported.contains(id) {
+                    imported.push(id.clone());
+                }
+            }
         }
         for dir in dirs {
             match self.link_or_sync(&dir) {
@@ -347,7 +384,7 @@ impl Engine {
             return Err(RpcError::new(EDIT_FAILED, "None of those files could be imported."));
         }
         self.changed();
-        Ok(json!({ "imported": imported, "failed": failed, "folders": folders }))
+        Ok(json!({ "imported": imported, "ids": ids, "failed": failed, "folders": folders }))
     }
 
     /// Links a folder and mirrors its tree in the library, or rescans it if it (or a folder
@@ -597,6 +634,7 @@ impl Engine {
     /// `edit_inner`, joining the step before when it had the same `merge` key.
     fn edit_inner_merging<T>(&self, label: &str, merge: Option<&str>, f: impl FnOnce(&mut Project) -> Result<T, EditError>) -> Result<T, RpcError> {
         let mut g = self.doc.lock().unwrap();
+        expected(g.as_ref())?;
         let doc = g.as_mut().ok_or_else(no_project)?;
         doc.edit_merging(&actor(), label, merge, f).map_err(|e| RpcError::new(EDIT_FAILED, e.0))
     }
@@ -619,7 +657,7 @@ impl Engine {
 
     /// A file's levels (peak every 10 ms), from the cache; made first if they aren't there.
     fn peaks_of(&self, media_id: &str, path: &Path) -> Result<Vec<u8>, RpcError> {
-        let file = self.cache_dir().join(media_id).join("levels.json");
+        let file = self.cache_dir().join(media_id).join(format!("levels-{}.json", crate::audio::source_tag(path)));
         if !file.is_file() {
             let m = self.services()?;
             std::fs::create_dir_all(file.parent().unwrap_or(Path::new("."))).map_err(io_err)?;
@@ -900,6 +938,10 @@ fn clip_label(c: &ClipChange) -> &'static str {
 pub fn dispatch_on(engine: &Engine, conn: u64, method: &str, params: Value) -> Result<Value, RpcError> {
     let who = params.get("_actor").and_then(Value::as_str).map(str::trim).filter(|a| !a.is_empty()).unwrap_or("you").to_string();
     ACTOR.with(|a| *a.borrow_mut() = who);
+    let want = params.get("_project").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
+    EXPECT.with(|e| *e.borrow_mut() = want);
+    // Checked up front for everything (reads too), and again under the lock for every edit.
+    expected(engine.doc.lock().unwrap().as_ref())?;
     engine.seen(conn);
     match method {
         "mcp.hello" => {
@@ -1101,12 +1143,18 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
             let id = s(&params, "folderId")?;
             engine.edit("Remove folder", |p| p.unlink_folder(&id))
         }
+        // `trackId`: a sound goes on that sound track when it has room there; `newTrack`: on a
+        // new sound track of its own. Answers the clip's id (and with either, `{ clipId, trackId }`).
         "timeline.insert" => {
             let media_id = s(&params, "mediaId")?;
             let at = us(&params, "atUs");
+            let prefer = params.get("trackId").and_then(Value::as_str).map(str::to_string);
+            let fresh = params.get("newTrack").and_then(Value::as_bool).unwrap_or(false);
+            let placed = prefer.is_some() || fresh;
             let r = engine.edit_merging("Add to timeline", gesture(&params).as_deref(), |p| {
                 let at = at.unwrap_or_else(|| p.duration_us());
-                p.insert(&media_id, at)
+                let id = if fresh { p.insert_on_new_track(&media_id, at)? } else { p.insert_on(&media_id, at, prefer.as_deref())? };
+                Ok(if placed { json!({ "clipId": id, "trackId": p.find_clip(&id).map(|(t, _)| p.tracks[t].id.clone()) }) } else { json!(id) })
             })?;
             engine.ensure_proxy(&media_id);
             Ok(r)
@@ -1998,6 +2046,57 @@ mod tests {
         assert_eq!((ids()[1].as_str(), e.snapshot()["project"]["tracks"][1]["clips"][0]["id"].clone()), (r["trackId"].as_str().unwrap(), b["clipId"].clone()));
         dispatch(&e, "edit.undo", Value::Null).unwrap();
         assert_eq!(e.snapshot()["project"]["tracks"][3]["id"], b["trackId"], "undone in one step");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A request meant for one project (`_project`) is refused once another is open, reads and
+    /// edits alike, and the open project is left as it was; without `_project` nothing changes.
+    #[test]
+    fn a_request_for_another_project_is_refused_and_changes_nothing() {
+        let dir = std::env::temp_dir().join(format!("studio-rpc-test-{}-scope", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = Engine::new(&dir.join("ring"), 1080, 1920, dir.join("projects")).unwrap();
+        let a = dispatch(&e, "project.new", json!({ "name": "A" })).unwrap()["dir"].as_str().unwrap().to_string();
+        let b = dispatch(&e, "project.new", json!({ "name": "B" })).unwrap()["dir"].as_str().unwrap().to_string();
+        assert_ne!(a, b);
+        // B is open: a request for A is refused, by the words the app looks for.
+        let refused = dispatch_on(&e, 0, "project.current", json!({ "_project": a })).unwrap_err();
+        assert_eq!((refused.code, refused.message.as_str()), (PROJECT_CHANGED, PROJECT_CHANGED_TEXT));
+        let before = (e.snapshot()["revision"].clone(), e.snapshot()["project"]["width"].clone());
+        assert!(dispatch_on(&e, 0, "project.setFormat", json!({ "aspect": "1:1", "_project": a })).is_err());
+        assert_eq!((e.snapshot()["revision"].clone(), e.snapshot()["project"]["width"].clone()), before, "B untouched");
+        // For B (with or without a trailing slash), or saying nothing, it goes through.
+        assert!(dispatch_on(&e, 0, "project.current", json!({ "_project": format!("{b}/") })).is_ok());
+        assert!(dispatch_on(&e, 0, "project.current", json!({})).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Files imported together come back in the order they were asked for, the ones already in
+    /// the project included (callers match them up by index), with each path's id in `ids`.
+    /// Skipped without FFmpeg.
+    #[test]
+    fn imported_files_come_back_in_the_order_asked() {
+        let dir = std::env::temp_dir().join(format!("studio-rpc-test-{}-order", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = Engine::new(&dir.join("ring"), 1080, 1920, dir.join("projects")).unwrap();
+        let Ok(m) = e.services() else { return };
+        dispatch(&e, "project.openLatest", Value::Null).unwrap();
+        let tone = |name: &str, hz: u32| {
+            let out = dir.join(name);
+            assert!(m.ff.cmd().args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &format!("sine=frequency={hz}:duration=1")]).arg("-y").arg(&out).status().unwrap().success());
+            out.to_string_lossy().into_owned()
+        };
+        let (x, y, z) = (tone("x.wav", 300), tone("y.wav", 400), tone("z.wav", 500));
+        let first = dispatch(&e, "media.import", json!({ "paths": [y] })).unwrap();
+        let y_id = first["imported"][0].as_str().unwrap().to_string();
+        let r = dispatch(&e, "media.import", json!({ "paths": [x, y, z] })).unwrap();
+        let got: Vec<String> = r["imported"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
+        let path_of = |id: &str| e.snapshot()["project"]["media"].as_array().unwrap().iter().find(|mm| mm["id"] == id).unwrap()["path"].as_str().unwrap().to_string();
+        assert_eq!(got.iter().map(|id| path_of(id)).collect::<Vec<_>>(), vec![x.clone(), y.clone(), z.clone()]);
+        assert_eq!(got[1], y_id, "the file already there keeps its id");
+        assert_eq!(r["ids"][&z], json!(got[2]));
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -22,6 +22,7 @@ export const LIB_ICONS = {
   scale: 'M2 14l5-5 M2 10v4h4 M14 2l-5 5 M14 6V2h-4',
   speaker: 'M2.5 6h2.5l3.5-3v10L5 10H2.5z M11 6a3 3 0 0 1 0 4',
   download: 'M8 2v8 M5 7l3 3 3-3 M2.5 13.5h11',
+  link: 'M6.5 9.5l3-3 M7.2 4.6l1.1-1.1a2.6 2.6 0 0 1 3.7 3.7l-1.1 1.1 M8.8 11.4l-1.1 1.1a2.6 2.6 0 0 1-3.7-3.7l1.1-1.1',
   search: 'M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10z M14 14l-3.5-3.5',
   check: 'M3 8.5l3 3 7-7',
   chevron: 'M4 6l4 4 4-4',

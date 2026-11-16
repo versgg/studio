@@ -27,6 +27,7 @@ import { trProjectName, trRunning, type TrItem, type TrJob, type TrLine, type Tr
 import { ClaudeSignedOut, translateSpeech } from './dub-read'
 import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cutSample, cutTake, fitLines, iso2, removeClone, retime, speakTake, type Spoken } from './dub-voice'
 import { ffmpeg } from './ffmpeg'
+import { timingOf } from '../shared/speech-timing'
 import { ElevenLabs } from './elevenlabs'
 import { getSecret } from './secrets'
 import { budgets, translateItems } from './translate-read'
@@ -35,11 +36,12 @@ import * as stems from './stems'
 import { MAX_SECONDS, voiceAndBed } from '../shared/stems'
 import type { TrSound } from '../shared/api'
 import type { TrStems } from '../shared/translate'
+import { pathKey } from './path-key'
 
 const jobs = new Map<string, TrJob>()
 const live = new Map<string, AbortController>()
 
-const key = (p: string) => path.resolve(p).toLowerCase()
+const key = pathKey
 const readJson = <T>(f: string): T => JSON.parse(fs.readFileSync(f, 'utf8'))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const eleven = () => (ELEVEN_FAKE ? null : new ElevenLabs(getSecret('elevenlabs') ?? ''))
@@ -440,6 +442,8 @@ async function speak(job: TrJob, items: TrItem[], texts: TrText[], said: TrItem[
   const groups = new Map<string, TrItem[]>()
   for (const i of said) groups.set(i.voice!.voiceId, [...(groups.get(i.voice!.voiceId) ?? []), i])
   const out: TrLine[] = []
+  // Where each voice's takes went, numbers only (scripts/mac-report.mjs reads it to measure gaps).
+  const timing: { voice: number; lines: ReturnType<typeof timingOf> }[] = []
   let g = 0
   for (const [voiceId, group] of groups) {
     g++
@@ -494,6 +498,7 @@ async function speak(job: TrJob, items: TrItem[], texts: TrText[], said: TrItem[
     }
     if (c) notes.push(c.keep ? `${v.name.replace(/ \(cloned\)$/, '')} was cloned and kept in your ElevenLabs voices as “${c.name} (Studio)”.` : `${v.name.replace(/ \(cloned\)$/, '')} was cloned for this translation and deleted from ElevenLabs after.`)
     if (best!.long.length) notes.push(`${best!.long.length} sentence${best!.long.length === 1 ? ' runs' : 's run'} a little past ${best!.long.length === 1 ? 'its' : 'their'} moment at 12 % faster.`)
+    timing.push({ voice: g, lines: timingOf(best!.placed, spoken, best!.cut) })
     for (const p of best!.placed) {
       const c = best!.cut.find((x) => x.id === p.id)!
       const s = best!.script.find((x) => x.id === p.id)!
@@ -501,12 +506,33 @@ async function speak(job: TrJob, items: TrItem[], texts: TrText[], said: TrItem[
       out.push({ id: s.item.id, file: f, atUs: Math.round(p.at * 1e6), dur: p.dur, tempo: p.tempo, text: s.translation, words: c.words.map((w) => ({ text: w.text, start: w.start / p.tempo, end: w.end / p.tempo })) })
     }
   }
+  fs.writeFileSync(file('timing.json'), JSON.stringify({ kind: 'translation', lang: job.lang, end, voices: timing }, null, 1))
   return out.sort((a, b) => a.atUs - b.atUs)
 }
 
 // The review and after.
 
-/** The review's picks (what's translated; the rest stays as it is) and any translation changed there. */
+/** The review's unticked lines and changed words as they're being made (`review-draft.json` in the job's folder). */
+export type TrDraft = { off: string[]; edits: Record<string, string> }
+const REVIEW_DRAFT = 'review-draft.json'
+
+/**
+ * Saves (null: deletes) a language's review draft as it's typed, so changed words and unticked
+ * lines are there after another tab, another project or closing Studio (the user's rule, 2026-11-16).
+ */
+export function saveDraft(id: string, value: TrDraft | null) {
+  const job = jobs.get(id)
+  if (!job || !fs.existsSync(job.dir)) return
+  const f = path.join(job.dir, REVIEW_DRAFT)
+  if (value == null) return fs.rmSync(f, { force: true })
+  fs.writeFileSync(`${f}.tmp`, JSON.stringify(value))
+  fs.renameSync(`${f}.tmp`, f)
+}
+
+/**
+ * The review's picks (what's translated; the rest stays as it is) and any translation changed
+ * there. A line whose words were all taken out isn't picked (the page leaves it as it is).
+ */
 export function go(id: string, o: { picks: string[]; edits?: Record<string, string> }): TrJob | null {
   const job = jobs.get(id)
   if (!job || job.state !== 'review') return job ?? null
@@ -516,6 +542,7 @@ export function go(id: string, o: { picks: string[]; edits?: Record<string, stri
     for (const x of t.texts) if (o.edits[x.id] != null && o.edits[x.id].trim()) x.translation = o.edits[x.id].trim()
     fs.writeFileSync(f, JSON.stringify(t, null, 1))
   }
+  fs.rmSync(path.join(job.dir, REVIEW_DRAFT), { force: true })
   patch(job, { picks: o.picks, state: 'voicing', stage: 'Starting', fraction: 0.32 })
   void run(job)
   return job
@@ -574,6 +601,8 @@ export function result(id: string) {
   const opt = <T>(f: string): T | null => (fs.existsSync(path.join(job.dir, f)) ? readJson<T>(path.join(job.dir, f)) : null)
   return {
     job,
+    // The review's unticked lines and changed words as they're being made (saved as they're typed).
+    draft: opt<TrDraft>(REVIEW_DRAFT),
     items: opt<{ items: TrItem[] }>('items.json')?.items ?? [],
     texts: opt<{ texts: TrText[] }>('translation.json')?.texts ?? [],
     voice: opt<{ lines: TrLine[] }>('voice.json')?.lines ?? null,

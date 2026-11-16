@@ -11,6 +11,8 @@
 .tr-bar > span { display: block; height: 100%; background: #8a8a93; transition: width 0.3s; }
 .tr-tabs { margin: 2px 0 0; }
 .tr-item .tr-back { grid-column: 2 / -1; font-size: 11px; line-height: 14px; color: #6e6e77; }
+/* "Back to Claude's" under a changed line: a quiet link on the line's own row, under its words. */
+.tr-item .tr-claude, .dub-item .tr-claude { grid-column: 2 / -1; justify-self: start; font-size: 11px; line-height: 14px; }
 .tr-own { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border-radius: 3px; background: #1c1c1f; font-size: 12px; line-height: 16px; color: #a3a3ab; }
 .tr-own .lib-link { align-self: flex-start; }
 /* The check above Translate: a quiet line when everything spoken is said again; a yellow rule

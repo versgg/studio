@@ -3,10 +3,13 @@
 // only read those, copy whole project folders, and copy project.json in and out of
 // `<project>.studio/versions/`.
 
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { ffmpeg } from './ffmpeg'
+import { log } from './log'
+import { openShared, shareProject } from './share'
+import { folderSwap, rewritePaths } from './moved'
 
 export interface ProjectInfo {
   dir: string
@@ -166,8 +169,58 @@ export function registerProjects(projectsDir: string) {
     }
     const to = freeDir(parent, name)
     fs.cpSync(dir, to, { recursive: true })
+    // Every path into the original now into the copy (it used to keep pointing at the original's
+    // text drawings, voiceovers, cleaned copies and cache: delete the original and the copy broke).
+    rewritePaths(to, folderSwap(dir, to))
     setName(to, name.trim() || path.basename(to, '.studio'))
     return to
+  })
+
+  /** Share project: the project, every file it uses and the logs to read, as one zip the user saves. */
+  ipcMain.handle('project:share', async (e, dir: string, report: string, to?: string) => {
+    try {
+      if (!isProject(dir)) throw new Error('That project folder is missing.')
+      const win = BrowserWindow.fromWebContents(e.sender)!
+      const name = path.basename(dir, '.studio')
+      // Where to: asked, except in the UI check (a hidden window can't answer a dialog), whose
+      // own folder only.
+      const test = process.env.STUDIO_UI_CHECK
+      const given = test && typeof to === 'string' && path.resolve(to).startsWith(path.resolve(test) + path.sep) ? to : ''
+      const r = given ? { canceled: false, filePath: given } : await dialog.showSaveDialog(win, { title: 'Share project', defaultPath: path.join(app.getPath('desktop'), `${name}.studio.zip`), filters: [{ name: 'Shared Studio project', extensions: ['zip'] }] })
+      if (r.canceled || !r.filePath) return null
+      const out = /\.zip$/i.test(r.filePath) ? r.filePath : `${r.filePath}.zip`
+      let last = 0
+      return await shareProject(dir, out, String(report ?? ''), (done, total) => {
+        if (Date.now() - last < 200 && done < total) return
+        last = Date.now()
+        if (!e.sender.isDestroyed()) e.sender.send('share:progress', { done, total })
+      })
+    } catch (err) {
+      log('share.error', (err as Error).stack ?? String(err))
+      return { error: (err as Error).message }
+    }
+  })
+
+  /** Open shared project: a zip from Share project, unzipped into the projects folder. Returns its folder. */
+  ipcMain.handle('project:openShared', async (e, zip?: string) => {
+    try {
+      let file = typeof zip === 'string' ? zip : ''
+      if (!file) {
+        const win = BrowserWindow.fromWebContents(e.sender)!
+        const r = await dialog.showOpenDialog(win, { title: 'Open shared project', properties: ['openFile'], filters: [{ name: 'Shared Studio project', extensions: ['zip'] }] })
+        if (r.canceled || !r.filePaths[0]) return null
+        file = r.filePaths[0]
+      }
+      let last = 0
+      return { dir: await openShared(file, projectsDir, freeDir, (done, total) => {
+        if (Date.now() - last < 200 && done < total) return
+        last = Date.now()
+        if (!e.sender.isDestroyed()) e.sender.send('share:progress', { done, total })
+      }) }
+    } catch (err) {
+      log('share.error', (err as Error).stack ?? String(err))
+      return { error: (err as Error).message }
+    }
   })
 
   /** What deleting a project frees, and what inside it was made in Studio (voiceovers, recordings…). */

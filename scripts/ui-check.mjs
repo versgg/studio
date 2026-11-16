@@ -37,6 +37,9 @@ const voice = join(work, 'voiceover.wav')
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-y', voice])
 // A voiceover to cut into pieces (its script and voice are written beside it by the check).
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=330:duration=9', '-y', join(work, 'cut-voiceover.wav')])
+// Two sounds for the waveform step: each the first file of a project of its own (the same media id in both).
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=4', '-y', join(work, 'tone-first.wav')])
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=900:duration=6', '-af', "volume='if(lt(mod(t,1),0.5),1,0.1)':eval=frame", '-y', join(work, 'tone-second.wav')])
 // A clip in which someone "speaks" (a tone from 0.3 to 7 s, where the stand-in hears two Swedish
 // sentences) over music that plays all the way through: the Translations steps hear its own sound.
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=0x2a3a2a:s=540x960:d=11:r=30', '-f', 'lavfi', '-i', 'sine=f=220:d=11', '-f', 'lavfi', '-i', 'sine=f=523:d=11', '-filter_complex', "[1]volume='if(between(t,0.3,7),0.8,0)':eval=frame[v];[2]volume=0.12[m];[v][m]amix=inputs=2:normalize=0[a]", '-map', '0:v', '-map', '[a]', '-shortest', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-y', join(work, 'speaks-with-music.mp4')])
@@ -66,6 +69,10 @@ let standIn = null
 if (process.env.STUDIO_UI_CHECK_ONLINE === '0' && !process.env.STUDIO_TRANSCRIPT_URL) {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=520:duration=4', '-y', join(work, 'scripted-voiceover.wav')])
   const heard = [['Order', 0.2], ['yours', 0.6], ['today', 1], ['at', 1.4], ['corvel.', 1.6]].map(([word, start]) => ({ word, start, end: start + 0.35 }))
+  // `POST /api/standin-slow?ms=n`: the next job works for n ms before it's done (a test that
+  // opens another project while captions are being made).
+  let slowMs = 0
+  let doneAt = 0
   standIn = http.createServer((req, res) => {
     const send = (status, body) => {
       res.writeHead(status, { 'content-type': 'application/json' })
@@ -73,11 +80,21 @@ if (process.env.STUDIO_UI_CHECK_ONLINE === '0' && !process.env.STUDIO_TRANSCRIPT
     }
     req.resume()
     req.on('end', () => {
+      const slow = /^\/api\/standin-slow\?ms=(\d+)$/.exec(req.url ?? '')
+      if (slow) {
+        slowMs = Number(slow[1])
+        return send(200, {})
+      }
       const m = /^\/api\/jobs(?:\/(\w+))?(\/proofread)?$/.exec(req.url ?? '')
       if (!m) return send(404, { detail: 'Not found' })
-      if (req.method === 'POST' && !m[1]) return send(200, { id: 'standin' })
+      if (req.method === 'POST' && !m[1]) {
+        doneAt = Date.now() + slowMs
+        slowMs = 0
+        return send(200, { id: 'standin' })
+      }
       if (req.method === 'POST') return send(502, { detail: 'The proofreader could not finish: AI query: this account has no credits remaining' })
       if (req.method === 'DELETE') return send(200, {})
+      if (Date.now() < doneAt) return send(200, { state: 'working', stage: 'transcribing', progress: 0.5, queue: 0, words: [], language: '', changes: [], summary: null, error: null })
       send(200, { state: 'done', stage: 'done', progress: 1, queue: 0, words: heard, language: 'en', changes: [], summary: null, error: null })
     })
   })
@@ -118,6 +135,8 @@ const env = {
   STUDIO_PROJECTS_DIR: join(work, 'projects'),
   STUDIO_USER_DATA: join(work, 'user-data'),
   STUDIO_SILENT: '1',
+  // Media › Download's stand-in: the UI check never calls the download server.
+  STUDIO_DOWNLOAD_FAKE: '1',
   ...(standIn ? { STUDIO_TRANSCRIPT_URL: `http://127.0.0.1:${standIn.address().port}/api`, STUDIO_UI_CHECK_TRANSCRIPT_STANDIN: '1' } : {}),
 }
 const runApp = (extra) =>

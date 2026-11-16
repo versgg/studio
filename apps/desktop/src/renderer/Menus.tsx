@@ -2,6 +2,7 @@
 // keys, check marks and submenus. Each item does the real thing where Studio can; the few
 // that aren't built yet say so.
 
+import { zoomApp } from './appZoom'
 import { useEffect, useRef, useState } from 'react'
 import { timelineApi } from './Timeline'
 import {
@@ -34,9 +35,11 @@ import {
   undo,
   useStore,
   type State,
+  openSharedProject,
+  shareProject,
 } from './store'
 import { basename } from './format'
-import { ACTIONS, keysFor } from './keymap'
+import { ACTIONS, keysFor, keysLabel } from './keymap'
 import { setUi } from './ui-state'
 import { openCapcut } from './CapcutDialog'
 
@@ -74,9 +77,11 @@ function menus(): Record<string, [string, Entry[]]> {
         { id: 'import', label: 'Import media…', keys: 'Ctrl+I', run: importDialog, enabled: (s) => !!s.snap },
         { id: 'importFolder', label: 'Import a folder…', run: importFolderDialog, enabled: (s) => !!s.snap },
         { id: 'importCapcut', label: 'Import from CapCut…', run: openCapcut },
+        { id: 'openShared', label: 'Open shared project…', run: () => void openSharedProject() },
         'sep',
         { id: 'save', label: 'Save', keys: 'Ctrl+S', run: () => toast('Saved. Studio saves every change as you make it.') },
         { id: 'saveAs', label: 'Save as…', run: () => setState({ dialog: 'saveAs' }), enabled: (s) => !!s.snap },
+        { id: 'share', label: 'Share project…', run: () => void shareProject(), enabled: (s) => !!s.snap },
         { id: 'versions', label: 'Versions…', run: () => setState({ dialog: 'versions' }), enabled: (s) => !!s.snap },
         'sep',
         { id: 'settings', label: 'Project settings…', run: () => setState({ selection: [], page: 'edit' }) },
@@ -121,6 +126,10 @@ function menus(): Record<string, [string, Entry[]]> {
         { id: 'zoomIn', label: 'Zoom in', keys: 'Ctrl+=', run: () => timelineApi.zoom(1.4) },
         { id: 'zoomOut', label: 'Zoom out', keys: 'Ctrl+−', run: () => timelineApi.zoom(1 / 1.4) },
         { id: 'fit', label: 'Zoom to fit', keys: 'Shift+Z', run: () => timelineApi.fit(), enabled: hasClips },
+        'sep',
+        { id: 'appZoomIn', label: 'Zoom the app in', keys: 'Shift+Ctrl+=', run: () => zoomApp(1) },
+        { id: 'appZoomOut', label: 'Zoom the app out', keys: 'Shift+Ctrl+−', run: () => zoomApp(-1) },
+        { id: 'appZoomReset', label: 'App at 100 %', keys: 'Shift+Ctrl+0', run: () => zoomApp(0) },
         'sep',
         { id: 'waves', label: 'Show waveforms', run: () => setState({ showWaveforms: !getState().showWaveforms }), checked: (s) => s.showWaveforms },
         { id: 'thumbs', label: 'Show thumbnails', run: () => setState({ showThumbnails: !getState().showThumbnails }), checked: (s) => s.showThumbnails },
@@ -224,7 +233,7 @@ function MenuList({ title, entries, state, sub, onSub, onPick, width, top }: { t
               </svg>
             </span>
             <span className="menu-label">{e.label}</span>
-            <span className="menu-keys">{e.keys && ACTION_IDS.has(e.id) ? keysFor(e.id) : (e.keys ?? '')}</span>
+            <span className="menu-keys">{keysLabel(e.keys && ACTION_IDS.has(e.id) ? keysFor(e.id) : (e.keys ?? ''))}</span>
             <span className="menu-sub" aria-hidden="true">
               {e.sub && (
                 <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

@@ -1,7 +1,7 @@
 // Right-click menus for timeline clips, empty timeline space and library items.
 
 import { cancelDub, dubbedLines, openDub, rerollClips, retryDub } from './dub'
-import { keysFor } from './keymap'
+import { keysFor, keysLabel } from './keymap'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { changeVoice } from './audio'
 import { setUi as setAudioUi } from './audioState'
@@ -78,7 +78,8 @@ export function clipMenu(): MenuEntry[] {
     const c = findClip(s.snap, id)?.clip
     return c && t > c.startUs && t < c.startUs + c.durationUs
   })
-  const soundOnMain = one?.track.main && media?.kind === 'video' && media.hasAudio
+  // A video's own sound, on any layer (it was the main track only).
+  const soundHere = one?.track.kind === 'video' && media?.kind === 'video' && media.hasAudio
   // Sentences a voice dub spoke (each its own sound clip): Reroll voice says them again.
   const dubbed = dubbedLines(s.snap, sel).reduce((n, d) => n + d.lineIds.length, 0)
   // Text is being removed from it: nothing else until that's done.
@@ -101,7 +102,7 @@ export function clipMenu(): MenuEntry[] {
     'sep',
     one?.clip.detached
       ? { label: 'Restore its sound', run: () => call('clip.set', { clipId: one.clip.id, detached: false }) }
-      : { label: 'Extract audio', keys: keysFor('extract'), run: extractAudio, disabled: !soundOnMain },
+      : { label: 'Extract audio', keys: keysFor('extract'), run: extractAudio, disabled: !soundHere },
     { label: 'Create compound clip', keys: keysFor('compound'), run: makeCompound, disabled: sel.length < 2 },
     ...(one?.track.main && media?.kind === 'video' ? [{ label: 'Remove text with Vmake…', run: () => openVmake({ mediaId: media.id, clipId: one.clip.id }) }] : []),
     ...(one?.track.main && media?.kind === 'video' ? [{ label: 'Dub…', run: () => openDub({ mediaId: media.id, clipId: one.clip.id }) }] : []),
@@ -147,7 +148,7 @@ export function libraryMenu(): MenuEntry[] {
     ...(picked.length === 1 && (picked[0].kind === 'audio' || picked[0].hasAudio) && !picked[0].missing
       ? [{ label: s.voice ? `Change voice to ${s.voice.name}` : 'Change voice (choose a voice in Audio first)', run: () => s.voice && changeVoice({ mediaId: picked[0].id }, s.voice), disabled: !s.voice || s.voice.category === 'library' }]
       : []),
-    ...(picked.length === 1 ? [{ label: 'Show in Explorer', run: () => window.studio.app.showItem(picked[0].path) }] : []),
+    ...(picked.length === 1 ? [{ label: window.studio.platform === 'darwin' ? 'Show in Finder' : window.studio.platform === 'win32' ? 'Show in Explorer' : 'Show in Files', run: () => window.studio.app.showItem(picked[0].path) }] : []),
   ]
 }
 
@@ -205,7 +206,7 @@ export function ContextMenu() {
             }}
           >
             <span>{e.label}</span>
-            {e.keys && <kbd>{e.keys}</kbd>}
+            {e.keys && <kbd>{keysLabel(e.keys)}</kbd>}
           </button>
         ),
       )}

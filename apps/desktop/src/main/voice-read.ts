@@ -24,6 +24,7 @@ import { ElevenLabs } from './elevenlabs'
 import { ffmpeg } from './ffmpeg'
 import { getSecret } from './secrets'
 import { overOtherSound } from '../shared/voice-mix'
+import { sentencesOf } from '../shared/speech-timing'
 
 export type VoiceHow = 'studio' | 'history' | 'name' | 'picked'
 
@@ -128,23 +129,8 @@ export async function accountVoices(): Promise<{ id: string; name: string }[]> {
   return (await new ElevenLabs(key).voices()).filter((v) => v.category !== 'library').map((v) => ({ id: v.id, name: v.name }))
 }
 
-/** Words into sentences: one ends at . ! ? … or where the voice pauses for most of a second. */
-export function sentencesOf(words: { text: string; start: number; end: number }[]) {
-  const out: { text: string; start: number; end: number }[] = []
-  let cur: typeof words = []
-  const flush = () => {
-    if (cur.length) out.push({ text: cur.map((w) => w.text).join(' '), start: cur[0].start, end: cur[cur.length - 1].end })
-    cur = []
-  }
-  for (const [i, w] of words.entries()) {
-    cur.push(w)
-    const next = words[i + 1]
-    if (/[.!?…]["”»)]*$/.test(w.text) || (next && next.start - w.end > 0.9)) flush()
-  }
-  flush()
-  // A few stray words aren't speech (a breath, a sung line in a jingle).
-  return out.reduce((n, s) => n + s.text.split(/\s+/).length, 0) >= 3 ? out : []
-}
+// Words into sentences (at most 9 s each): shared/speech-timing.ts.
+export { sentencesOf }
 
 /** Words, lower-case, without punctuation or ElevenLabs' [audio tags]. */
 const wordsOf = (s: string) =>

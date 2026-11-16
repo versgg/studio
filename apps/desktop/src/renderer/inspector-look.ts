@@ -7,7 +7,7 @@
 // four easings ("Linear" when missing).
 
 import { useSyncExternalStore } from 'react'
-import { getState, toast, type Clip, type Us } from './store'
+import { getState, onProjectSwitch, toast, type Clip, type Us } from './store'
 
 export interface Keyframe {
   /** From the clip's start on the timeline. */
@@ -25,6 +25,12 @@ const bump = () => {
   version++
   for (const l of listeners) l()
 }
+// Clip ids and revisions start again in every project: what was waiting is for the last one.
+onProjectSwitch(() => {
+  if (!pending.size) return
+  pending.clear()
+  bump()
+})
 const subscribe = (l: () => void) => {
   listeners.add(l)
   return () => listeners.delete(l)

@@ -122,6 +122,22 @@ pub fn levels_from(samples: &[i16]) -> (Vec<u8>, Vec<u8>) {
     (peak, rms)
 }
 
+/**
+ * A short tag for the file a cached result was made from (its path, size and modified time,
+ * FNV-1a): part of the result's name, so a media id handed to another file (ids start again in
+ * every project, and an undo gives one out again) never reads the old file's levels.
+ */
+pub fn source_tag(src: &Path) -> String {
+    let meta = std::fs::metadata(src).ok();
+    let modified = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
+    let id = format!("{}|{}|{}", src.to_string_lossy(), meta.map_or(0, |m| m.len()), modified);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in id.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{:08x}", h as u32)
+}
+
 pub fn write_levels(ff: &Ffmpeg, src: &Path, out: &Path) -> anyhow::Result<()> {
     let (peak, rms) = levels_from(&decode(ff, src)?);
     std::fs::write(out, json!({ "rate": 100, "peak": peak, "rms": rms }).to_string())?;
@@ -291,7 +307,8 @@ impl Analysis {
     pub fn file(&self, what: &'static str, media_id: &str, src: &Path, cache: &Path, duration_us: Us) -> Value {
         // The spectrogram shows 75 dB below the loudest part (quiet room tone is black, as on the
         // canvas); "-2" so files cached with the old, brighter range are made again.
-        let name = if what == "levels" { "levels.json" } else { "spectrogram-2.png" };
+        let tag = source_tag(src);
+        let name = if what == "levels" { format!("levels-{tag}.json") } else { format!("spectrogram-2-{tag}.png") };
         let out = cache.join(media_id).join(name);
         if out.is_file() {
             return json!({ "mediaId": media_id, "path": out.to_string_lossy() });
@@ -351,6 +368,23 @@ fn worker(ff: Arc<Ffmpeg>, events: Events, queue: Arc<(Mutex<Queue>, Condvar)>, 
 mod tests {
     use super::*;
     use studio_engine_core::model::{Effects, EnvPoint, Media, MediaKind, SECOND, TrackChange};
+
+    /// A cached result's name says which file it was made from: two files (or one file changed)
+    /// get different names, the same file the same one.
+    #[test]
+    fn a_cached_result_is_named_for_its_own_file() {
+        let dir = std::env::temp_dir().join(format!("studio-audio-tag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.wav"), dir.join("b.wav"));
+        std::fs::write(&a, b"one").unwrap();
+        std::fs::write(&b, b"two").unwrap();
+        assert_eq!(source_tag(&a), source_tag(&a));
+        assert_ne!(source_tag(&a), source_tag(&b));
+        let before = source_tag(&a);
+        std::fs::write(&a, b"one, longer").unwrap();
+        assert_ne!(source_tag(&a), before, "the same path with other sound is another file");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     const LOG: &str = "[Parsed_ebur128_0 @ 0] t: 0.0999792  TARGET:-23 LUFS    M:-120.7 S:-120.7     I: -70.0 LUFS       LRA:   0.0 LU  FTPK: -18.1 dBFS  TPK: -18.1 dBFS
 [Parsed_ebur128_0 @ 0] t: 3.99998    TARGET:-23 LUFS    M: -21.6 S: -24.7     I: -22.3 LUFS       LRA:   1.0 LU  FTPK: -18.1 dBFS  TPK: -18.1 dBFS

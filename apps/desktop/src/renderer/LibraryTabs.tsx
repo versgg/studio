@@ -18,6 +18,7 @@ import { EMOJI_FONT, STICKER_KINDS, STICKERS, yourStickers, type Art } from './s
 import { FONTS } from './textFonts'
 import { call, fileUrl, findClip, getState, mediaById, seek, setState, useRunningTask, useStore, type Clip, type Snapshot } from './store'
 import { setUi, useUi } from './ui-state'
+import { draftName, useProjectDraft } from './drafts'
 
 
 /** Real frames for the effect and transition previews: the selected clip first, then the project's footage. */
@@ -363,11 +364,12 @@ const LANG_OPTIONS: [string, string][] = [['', 'Detect'], ...LANGS.map((l) => [l
 
 /**
  * The script a captions source was read from: its voiceovers' own ElevenLabs scripts until
- * you type or paste one (kept per source), "" when there's none.
+ * you type or paste one (kept per source in the project's drafts: there after a restart, and
+ * never another project's, whose tracks have the same ids), "" when there's none.
  */
 function useScript(source: string) {
   const snap = useStore((s) => s.snap)
-  const [typed, setTyped] = useUi<string | null>(`lib.capScript.${source}`, null)
+  const [typed, setTyped] = useProjectDraft<string | null>(draftName('caption-script', source), null)
   const [own, setOwn] = useState('')
   // Asked again when the source's clips change (a new voiceover on that track).
   const clips = snap?.project.tracks.find((t) => t.id === source)?.clips.map((c) => c.mediaId).join() ?? ''
@@ -475,6 +477,11 @@ export function CaptionsTab() {
         disabled={!source}
         busy={making ? { text: 'Making captions', task: making } : undefined}
       />
+      {making && (
+        <button type="button" className="lib-link" onClick={() => void window.studio.services.cancelTranscribe(making.id)}>
+          Cancel making captions
+        </button>
+      )}
       {voiceovers > 1 && <Actions items={[{ label: 'Captions for every voiceover, each in its language', icon: LIB_ICONS.captions, onClick: makeEvery, disabled: !!making }]} />}
       {proof && (
         <>

@@ -12,6 +12,7 @@ import {
   call,
   getState,
   mediaById,
+  sameFolder,
   seek,
   togglePlay,
   setScrubbing,
@@ -25,6 +26,7 @@ import {
   type Snapshot,
   type Us,
 } from './store'
+import { useDevicePixelRatio } from './dpr'
 import {
   DEFAULT_EFFECTS,
   ROLE_COLOR,
@@ -188,7 +190,9 @@ async function cutSelection(row: Row | undefined, keep: boolean) {
   if (r === undefined) return
   if (keep) {
     audioCut = items
-    setState({ clipboard: { kind: 'clips', items }, focus: 'timeline' })
+    const snap = getState().snap!
+    const used = new Set(items.map((x) => x.clip.mediaId))
+    setState({ clipboard: { kind: 'clips', items, dir: snap.dir, media: snap.project.media.filter((m) => used.has(m.id)) }, focus: 'timeline' })
   }
   setUi({ sel: null })
   place(a)
@@ -197,7 +201,8 @@ async function cutSelection(row: Row | undefined, keep: boolean) {
 /** Ctrl+V after a cut here: the stretch goes back in at the playhead on the selected track. */
 async function pasteCut(row: Row | undefined) {
   const cb = getState().clipboard
-  if (!audioCut || cb?.kind !== 'clips' || cb.items !== audioCut) return false
+  // A cut made in another project goes in the ordinary way (its files brought in first).
+  if (!audioCut || cb?.kind !== 'clips' || cb.items !== audioCut || !sameFolder(cb.dir, getState().snap?.dir ?? '')) return false
   const r = await call<{ clipIds: string[] }>('clips.paste', { items: audioCut, atUs: getState().positionUs, ...(row?.track && !row.track.main ? { trackId: row.track.id } : {}) })
   if (r?.clipIds) setState({ selection: r.clipIds })
   return true
@@ -325,6 +330,8 @@ export function AudioPage() {
       if (typing || s.dialog || s.recordingKeys || e.altKey) return
       const ctrl = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
+      // Ctrl/Cmd+Shift + and − are the whole app's zoom (appZoom.ts), not this page's.
+      if (ctrl && e.shiftKey && ['=', '+', '-', '_', '?', '0', ')'].includes(key)) return
       const r = selectedRow(rowsOf(s.snap), getUi().trackId)
       let run: (() => unknown) | null = null
       if (ctrl && (key === '=' || key === '+')) run = () => zoomBy(2)
@@ -1370,11 +1377,12 @@ function WaveCanvas({ clip, media, levels, look, rms, draw }: { clip: SoundClip;
   const key = `${media.id}|${media.path}|${Math.round(lo)}|${Math.round(hi)}`
   const samples = edit?.key === key ? edit.win : fetched
   const gain = Math.min(clip.volume, 4)
+  // Drawn again when the screen's scale changes (the app zoom), so it stays sharp.
+  const dpr = useDevicePixelRatio()
 
   useEffect(() => {
     const c = ref.current
     if (!c || vis1 <= vis0) return
-    const dpr = window.devicePixelRatio || 1
     const W = Math.max(1, c.clientWidth)
     const H = Math.max(1, c.clientHeight)
     if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) {

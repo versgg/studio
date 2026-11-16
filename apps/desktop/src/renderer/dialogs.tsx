@@ -4,6 +4,7 @@ import { Icon } from './icons'
 import type { VmakeAccount } from '../shared/api'
 import { vmakeCheck, vmakeHasToken, vmakeKnown, vmakeTokenSet } from './vmakeAccount'
 import { CloneDialogBody, DesignDialogBody, VoicePickerDialog } from './AudioPanel'
+import { DownloadDialogBody } from './DownloadDialog'
 import { ExportDialog } from './ExportDialog'
 import { McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
 import { ShortcutsDialog } from './ShortcutsDialog'
@@ -66,6 +67,12 @@ export function Dialogs() {
         <DesignDialogBody close={close} />
       </Modal>
     )
+  if (dialog === 'download')
+    return (
+      <Modal title="Download" onClose={close} wide>
+        <DownloadDialogBody close={close} />
+      </Modal>
+    )
   return null
 }
 
@@ -84,7 +91,8 @@ function VmakeDialog() {
   const [model, setModel] = useState('full')
   const media = target && mediaById(snap, target.mediaId)
   const clip = target?.clipId ? findClip(snap, target.clipId)?.clip : undefined
-  const seconds = (clip?.durationUs ?? media?.durationUs ?? 0) / 1e6
+  // What Vmake gets (and charges for): the part of the source the clip plays, its length times its speed.
+  const seconds = (clip ? clip.durationUs * (clip.speed ?? 1) : (media?.durationUs ?? 0)) / 1e6
 
   const check = async () => {
     setError('')

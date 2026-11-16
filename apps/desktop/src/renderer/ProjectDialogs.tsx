@@ -2,6 +2,7 @@
 // started, What's new, Report a problem, Preferences, the agent connection, and the
 // approval an agent asks for before it exports.
 
+import { useKept } from './drafts'
 import { useEffect, useState, type ReactNode } from 'react'
 import { ElevenKeyHelp } from './ElevenKeyHelp'
 import { keysFor } from './keymap'
@@ -253,7 +254,8 @@ export function WhatsNewDialog() {
 export function ReportDialog() {
   const caps = useStore((s) => s.caps)
   const snap = useStore((s) => s.snap)
-  const [text, setText] = useState('')
+  // What happened, kept as it's typed (closing the window before copying it lost it).
+  const [text, setText] = useKept('report-text', '')
   const details = [
     `What happened: ${text.trim() || '(not written)'}`,
     '',
