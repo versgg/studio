@@ -1102,9 +1102,13 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     `__t.key('Escape')
      await __t.until(() => !__t.q('.home-card.picked'), 2000, 'nothing picked')
      const open = (await __t.snap()).dir
+     // The open project gets a line of text (its .txt has it); Box 01 has none.
+     const look = await window.__studioDev.textRender.renderTextClip({ ...window.__studioDev.presets.DEFAULT_TEXT, content: 'Batch text line' }, 'uicheck-batch')
+     window.__batchText = (await window.studio.engine.call('text.add', { atUs: 500000, durationUs: 1500000, text: look })).clipId
+     await __t.until(async () => JSON.stringify(await window.studio.app.readProject(open)).includes('Batch text line'), 5000, 'the text saved in the project')
      const card = (n) => __t.qa('.home-card').find((c) => c.querySelector('.title')?.textContent.trim() === n)
      card('Box 01').querySelector('.home-pick').click()
-     card('Box 02').querySelector('.home-pick').click()
+     card('My first project').querySelector('.home-pick').click()
      await __t.until(() => __t.qa('.home-card.picked').length === 2, 2000, 'two picked')
      ;(await __t.until(() => __t.qa('.home-picked button').find((b) => b.textContent === 'Export 2…'), 2000, 'Export 2…')).click()
      await __t.until(() => __t.q('.modal[aria-label="Export projects"]'), 3000, 'the Export projects dialog')
@@ -1112,10 +1116,11 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      const dir = ${JSON.stringify(path.join(exportDir, 'batch'))}
      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(folder, dir)
      folder.dispatchEvent(new Event('input', { bubbles: true }))
-     const check = __t.q('.modal input[type="checkbox"]')
-     if (check.checked) check.click()
+     const box = (text) => __t.qa('.modal label.check').find((l) => l.textContent.includes(text)).querySelector('input')
+     if (box('Open the folder').checked) box('Open the folder').click()
      window.__batchDir = dir
-     return { summary: __t.q('.xp-summary').textContent, formats: __t.qa('.xp-formats button.on').map((b) => b.textContent), button: __t.qa('.modal footer button').map((b) => b.textContent) }`,
+     if (!box('Save each project’s text').checked || !__t.q('.xp-text button.on')) throw new Error('the .txt isn’t on')
+     return { summary: __t.q('.xp-summary').textContent, formats: __t.qa('.xp-formats button.on').map((b) => b.textContent), text: __t.q('.xp-text button.on').textContent, button: __t.qa('.modal footer button').map((b) => b.textContent), note: __t.q('.modal .footer-note').textContent }`,
   )
   await shot('15c2-home-export-projects')
   await step(
@@ -1126,15 +1131,19 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      const states = new Set()
      await __t.until(() => { for (const i of __t.qa('.xp-item')) states.add(i.className.replace('xp-item ', '')); return __t.qa('.xp-item.done').length === 2 || __t.q('.xp-item.failed') }, 180000, 'both exported')
      if (__t.q('.xp-item.failed')) throw new Error(__t.q('.xp-item.failed .xp-state').textContent)
-     const files = ['Box 01-9x16-v1.mp4', 'Box 02-9x16-v1.mp4'].map((f) => window.__batchDir + '/' + f)
+     const files = ['Box 01-9x16-v1.mp4', 'My first project-9x16-v1.mp4', 'My first project-9x16-v1.txt'].map((f) => window.__batchDir + '/' + f)
      const exist = await window.studio.app.existing(files)
      if (!exist.every(Boolean)) throw new Error('missing: ' + files.filter((_, i) => !exist[i]).join(', '))
+     if ((await window.studio.app.existing([window.__batchDir + '/Box 01-9x16-v1.txt']))[0]) throw new Error('a .txt for a project with no text')
      if ((await __t.snap()).dir !== open) throw new Error('another project was opened')
+     const lines = __t.qa('.xp-item').map((i) => i.querySelector('.xp-name').textContent + ': ' + i.querySelector('.xp-state').textContent)
+     if (!lines.some((l) => /no text in it/.test(l)) || !lines.some((l) => /Done · 2 files/.test(l))) throw new Error(lines.join(' | '))
+     await window.studio.engine.call('timeline.delete', { clipIds: [window.__batchText] })
      const summary = __t.q('.xp-summary').textContent
      ;[...__t.qa('.modal footer button')].find((b) => b.textContent === 'Done').click()
      await __t.until(() => !__t.q('.modal[aria-label="Export projects"]'), 2000, 'the dialog to close')
      __t.key('Escape')
-     return { summary, seen: [...states], files: files.map((f) => f.split('/').pop()) }`,
+     return { summary, seen: [...states], files: files.map((f) => f.split('/').pop()), lines }`,
   )
 
   await step(

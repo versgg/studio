@@ -1,6 +1,6 @@
 // Home › several projects › Export (batchExport.ts): the Export window's settings for all of
-// them at once (formats, quality, folder, file names), then each project's files as they're made.
-// Closed while it runs, the projects carry on.
+// them at once (formats, quality, folder, file names, and each one's text as .txt), then each
+// project's files as they're made. Closed while it runs, the projects carry on.
 
 import './export-projects.css'
 import { useMemo, useState } from 'react'
@@ -9,8 +9,19 @@ import { DEFAULT_PATTERN, fileStem, loadPrefs, MBPS, PREFS_KEY, QUALITY, SOUNDS,
 import { askedProjects, batchRunning, cancelBatchExport, clearBatchExport, startBatchExport, useBatchExport, type BatchItem } from './batchExport'
 import { Pills } from './controls'
 import { useStore } from './store'
+import type { TextWhat } from './textExport'
 
 const OWN = 'own'
+/** Whether the .txt goes too, and what it holds: kept on this computer between runs. */
+const TEXT_KEY = 'studio.exportProjects.text'
+const loadText = (): TextWhat | null => {
+  try {
+    const v = localStorage.getItem(TEXT_KEY)
+    return v === 'none' ? null : v === 'screen' || v === 'said' ? v : 'both'
+  } catch {
+    return 'both'
+  }
+}
 const sep = (folder: string) => (folder.includes('\\') ? '\\' : '/')
 const formatOf = (p: { width: number; height: number }) => FORMATS.find(([, w, h]) => w === p.width && h === p.height)?.[0] ?? '9:16'
 
@@ -19,7 +30,11 @@ function itemLine(i: BatchItem, jobs: ReturnType<typeof useBatchExport>['jobs'])
   if (i.state === 'cancelled') return 'Stopped'
   if (i.state === 'failed') return `Failed: ${i.error ?? 'unknown error'}`
   const files = i.jobIds.map((id) => jobs[id]).filter(Boolean)
-  if (i.state === 'done') return files.length === 1 ? 'Done' : `Done · ${files.length} files`
+  if (i.state === 'done') {
+    const n = files.length + (i.text?.out ? 1 : 0)
+    const text = i.text?.error ? ` · ${i.text.error}` : i.text?.none ? ' · no text in it' : ''
+    return `${n === 1 ? 'Done' : `Done · ${n} files`}${text}`
+  }
   const f = files.length ? files.reduce((n, j) => n + (j.state === 'done' ? 1 : j.fraction), 0) / files.length : 0
   return `Exporting · ${Math.round(f * 100)} %`
 }
@@ -36,20 +51,29 @@ export function ExportProjectsDialog({ close }: { close: () => void }) {
   const [folder, setFolder] = useState(prefs.folder ?? (paths ? `${paths.videos}${sep(paths.videos)}Studio Exports` : ''))
   const [pattern, setPattern] = useState(prefs.pattern ?? DEFAULT_PATTERN)
   const [openAfter, setOpenAfter] = useState((prefs.after ?? 'Open folder') === 'Open folder')
+  const [text, setText] = useState<TextWhat | null>(loadText)
+  const pickText = (t: TextWhat | null) => {
+    setText(t)
+    try {
+      localStorage.setItem(TEXT_KEY, t ?? 'none')
+    } catch {}
+  }
   const [starting, setStarting] = useState(false)
   const canMp3 = caps?.mp3 !== false
 
   const toggle = (f: string) =>
     setFormats((now) => {
       if (f === OWN) return [OWN, ...now.filter((x) => SOUNDS.some(([s]) => s === x))]
-      const on = now.includes(f) ? now.filter((x) => x !== f) : [...now.filter((x) => x !== OWN || SOUNDS.some(([s]) => s === f)), f]
-      return on.length ? on : [OWN]
+      // Every format off is allowed: then just the text (Export waits until there's something).
+      return now.includes(f) ? now.filter((x) => x !== f) : [...now.filter((x) => x !== OWN || SOUNDS.some(([s]) => s === f)), f]
     })
   const filesOf = (p: { width: number; height: number }) => [...(formats.includes(OWN) ? [formatOf(p)] : []), ...FORMATS.map(([f]) => f).filter((f) => formats.includes(f)), ...SOUNDS.map(([s]) => s).filter((s) => formats.includes(s) && (s !== 'mp3' || canMp3))]
   const isSound = (f: string) => SOUNDS.some(([s]) => s === f)
   const stem = (name: string, f: string, v: number) => fileStem(pattern, name, isSound(f) ? 'audio' : f, v)
-  const sample = projects[0] ? `${stem(projects[0].name, filesOf(projects[0])[0] ?? '9:16', 1)}.${isSound(filesOf(projects[0])[0] ?? '') ? filesOf(projects[0])[0] : 'mp4'}` : ''
-  const total = projects.reduce((n, p) => n + filesOf(p).length, 0)
+  const first = projects[0] && (filesOf(projects[0])[0] ?? formatOf(projects[0]))
+  const sample = projects[0] ? `${stem(projects[0].name, first, 1)}.${filesOf(projects[0]).length ? (isSound(first) ? first : 'mp4') : 'txt'}` : ''
+  const total = projects.reduce((n, p) => n + filesOf(p).length + (text ? 1 : 0), 0)
+  const tag = text === 'screen' ? ' (on screen)' : text === 'said' ? ' (said)' : ''
 
   const choose = async () => {
     const f = await window.studio.app.chooseFolder(folder || paths?.videos, 'Export to folder')
@@ -66,16 +90,18 @@ export function ExportProjectsDialog({ close }: { close: () => void }) {
       const items = []
       for (const p of projects) {
         const fs = filesOf(p)
+        // The .txt is named like the first file (like the project's video when there's none).
+        const lead = fs[0] ?? formatOf(p)
         // {version}: the first number none of this project's files in the folder uses yet.
         let v = 1
         if (pattern.includes('{version}'))
           for (; v < 200; v++) {
-            const exists = await window.studio.app.existing(fs.map((f) => `${folder}${sep(folder)}${stem(p.name, f, v)}.${isSound(f) ? f : 'mp4'}`))
+            const exists = await window.studio.app.existing([...fs.map((f) => `${folder}${sep(folder)}${stem(p.name, f, v)}.${isSound(f) ? f : 'mp4'}`), ...(text ? [`${folder}${sep(folder)}${stem(p.name, lead, v)}${tag}.txt`] : [])])
             if (!exists.some(Boolean)) break
           }
-        items.push({ dir: p.dir, name: p.name, formats: fs, names: Object.fromEntries(fs.map((f) => [f, stem(p.name, f, v)])) })
+        items.push({ dir: p.dir, name: p.name, formats: fs, names: Object.fromEntries(fs.map((f) => [f, stem(p.name, f, v)])), textName: stem(p.name, lead, v) })
       }
-      startBatchExport({ folder, quality, bitrateMbps: prefs.bitrate?.[quality] ?? MBPS[quality], ...(prefs.fps ? { fps: prefs.fps } : {}), openFolder: openAfter }, items)
+      startBatchExport({ folder, quality, bitrateMbps: prefs.bitrate?.[quality] ?? MBPS[quality], ...(prefs.fps ? { fps: prefs.fps } : {}), openFolder: openAfter, text }, items)
     } finally {
       setStarting(false)
     }
@@ -100,7 +126,7 @@ export function ExportProjectsDialog({ close }: { close: () => void }) {
                 <div key={i.dir} className={`xp-item ${i.state}`}>
                   <span className="xp-name" title={i.dir}>
                     {i.name}
-                    <span className="xp-files">{i.formats.map((x) => (isSound(x) ? x.toUpperCase() : x)).join(' · ')}</span>
+                    <span className="xp-files">{[...i.formats.map((x) => (isSound(x) ? x.toUpperCase() : x)), ...(run.text ? ['TXT'] : [])].join(' · ')}</span>
                   </span>
                   <span className="xp-state" title={itemLine(i, jobs)}>
                     {itemLine(i, jobs)}
@@ -168,6 +194,14 @@ export function ExportProjectsDialog({ close }: { close: () => void }) {
           <span className="field-label">File names</span>
           <input className="text-input" value={pattern} onChange={(e) => setPattern(e.target.value)} spellCheck={false} aria-label="File names" />
           <p className="hint">{sample ? `Like ${sample}` : ''}</p>
+        </div>
+        <div className="field-block">
+          <span className="field-label">Text</span>
+          <label className="check">
+            <input type="checkbox" checked={!!text} onChange={(e) => pickText(e.target.checked ? 'both' : null)} />
+            Save each project’s text as .txt, next to its video
+          </label>
+          {text && <Pills label="What the text holds" variant="seg" className="xp-text" items={[['both', 'On screen and said'], ['screen', 'On screen'], ['said', 'Said']]} value={text} onPick={(v) => pickText(v as TextWhat)} />}
         </div>
         <label className="check">
           <input type="checkbox" checked={openAfter} onChange={(e) => setOpenAfter(e.target.checked)} />

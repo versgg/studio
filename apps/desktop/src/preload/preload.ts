@@ -212,6 +212,7 @@ const api: StudioApi = {
     },
     renameProject: (dir, name) => ipcRenderer.invoke('project:rename', dir, name),
     projectSize: (dir) => ipcRenderer.invoke('project:size', dir),
+    readProject: (dir) => ipcRenderer.invoke('project:read', dir),
     deleteProject: (dir) => ipcRenderer.invoke('project:delete', dir),
     versions: (dir) => ipcRenderer.invoke('project:versions', dir),
     saveVersion: (dir, name) => ipcRenderer.invoke('project:saveVersion', dir, name),

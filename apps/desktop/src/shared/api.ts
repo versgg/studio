@@ -443,6 +443,8 @@ export interface StudioApi {
     renameProject(dir: string, name: string): Promise<boolean>
     /** Size on disk, and how many files Studio made in each subfolder (voiceovers, recordings…). */
     projectSize(dir: string): Promise<{ bytes: number; made: Record<string, number> } | null>
+    /** A project's edit as saved (its project.json), null if it isn't a project. */
+    readProject(dir: string): Promise<Record<string, unknown> | null>
     /** Deletes the project folder for good (not media linked from elsewhere). */
     deleteProject(dir: string): Promise<boolean>
     versions(dir: string): Promise<{ file: string; name: string; saved: number }[]>

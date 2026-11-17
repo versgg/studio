@@ -224,6 +224,15 @@ export function registerProjects(projectsDir: string) {
   })
 
   /** What deleting a project frees, and what inside it was made in Studio (voiceovers, recordings…). */
+  // A project's edit as saved (Home › several projects › Export reads each one's text from it).
+  ipcMain.handle('project:read', (_e, dir: string) => {
+    if (!isProject(dir)) return null
+    try {
+      return JSON.parse(fs.readFileSync(path.join(dir, 'project.json'), 'utf8'))
+    } catch {
+      return null
+    }
+  })
   ipcMain.handle('project:size', (_e, dir: string) => {
     if (!isProject(dir)) return null
     let bytes = 0
