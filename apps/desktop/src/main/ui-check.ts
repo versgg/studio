@@ -3326,6 +3326,31 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      return { replaced: after }`,
   )
 
+  // The captions' look is the project's: deleting every line and making captions again (or a
+  // copy of the project) keeps it, and Inspector › Text › Reset to default sets the default again.
+  await step(
+    'Captions look: kept after every line is deleted, and Reset to default in Text brings the default back',
+    `const dev = window.__studioDev
+     const { trackId } = window.__capLook
+     await dev.captions.applyCaptionLook(trackId, { color: '#FFE000' })
+     await __t.until(async () => (await __t.snap()).project.captionLook?.color === '#FFE000', 8000, 'the look kept in the project')
+     const all = dev.captions.captionTracks(await __t.snap()).flatMap((t) => t.lines.map((c) => c.id))
+     await window.studio.engine.call('timeline.delete', { clipIds: all })
+     await __t.until(async () => !dev.captions.captionTracks(await __t.snap()).some((t) => t.lines.length), 5000, 'every caption line deleted')
+     const kept = (await __t.snap()).project.captionLook?.color
+     const cues = [0, 1, 2].map((i) => ({ startUs: 300000 + i * 600000, endUs: 800000 + i * 600000, text: 'Testa nu ' + i, words: [] }))
+     const again = await dev.captions.placeCaptions(cues, { lang: 'sv', style: 'Clean', centerY: 0.72 })
+     const line = dev.captions.captionTracks(await __t.snap()).find((t) => t.track.id === again).lines[0]
+     if (line.text.color !== '#FFE000') throw new Error('made again in ' + line.text.color + ', not the kept look')
+     window.__capLook = { trackId: again }
+     dev.store.setState({ selection: [line.id], focus: 'timeline' })
+     __t.qa('.inspector .insp-tabs button').find((b) => b.textContent === 'Text')?.click()
+     const reset = await __t.until(() => __t.q('.inspector button[aria-label="Reset to default"]'), 5000, 'Reset to default')
+     reset.click()
+     const back = await __t.until(async () => { const s = await __t.snap(); const l = dev.captions.captionTracks(s).find((t) => t.lang === 'sv')?.lines[0]; return l?.text.color === '#FFFFFF' && s.project.captionLook?.color === '#FFFFFF' && l.text.font }, 8000, 'the default look on the lines and kept')
+     return { kept, again: line.text.color, reset: back }`,
+  )
+
   // The Export window's text: the edit's on-screen text and what she says as .txt (no times) and
   // .srt, next to the video and named like it.
   await step(

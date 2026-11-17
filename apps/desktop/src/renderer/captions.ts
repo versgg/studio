@@ -452,7 +452,30 @@ async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, c
 
 async function setLines(scope: ProjectScope, trackId: string | undefined, lines: ({ startUs: Us; endUs: Us; text: string; png?: string; words?: CapWord[] } & LinePlace)[], style: TextLook, above?: string, gesture?: string) {
   const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, ...shared } = style as TextLook & { words?: unknown }
-  return scope.call<{ trackId: string; clipIds: string[] }>('captions.set', { ...(trackId ? { trackId } : {}), ...(above ? { aboveTrackId: above } : {}), lines, style: shared, ...(gesture ? { gesture } : {}) })
+  const r = await scope.call<{ trackId: string; clipIds: string[] }>('captions.set', { ...(trackId ? { trackId } : {}), ...(above ? { aboveTrackId: above } : {}), lines, style: shared, ...(gesture ? { gesture } : {}) })
+  await rememberLook(scope, shared)
+  return r
+}
+
+/**
+ * The captions' look as it's set, kept in the project (project.json, so its duplicates and
+ * translations have it too): captions made after every line was deleted come back in it, not
+ * in the default style. Reset to default in Inspector › Text sets the default again.
+ */
+async function rememberLook(scope: ProjectScope, look: object) {
+  const snap = await latest(scope)
+  if (!snap || JSON.stringify(snap.project.captionLook ?? null) === JSON.stringify(look)) return
+  await scope.call('project.setOptions', { captionLook: look }).catch((e: Error) => {
+    if (projectChanged(e)) throw e
+  })
+}
+
+/** The project's captions' look as last set, for a new captions track in `lang`, with the height it was at. */
+function keptLook(snap: Snapshot, lang: string): { look: TextLook; centerY: number } | null {
+  const l = snap.project.captionLook as (TextLook & { preset?: string }) | undefined
+  if (!l?.font) return null
+  const { style, centerY } = parsePreset(l.preset)
+  return { look: { ...l, content: '', preset: presetOf(style, lang, centerY) }, centerY }
 }
 
 /**
@@ -613,8 +636,10 @@ export async function placeCaptions(cues: Cue[], o: { lang: string; style: strin
   const cv = canvasOf(snap)
   // Made again for a language that has a track: its lines are replaced, its look and height kept.
   const same = captionTracks(snap).find((t) => t.lang === o.lang)
-  const centerY = same?.lines.length ? same.centerY : o.centerY
-  const style = same?.lines.length ? lookOf(same, cv.width) : styleFor(o.style, o.lang, o.centerY, cv.width)
+  // A first track (or one whose lines were all deleted): the look the captions last had, else the style.
+  const kept = same?.lines.length ? null : keptLook(snap, o.lang)
+  const centerY = same?.lines.length ? same.centerY : (kept?.centerY ?? o.centerY)
+  const style = same?.lines.length ? lookOf(same, cv.width) : (kept?.look ?? styleFor(o.style, o.lang, o.centerY, cv.width))
   // Made again, the lines stay where the old ones were moved to.
   const lines = await drawLines(same?.lines.length ? cues.map((c) => ({ ...c, ...placeOf(same.lines[0]) })) : cues, style, centerY, cv, task)
   const r = await setLines(scope, same?.track.id, lines, style)

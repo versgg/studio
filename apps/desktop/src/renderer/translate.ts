@@ -9,6 +9,7 @@
 import { useSyncExternalStore } from 'react'
 import { TR_LANGS, trLangName, trRunning, type TrClonePart, type TrItem, type TrJob, type TrStems, type TrVoice, type TrVoiceChoice } from '../shared/translate'
 import type { TrSound } from '../shared/api'
+import { playedPart } from '../shared/speech-timing'
 import { captionTracks, cuesOf, setCaptionLines, wordsPerCaptionOf } from './captions'
 import { loadFont } from './textFonts'
 import { fontOf, layoutText, renderTextClip, textPlaceOf, type TextLook } from './textRender'
@@ -161,8 +162,12 @@ export async function collect(snap: Snapshot, lang?: string) {
     // A sound Studio didn't make, as it was heard: a line for each sentence, where it's said.
     if (m && s?.read) {
       if (!s.read.sentences.length) continue
+      // Another language's speech is left as it is (a song, an English line in a Swedish ad), but
+      // not the language a translation's copy was made from (what's still in it is left over),
+      // nor a guess from under 3 s of speech (a Swedish "Testa nu!" can come back as Danish).
       const language = s.read.language ? langCode(s.read.language) : ''
-      if (said && language && language !== said) {
+      const brief = s.read.sentences.reduce((n, x) => n + x.end - x.start, 0) < 3
+      if (said && language && language !== said && language !== (ctx.was ? langCode(ctx.was) : '') && !brief) {
         if (!other.some((o) => o.name === m.name)) other.push({ name: m.name, language })
         continue
       }
@@ -170,10 +175,10 @@ export async function collect(snap: Snapshot, lang?: string) {
       const [fromUs, toUs] = played.get(m.path) ?? [0, m.durationUs]
       const base = { path: m.path, mediaId: m.id, clipId: c.id, mixed, fromUs, spanUs: toUs - fromUs }
       for (const [n, sn] of s.read.sentences.entries()) {
-        const at = placeIn(c, sn.start, sn.end)
-        if (!at) continue
-        const it: TrItem = { id: `v:${c.id}~${n}`, kind: 'line', text: sn.text, startUs: at[0], endUs: at[1], heard: { path: m.path, mediaId: m.id, start: sn.start, end: sn.end, mixed, fromUs, spanUs: toUs - fromUs } }
-        addLine(it, s, m, c.id, base, { start: sn.start, end: sn.end }, { how: s.voiceId ? s.read.how : undefined, note: s.read.note, keptOld: s.read.note === 'kept' })
+        const part = playedPart(c, sn)
+        if (!part) continue
+        const it: TrItem = { id: `v:${c.id}~${n}`, kind: 'line', text: part.text, startUs: part.at[0], endUs: part.at[1], heard: { path: m.path, mediaId: m.id, start: part.start, end: part.end, mixed, fromUs, spanUs: toUs - fromUs } }
+        addLine(it, s, m, c.id, base, { start: part.start, end: part.end }, { how: s.voiceId ? s.read.how : undefined, note: s.read.note, keptOld: s.read.note === 'kept' })
       }
       continue
     }
@@ -266,18 +271,7 @@ type VoiceHow = 'studio' | 'history' | 'name' | 'picked'
  * A sound worth hearing for speech: long enough to say something, and (a sound file) not named as
  * music or effects. A video clip's name says nothing about its sound ("#music" in a TikTok's).
  */
-const maybeVoice = (m: { name: string; durationUs?: number }, clip = false) => (m.durationUs ?? 0) >= 1_500_000 && (m.durationUs ?? 0) <= 600_000_000 && (clip || !/instrument|music|musik|song|beat|bgm|soundtrack|ambien|sfx|effect/i.test(m.name))
-
-/** A stretch of a sound file (seconds into it) on the timeline through its clip, or null when the clip doesn't play it. */
-function placeIn(c: { startUs: number; inUs: number; durationUs: number; speed?: number }, start: number, end: number): [number, number] | null {
-  const speed = c.speed || 1
-  const from = c.inUs
-  const to = c.inUs + c.durationUs * speed
-  const mid = ((start + end) / 2) * 1e6
-  if (mid < from || mid > to) return null
-  const tl = (t: number) => Math.round(c.startUs + (Math.min(Math.max(t * 1e6, from), to) - from) / speed)
-  return [tl(start), tl(end)]
-}
+const maybeVoice = (m: { name: string; durationUs?: number }, clip = false) => (m.durationUs ?? 0) >= 500_000 && (m.durationUs ?? 0) <= 600_000_000 && (clip || !/instrument|music|musik|song|beat|bgm|soundtrack|ambien|sfx|effect/i.test(m.name))
 
 /** Hears a voiceover once (what it says, which voice speaks it). */
 export const readVoiceover = (project: string, file: string) => window.studio.services.translateReadVoice(project, file)

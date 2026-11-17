@@ -865,6 +865,11 @@ pub struct Project {
     /// What MCP clients may do here.
     #[serde(default)]
     pub mcp: McpOptions,
+    /// The captions' look as it was last set (font, colours, outline, its style and height):
+    /// captions made again after every line was deleted, and in a copy of the project, get it.
+    /// Kept as the page sets it; the engine doesn't read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption_look: Option<serde_json::Value>,
     /// The project's cache folder (not saved): where stabilising transforms are kept.
     #[serde(skip)]
     pub cache_dir: Option<String>,
@@ -1078,7 +1083,7 @@ pub(crate) fn err<T>(msg: impl Into<String>) -> R<T> {
 impl Project {
     pub fn new(name: &str, aspect: &str) -> Self {
         let (width, height) = format_size(aspect).unwrap_or((1080, 1920));
-        let mut p = Project { name: name.into(), width, height, fps: 30, media: vec![], folders: vec![], tracks: vec![], next_id: 1, magnet: true, linkage: true, master: Master::default(), labels: vec![], cover_us: None, brand: Brand::default(), mcp: McpOptions::default(), cache_dir: None };
+        let mut p = Project { name: name.into(), width, height, fps: 30, media: vec![], folders: vec![], tracks: vec![], next_id: 1, magnet: true, linkage: true, master: Master::default(), labels: vec![], cover_us: None, brand: Brand::default(), mcp: McpOptions::default(), caption_look: None, cache_dir: None };
         let id = p.make_id("t");
         p.tracks.push(Track::new(id, TrackKind::Video, true));
         p

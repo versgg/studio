@@ -24,7 +24,7 @@ export type TrSound = {
   /** A dub's clone that isn't kept (or a translation's, `translation`): cloned again from this sample for the take, then deleted. */
   clone?: { sample: string; name: string; translation?: boolean }
   /** A voiceover Studio didn't make, as it was heard (main/voice-read.ts): its sentences in seconds into the file (none: no speech), how its voice was found, or why it wasn't. */
-  read?: { sentences: { text: string; start: number; end: number }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; language?: string; mixed?: boolean }
+  read?: { sentences: { text: string; start: number; end: number; words?: { text: string; start: number; end: number }[] }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; language?: string; mixed?: boolean }
 }
 /** Overlay text a dub left in the picture as filmed: in the dub's own time; `dir` is its folder's name. */
 export type TrFilmed = { dir: string; text: string; startUs: number; endUs: number; box: { x: number; y: number; w: number; h: number } }
@@ -312,7 +312,7 @@ export interface StudioApi {
      * language. `translateContext`: what Studio knows about the project's sounds (the voice that
      * spoke each, what it says, the words a dub translated from) and its dubs' text translations.
      */
-    translateContext(project: string, paths: string[]): Promise<{ sounds: Record<string, TrSound>; texts: { translation: string; original: string }[]; lang: string; choices: Record<string, TrVoiceChoice>; filmed: TrFilmed[]; heard: TrHeard[] } | ServiceError>
+    translateContext(project: string, paths: string[]): Promise<{ sounds: Record<string, TrSound>; texts: { translation: string; original: string }[]; lang: string; was?: string; choices: Record<string, TrVoiceChoice>; filmed: TrFilmed[]; heard: TrHeard[] } | ServiceError>
     translateStart(o: { source: string; name: string; from: string; langs: string[]; voice: TrVoice; items: TrItem[]; durationUs: number }): Promise<TrJob[] | ServiceError>
     /** A voiceover Studio didn't make, heard once (what it says, which ElevenLabs voice speaks it); then `translateContext` knows it. */
     translateReadVoice(project: string, file: string): Promise<{ ok: true; sentences: number } | ServiceError>

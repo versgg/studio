@@ -24,9 +24,10 @@ type Word = { text: string; start: number; end: number }
 /**
  * Words into sentences: one ends at . ! ? … or where the voice pauses for most of a second, and
  * one longer than MAX_LINE is split where it pauses most (a comma counting as a pause), never in
- * its first third. A few stray words aren't speech (a breath, a sung line in a jingle): none.
+ * its first third. A few stray words aren't speech (a breath, a sung line in a jingle): none,
+ * unless fewer are enough (`minWords`: a short file's one or two words, "Testa nu!", are speech).
  */
-export function sentencesOf(words: Word[]): Word[] {
+export function sentencesOf(words: Word[], minWords = 3): Word[] {
   const runs: Word[][] = []
   let cur: Word[] = []
   for (const [i, w] of words.entries()) {
@@ -52,7 +53,7 @@ export function sentencesOf(words: Word[]): Word[] {
     return best > 0 ? [...split(s.slice(0, best)), ...split(s.slice(best))] : [s]
   }
   const out = runs.flatMap(split).map((r) => ({ text: r.map((w) => w.text).join(' '), start: r[0].start, end: r[r.length - 1].end }))
-  return out.reduce((n, s) => n + s.text.split(/\s+/).length, 0) >= 3 ? out : []
+  return out.reduce((n, s) => n + s.text.split(/\s+/).length, 0) >= minWords ? out : []
 }
 
 /** A sentence as it was said (seconds, on the timeline or in the part): `start`, `end`. */
@@ -128,5 +129,41 @@ export function timingOf(placed: { id: string; at: number; tempo: number; dur: n
       length: r(p.dur),
       gapAfter: next ? r(next.at - (p.at + p.dur)) : null,
     }
+  })
+}
+
+/** A heard sentence (seconds into its file), with its words' times when they were kept. */
+export type HeardSentence = { text: string; start: number; end: number; words?: Word[] }
+
+/**
+ * The part of a heard sentence a clip plays: the words whose middle it plays (seconds into the
+ * file), so a clip trimmed to a word or two of a longer take says those, and two clips sharing a
+ * sentence each say their own words; with where that is on the timeline. Null: it plays none.
+ * Before word times were kept (an older reading), a sentence's time is shared out over its words.
+ */
+export function playedPart(c: { startUs: number; inUs: number; durationUs: number; speed?: number }, sn: HeardSentence): { text: string; start: number; end: number; at: [number, number] } | null {
+  const speed = c.speed || 1
+  const from = c.inUs / 1e6
+  const to = (c.inUs + c.durationUs * speed) / 1e6
+  const words = sn.words?.length ? sn.words : spread(sn)
+  const kept = words.filter((w) => (w.start + w.end) / 2 >= from && (w.start + w.end) / 2 <= to)
+  if (!kept.length) return null
+  const whole = kept.length === words.length
+  const start = whole ? sn.start : kept[0].start
+  const end = whole ? sn.end : kept[kept.length - 1].end
+  const tl = (t: number) => Math.round(c.startUs + ((Math.min(Math.max(t, from), to) - from) * 1e6) / speed)
+  return { text: whole ? sn.text : kept.map((w) => w.text).join(' '), start, end, at: [tl(start), tl(end)] }
+}
+
+/** A sentence's time shared out over its words by their length. */
+function spread(sn: HeardSentence): Word[] {
+  const ws = sn.text.split(/\s+/).filter(Boolean)
+  const total = ws.reduce((n, w) => n + w.length + 1, 0)
+  let t = sn.start
+  return ws.map((w) => {
+    const d = ((sn.end - sn.start) * (w.length + 1)) / total
+    const x = { text: w, start: t, end: t + d }
+    t += d
+    return x
   })
 }

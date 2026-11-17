@@ -14,13 +14,13 @@ import type { Clip } from './store'
 export const EASES = ['Linear', 'Ease in', 'Ease out', 'Ease in and out']
 
 /** A section head: optional on/off switch, the title, and a reset button. */
-export function Sec({ title, first, on, onToggle, onReset }: { title: string; first?: boolean; on?: boolean; onToggle?: (on: boolean) => void; onReset?: () => void }) {
+export function Sec({ title, first, on, onToggle, onReset, resetLabel }: { title: string; first?: boolean; on?: boolean; onToggle?: (on: boolean) => void; onReset?: () => void; resetLabel?: string }) {
   return (
     <div className={`insp-sec${first ? ' first' : ''}`}>
       {onToggle && <Toggle label={title} on={!!on} onChange={onToggle} />}
       <h3>{title}</h3>
       {onReset && (
-        <button type="button" className="insp-reset" aria-label={`Reset ${title}`} title="Reset" onClick={onReset}>
+        <button type="button" className="insp-reset" aria-label={resetLabel ?? `Reset ${title}`} title={resetLabel ?? 'Reset'} onClick={onReset}>
           <DIcon d={INSP_ICONS.reset} size={13} />
         </button>
       )}

@@ -38,15 +38,20 @@ export interface ReadVoice {
 
 export interface VoiceRead {
   file: string
-  /** What it says, sentence by sentence, in seconds into the file. Empty: no speech. */
-  sentences: { text: string; start: number; end: number }[]
+  /** What it says, sentence by sentence, in seconds into the file, with each word's time (`words`, since v2). Empty: no speech. */
+  sentences: { text: string; start: number; end: number; words?: { text: string; start: number; end: number }[] }[]
   language: string
   voice: ReadVoice | null
   /** Why no voice was found, when none was ('kept', from an earlier Studio: the user chose to keep its sound as it is). */
   note?: string
   /** The voice is over music or other sound (measured outside its words). */
   mixed?: boolean
+  /** How it was read: 2 keeps each word's time and hears a short file's one or two words. */
+  v?: number
 }
+
+/** A file this short (seconds) that says one or two words says something ("Testa nu!"); a longer one is a breath or a jingle. */
+const SHORT_FILE = 4
 
 /** The model a found voice speaks the translation with: its own when that's a v3 or newer (any language), else v4. */
 const DEFAULT_MODEL = 'eleven_v4'
@@ -61,7 +66,9 @@ const cacheFile = (project: string, file: string) => {
 /** What's known of `file` already (null: not read yet, or the file is gone). */
 export function knownVoice(project: string, file: string): VoiceRead | null {
   try {
-    return JSON.parse(fs.readFileSync(cacheFile(project, file), 'utf8')) as VoiceRead
+    const r = JSON.parse(fs.readFileSync(cacheFile(project, file), 'utf8')) as VoiceRead
+    // Heard as nothing before v2, which took a short file's one or two words for no speech: heard again once.
+    return !r.v && !r.sentences.length ? null : r
   } catch {
     return null
   }
@@ -85,8 +92,10 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
     job = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${path.basename(file)} is missing.`)
       const words = FAKE ? fakeWords(file) : await heard(file)
-      const sentences = sentencesOf(words.words)
-      const r: VoiceRead = { file, sentences, language: words.language, voice: null }
+      const length = await lengthOf(file)
+      const short = length > 0 && length <= SHORT_FILE
+      const sentences = sentencesOf(words.words, short ? 1 : 3).map((x) => ({ ...x, words: words.words.filter((w) => w.start >= x.start - 0.001 && w.end <= x.end + 0.001) }))
+      const r: VoiceRead = { file, sentences, language: words.language, voice: null, v: 2 }
       if (sentences.length) Object.assign(r, await findVoice(file, sentences.map((s) => s.text).join(' ')), { mixed: await overMusic(file, words.words) })
       keep(project, r)
       return r
@@ -94,6 +103,15 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
     reading.set(k, job)
   }
   return job
+}
+
+/** A file's length in seconds (0: unknown). */
+async function lengthOf(file: string): Promise<number> {
+  try {
+    return Number((await ffmpeg(['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { tool: 'ffprobe', timeoutMs: 15_000 })).toString().trim()) || 0
+  } catch {
+    return 0
+  }
 }
 
 /** Whether the voice in `file` is over music or other sound (shared/voice-mix.ts), from its sound at 8 kHz. */

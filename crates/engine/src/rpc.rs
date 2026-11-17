@@ -1389,6 +1389,15 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
                 }
                 engine.changed();
             }
+            if let Some(look) = params.get("captionLook").filter(|v| v.is_object() || v.is_null()) {
+                // Remembered as captions are set, not an edit: no undo step.
+                let look = Some(look.clone()).filter(|v| v.is_object());
+                if let Some(d) = engine.doc.lock().unwrap().as_mut() {
+                    d.quiet_update(|p| p.caption_look = look);
+                    d.flush();
+                }
+                engine.changed();
+            }
             if let Some(brand) = field::<Brand>(&params, "brand")? {
                 engine.edit("Brand kit", |p| {
                     p.brand = brand;
@@ -2020,6 +2029,17 @@ mod tests {
         assert_eq!(dispatch(&e, "history.list", Value::Null).unwrap()["steps"].as_array().unwrap().len(), steps);
         let saved: Value = serde_json::from_str(&std::fs::read_to_string(e.snapshot()["dir"].as_str().unwrap().to_string() + "/project.json").unwrap()).unwrap();
         assert_eq!(saved["name"], "Spring promo");
+        // The captions' look, remembered as they're set: saved, no undo step, cleared with null.
+        dispatch(&e, "project.setOptions", json!({ "captionLook": { "font": "Inter", "color": "#FFE000", "preset": "Bold · sv · 72" } })).unwrap();
+        assert_eq!(dispatch(&e, "history.list", Value::Null).unwrap()["steps"].as_array().unwrap().len(), steps);
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(e.snapshot()["dir"].as_str().unwrap().to_string() + "/project.json").unwrap()).unwrap();
+        assert_eq!(saved["captionLook"]["color"], "#FFE000");
+        dispatch(&e, "edit.undo", Value::Null).unwrap();
+        assert_eq!(e.snapshot()["project"]["captionLook"]["font"], "Inter", "undo keeps the captions' look");
+        dispatch(&e, "edit.redo", Value::Null).unwrap();
+        dispatch(&e, "project.setOptions", json!({ "captionLook": null })).unwrap();
+        assert!(e.snapshot()["project"].get("captionLook").is_none());
+        dispatch(&e, "project.setOptions", json!({ "captionLook": { "font": "Inter" } })).unwrap();
         dispatch(&e, "edit.undo", Value::Null).unwrap();
         assert_eq!(e.snapshot()["project"]["name"], "Spring promo", "undo keeps the name");
         assert_eq!(e.snapshot()["project"]["mcp"]["allowed"], "look", "and what MCP clients may do");

@@ -635,6 +635,8 @@ export function context(project: string, paths: string[]) {
   const sounds: Record<string, TrSound> = {}
   const textPairs: { translation: string; original: string }[] = []
   const langs: string[] = []
+  // A translation's copy: the language it was made from. What's still said in that is a leftover, not another language's speech.
+  let was = ''
   const dubs = path.join(project, 'dubs')
   if (fs.existsSync(dubs))
     for (const d of fs.readdirSync(dubs)) {
@@ -665,7 +667,10 @@ export function context(project: string, paths: string[]) {
   try {
     const own = path.join(project, 'translation')
     const job = readJson<TrJob>(path.join(own, 'job.json'))
-    if (job.state === 'applied' || job.state === 'ready') langs.push(job.lang)
+    if (job.state === 'applied' || job.state === 'ready') {
+      langs.push(job.lang)
+      was = job.from
+    }
     if (job.state === 'applied' && fs.existsSync(path.join(own, 'voice.json'))) {
       const items = readJson<{ items: TrItem[] }>(path.join(own, 'items.json')).items
       for (const l of readJson<{ lines: TrLine[] }>(path.join(own, 'voice.json')).lines) {
@@ -688,7 +693,7 @@ export function context(project: string, paths: string[]) {
     sounds[key(p)] = { text: script, ...(v ? { voiceId: v.voiceId, model: v.modelId, speed: v.speed ?? 1, name: v.name ?? 'The voiceover’s voice', lang: v.languageCode } : {}) }
   }
   // Keyed by the paths asked about, as they were asked.
-  return { sounds: Object.fromEntries(paths.filter((p) => sounds[key(p)]).map((p) => [p, sounds[key(p)]])), texts: textPairs, lang: langs[langs.length - 1] ?? '', choices: voiceChoices(project), ...dubTexts(project) }
+  return { sounds: Object.fromEntries(paths.filter((p) => sounds[key(p)]).map((p) => [p, sounds[key(p)]])), texts: textPairs, lang: langs[langs.length - 1] ?? '', was, choices: voiceChoices(project), ...dubTexts(project) }
 }
 
 /**

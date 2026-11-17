@@ -353,6 +353,8 @@ async function captionsOf(texts: CcText[], W: number, H: number, each: (n: numbe
   if (!lines.length || !first) return
   const { content: _c, ...style } = { ...first, preset: `Clean ·  · ${Math.round(centerY * 100)}` }
   await engine().call('captions.set', { lines, style })
+  // Kept as the project's captions' look, so captions made again after these are deleted keep it.
+  await engine().call('project.setOptions', { captionLook: style }).catch(() => {})
 }
 
 /** A line's words with its time shared out by length, from the line's start (CapCut keeps no word times in these). */

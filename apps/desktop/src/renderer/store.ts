@@ -150,6 +150,8 @@ export interface Project {
   labels?: Label[]
   brand?: { colors: string[]; fonts: string[] }
   mcp?: { allowed: 'all' | 'edit' | 'look'; askBeforeExport: boolean }
+  /** The captions' look as last set (renderer/captions.ts): kept after every line is deleted, and in copies. */
+  captionLook?: Record<string, unknown>
 }
 
 /** A text clip's look; the renderer draws it to `png` (docs/contract-v2.md). */

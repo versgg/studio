@@ -853,6 +853,15 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
     }
     return updateText(clip.id, patch)
   }
+  /**
+   * Reset to default: captions go back to the default caption style (every line of the language,
+   * at the height they're at; the project then keeps that look), text to the default text look.
+   */
+  const resetLook = () => {
+    if (clip.caption) return restyleCaptions(track.id, { style: 'Clean' })
+    const { content: _c, preset: _p, ...look } = DEFAULT_TEXT
+    return put({ ...look, size: Math.round(DEFAULT_TEXT.size * ((project?.width ?? 1080) / 1080)) })
+  }
   /** A transform change: this clip, or with Apply to all text every text clip, each to this value (as the look does). */
   const place = (values: Record<string, unknown>, label?: string) => setLook(toAll ? textClips() : [clip.id], values, label ?? (toAll ? 'Apply to all text' : undefined))
   // Typing: a text clip follows every key. A caption line shows each key in the player at once
@@ -926,7 +935,7 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
             onBlur={() => draft != null && commit(draft)}
             onKeyDown={(e) => e.stopPropagation()}
           />
-          <Sec first title="Preset style" />
+          <Sec first title="Preset style" onReset={resetLook} resetLabel="Reset to default" />
           <PresetStyles look={spec} onPick={put} />
           <Sec title="Text" onReset={() => put({ font: DEFAULT_TEXT.font, weight: DEFAULT_TEXT.weight, size: Math.round(DEFAULT_TEXT.size * ((project?.width ?? 1080) / 1080)), letterSpacing: 0, lineHeight: DEFAULT_TEXT.lineHeight, case: 'none', italic: false, underline: false, align: 'center', color: '#FFFFFF' })} />
           <SelectRow label="Font" value={spec.font} options={fonts.map((f) => [f, fontLabel(f)] as [string, string])} onChange={(f) => put({ font: f, weight: nearestWeight(f, spec.weight) })} />
