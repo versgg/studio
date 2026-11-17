@@ -242,7 +242,7 @@ export interface Toast {
   text: string
 }
 
-export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download'
+export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director'
 
 /** Where the library is looking: everything, loose imports, or a linked folder's id. */
 export type LibraryScope = 'all' | 'loose' | string
@@ -316,6 +316,8 @@ export interface State {
   tasks: Task[]
   /** What the text-removal dialog is for: a clip on the timeline, or a library item. */
   vmakeTarget: { mediaId: string; clipId?: string } | null
+  /** What Send to Director sends: a sound track's clips (only these when several were selected; null for all of them). */
+  directorTarget: { trackId: string; clipIds: string[] | null } | null
   /** The open project's text removals, by job id (a busy clip's `busy`). */
   vmakeJobs: Record<string, VmakeJob>
   /** The open project's stem separations (the stems server), by their folder. */
@@ -397,6 +399,7 @@ let state: State = {
   unreadable: { dir: '', ids: {} },
   tasks: [],
   vmakeTarget: null,
+  directorTarget: null,
   vmakeJobs: {},
   dubJobs: {},
   stemsJobs: {},
@@ -854,6 +857,8 @@ function share(prev: Snapshot | null, next: Snapshot): Snapshot {
 }
 
 function onEvent(method: string, params: any) {
+  // An export another part of the app asked for (exportSound): settled there, never listed.
+  if (method.startsWith('export.') && quietExports.has(params?.jobId)) return settleQuiet(params.jobId, method, params)
   switch (method) {
     case 'project.changed': {
       const snap = share(state.snap, params as Snapshot)
@@ -934,6 +939,43 @@ function onEvent(method: string, params: any) {
   }
 }
 
+/** Sound renders the Export window doesn't list (Send to Director), by job id: each settles its promise. */
+type QuietResult = { path: string } | { error: string }
+const quietExports = new Map<string, { path: string; settle: (r: QuietResult) => void }>()
+function settleQuiet(jobId: string, method: string, params: { error?: string }) {
+  const q = quietExports.get(jobId)
+  if (!q || method === 'export.started' || method === 'export.progress') return
+  quietExports.delete(jobId)
+  q.settle(method === 'export.done' ? { path: q.path } : { error: method === 'export.failed' ? (params.error ?? 'The render failed.') : 'Cancelled.' })
+}
+
+/**
+ * Renders these clips' sound to `<folder>/<name>.wav` through the engine's own sound export
+ * (Export › Sound only of a selection: the clips as they play, from the first one's start to
+ * the last one's end, 48 kHz), without showing it in the Export window.
+ */
+export async function exportSound(clipIds: string[], folder: string, name: string): Promise<QuietResult> {
+  let r: { jobs: { jobId: string; path: string }[] }
+  try {
+    r = await window.studio.engine.call('export.start', { formats: ['wav'], quality: 'balanced', folder, baseName: name, names: { wav: name }, clipIds })
+  } catch (e) {
+    return { error: (e as Error).message }
+  }
+  const job = r?.jobs?.[0]
+  if (!job) return { error: 'The engine made no file.' }
+  return new Promise((settle) => {
+    quietExports.set(job.jobId, { path: job.path, settle })
+    // Its events can come before this answer (the engine starts at once): they waited here.
+    const early = earlyExport.get(job.jobId)
+    earlyExport.delete(job.jobId)
+    if (early?.state === 'done') settleQuiet(job.jobId, 'export.done', {})
+    else if (early?.state === 'failed') settleQuiet(job.jobId, 'export.failed', { error: early.error })
+    else if (early?.state === 'cancelled') settleQuiet(job.jobId, 'export.cancelled', {})
+    // An engine that restarted meanwhile never says: given up on after 10 minutes.
+    else window.setTimeout(() => settleQuiet(job.jobId, 'export.failed', { error: 'The engine stopped before the sound was rendered.' }), 600_000)
+  })
+}
+
 // A job's first events can come before export.start's answer lists it (the engine starts it
 // at once, and a busy page reads the answer later): kept until the job is listed, so it never
 // sits on "Waiting" while it runs.
@@ -969,7 +1011,7 @@ export function startStore() {
     if (now && !sameFolder(now, openDir)) {
       const from = openDir
       openDir = now
-      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
+      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, directorTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
       for (const f of switchHooks) {
         try {
           f(from, now)

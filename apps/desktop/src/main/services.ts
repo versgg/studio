@@ -5,9 +5,10 @@
 // sound library and app settings.
 // Keys never cross to the page; each handler reads the one it needs here.
 
-import { app, ipcMain } from 'electron'
+import { app, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { aboutVoices, beginPackage, directorUrl, discardPackage, finishPackage, inboxDir, isPartial, sendFile, type TimeLabel, type VoiceClip } from './director'
 import { clearSecret, dropRetiredSecrets, getSecret, hasSecret, setSecret, type SecretName } from './secrets'
 import { stageText, transcribe } from './transcript'
 import { ElevenError, ElevenLabs, type Voice } from './elevenlabs'
@@ -75,6 +76,21 @@ function fakeDesign(o: { description: string; text?: string; model: string }) {
     return `data:audio/wav;base64,${Buffer.concat([head, pcm]).toString('base64')}`
   }
   return { text: o.text?.trim() || 'A line written for the description, as ElevenLabs does.', previews: [220, 330, 440].map((hz, i) => ({ id: `fake-preview-${i + 1}`, audio: wav(hz), seconds: 1 })) }
+}
+
+/**
+ * Opens a package in Director (director://inbox/<folder>), if something handles that link.
+ * False when nothing does or it fails; tests (their own inbox) never start an app.
+ */
+async function openDirector(url: string): Promise<boolean> {
+  if (process.env.STUDIO_DIRECTOR_INBOX) return false
+  if (!app.getApplicationNameForProtocol(url)) return false
+  try {
+    await shell.openExternal(url)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Files the page may write: recordings inside a project's `recordings` folder. */
@@ -323,6 +339,31 @@ export function registerServices() {
       if (fs.existsSync(f)) texts.push(fs.readFileSync(f, 'utf8').trim())
     }
     return texts.filter(Boolean).join('\n\n')
+  })
+
+  // Send to Director (director.ts): the page has the engine render the voice into a package
+  // folder in Director's inbox, then it's handed over here and Director asked to open it.
+  const inbox = () => inboxDir(app.getPath('appData'))
+  ipcMain.handle('director:about', (_e, paths: unknown) => aboutVoices(Array.isArray(paths) ? paths.slice(0, 256) : []))
+  ipcMain.handle('director:begin', (_e, name: string) => {
+    try {
+      return { dir: beginPackage(inbox(), String(name ?? '')).dir }
+    } catch (e) {
+      return failure(e)
+    }
+  })
+  ipcMain.handle('director:discard', (_e, dir: string) => discardPackage(inbox(), dir))
+  ipcMain.handle('director:finish', async (_e, o: { dir: string; name: string; clips: VoiceClip[]; labels: TimeLabel[]; script: string | null; language: string | null; open: boolean }) => {
+    if (!isPartial(inbox(), o.dir)) return { error: 'That isn’t a package being sent to Director.' }
+    try {
+      const send = sendFile(o)
+      const folder = finishPackage(o.dir, send)
+      const opened = o.open ? await openDirector(directorUrl(path.basename(folder))) : false
+      return { folder, opened, phrases: send.phrases.length, duration: send.duration }
+    } catch (e) {
+      discardPackage(inbox(), o.dir)
+      return failure(e)
+    }
   })
 
   registerFiles()

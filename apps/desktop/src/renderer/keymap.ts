@@ -40,6 +40,7 @@ import {
   shuttle,
 } from './store'
 import { addText } from './libraryActions'
+import { askDirector } from './director'
 import { setUi } from './ui-state'
 import { keyChar } from './keyboardLayout'
 
@@ -129,6 +130,7 @@ export const ACTIONS: Action[] = [
   { id: 'importFolder', group: 'File', label: 'Import a folder', keys: 'Shift+Ctrl+I', run: importFolderDialog },
   { id: 'save', group: 'File', label: 'Save', keys: 'Ctrl+S', run: () => toast('Saved. Studio saves every change as you make it.') },
   { id: 'saveAs', group: 'File', label: 'Save as', keys: 'Ctrl+Alt+S', run: () => setState({ dialog: 'saveAs' }) },
+  { id: 'director', group: 'File', label: 'Send voice to Director', keys: 'Shift+Ctrl+D', run: () => askDirector() },
   { id: 'close', group: 'File', label: 'Close project', keys: 'Ctrl+W', run: () => void closeProject() },
   { id: 'prefs', group: 'File', label: 'Preferences', keys: 'Ctrl+,', run: () => setState({ dialog: 'prefs' }) },
 ]

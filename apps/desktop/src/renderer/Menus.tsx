@@ -42,6 +42,7 @@ import { basename } from './format'
 import { ACTIONS, keysFor, keysLabel } from './keymap'
 import { setUi } from './ui-state'
 import { openCapcut } from './CapcutDialog'
+import { askDirector, hasVoice } from './director'
 
 // Menu items whose keys come from the keymap (and so follow presets and your changes).
 const ACTION_IDS = new Set(ACTIONS.map((a) => a.id))
@@ -87,6 +88,7 @@ function menus(): Record<string, [string, Entry[]]> {
         { id: 'settings', label: 'Project settings…', run: () => setState({ selection: [], page: 'edit' }) },
         { id: 'export', label: 'Export…', keys: 'Ctrl+E', run: () => setState({ dialog: 'export' }), enabled: hasClips },
         { id: 'queue', label: 'Export queue', run: () => setState({ dialog: 'export' }) },
+        { id: 'director', label: 'Send voice to Director…', keys: 'Shift+Ctrl+D', run: () => askDirector(), enabled: (s) => hasVoice(s.snap) },
         'sep',
         { id: 'mcp', label: 'Agent connection (MCP)…', run: () => setState({ dialog: 'mcp' }) },
         { id: 'close', label: 'Close project', keys: 'Ctrl+W', run: () => void closeProject() },

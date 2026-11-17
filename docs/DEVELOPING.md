@@ -37,7 +37,7 @@
 - **Stand-ins for outside services:** the UI check never calls a paid or online service unless told to. Steps that need one run on a stand-in when it's switched on, and are skipped otherwise:
   - `STUDIO_VMAKE_FAKE=1` (Vmake), `STUDIO_ELEVEN_FAKE=1` (ElevenLabs), `STUDIO_STEMS_FAKE=1` (stems server), `STUDIO_CLAUDE_FAKE=1` (Claude Code's reading and translating), `STUDIO_DOWNLOAD_FAKE=1` (Media › Download's server; the UI check always sets it).
   - `STUDIO_UI_CHECK_ONLINE=0` skips the one step that uses the real transcript server.
-- **Other switches:** `STUDIO_SILENT=1` keeps tests quiet. `STUDIO_UI_ONLY=<pattern>` runs only matching UI-check steps, without the window-chrome run, which shows a real window. `STUDIO_UI_APP=<dir>` tests a staged copy of the app, so a Studio that's open keeps its files.
+- **Other switches:** `STUDIO_SILENT=1` keeps tests quiet. `STUDIO_UI_ONLY=<pattern>` runs only matching UI-check steps, without the window-chrome run, which shows a real window. `STUDIO_UI_APP=<dir>` tests a staged copy of the app, so a Studio that's open keeps its files. `STUDIO_DIRECTOR_INBOX=<dir>` sends Send to Director's packages there instead of Director's inbox, and never opens Director (the UI check always sets a folder of its own).
 - **Every stand-in at once:**
 
   ```bash

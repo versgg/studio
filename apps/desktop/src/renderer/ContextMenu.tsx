@@ -1,6 +1,7 @@
 // Right-click menus for timeline clips, empty timeline space and library items.
 
 import { cancelDub, dubbedLines, openDub, rerollClips, retryDub } from './dub'
+import { askDirector } from './director'
 import { keysFor, keysLabel } from './keymap'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { changeVoice } from './audio'
@@ -78,6 +79,8 @@ export function clipMenu(): MenuEntry[] {
     const c = findClip(s.snap, id)?.clip
     return c && t > c.startUs && t < c.startUs + c.durationUs
   })
+  // A sound clip (on a sound track, not the main one): its track's voice can go to Director.
+  const soundClip = sel.map((id) => findClip(s.snap, id)).find((f) => f && f.track.kind === 'audio' && !f.track.main)
   // A video's own sound, on any layer (it was the main track only).
   const soundHere = one?.track.kind === 'video' && media?.kind === 'video' && media.hasAudio
   // Sentences a voice dub spoke (each its own sound clip): Reroll voice says them again.
@@ -112,6 +115,8 @@ export function clipMenu(): MenuEntry[] {
     ...(dubbed ? [{ label: dubbed === 1 ? 'Reroll voice' : `Reroll voice (${dubbed} sentences)`, run: () => void rerollClips(sel) }] : []),
     ...(sel.some(isCompound) ? [{ label: 'Break compound clip', keys: keysFor('breakCompound'), run: breakCompound }] : []),
     'sep',
+    // A voice's phrases (the clips of its sound track) to Director, which makes the ad from them.
+    ...(soundClip ? [{ label: 'Send to Director…', keys: keysFor('director'), run: () => askDirector(soundClip.clip.id) }] : []),
     { label: `Export ${sel.length === 1 ? 'this clip' : `these ${sel.length} clips`}…`, run: exportSelection },
   ]
 }

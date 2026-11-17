@@ -256,6 +256,17 @@ export interface StudioApi {
     /** The scripts these sounds were read from (voiceovers keep theirs), joined in order; "" if none. */
     scriptsFor(paths: string[]): Promise<string>
     /**
+     * Send to Director (src/main/director.ts). What Studio knows about these voiceovers: their
+     * scripts (`<name>.script.txt`) joined in order, and their language (`<name>.voice.json`).
+     */
+    directorAbout(paths: string[]): Promise<{ script: string | null; language: string | null }>
+    /** Makes the package's `.partial` folder in Director's inbox (the inbox too, if missing), for voice.wav. */
+    directorBegin(name: string): Promise<{ dir: string } | ServiceError>
+    /** Writes send.json beside voice.wav, hands the package over (drops `.partial`) and, with `open`, asks Director to open it. */
+    directorFinish(o: { dir: string; name: string; clips: { startUs: number; durationUs: number }[]; labels: { startUs: number; endUs: number; text: string }[]; script: string | null; language: string | null; open: boolean }): Promise<{ folder: string; opened: boolean; phrases: number; duration: number } | ServiceError>
+    /** Removes a package that didn't make it. */
+    directorDiscard(dir: string): Promise<void>
+    /**
      * Stems from the stems server (AudioShake): sends the stretch of `source` a clip plays and brings
      * the stems back into the project's stems folder (src/main/stems.ts). Runs on its own.
      */

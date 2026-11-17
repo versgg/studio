@@ -54,3 +54,24 @@
 .pd-key:last-child { border-bottom: 0; padding-bottom: 0; }
 .pd-link.left { align-self: flex-start; }
 .pd-grid > span:nth-child(odd) { align-self: start; padding-top: 5px; }
+.pd-grow { flex: 1; }
+
+/* Send to Director: the voice, its phrases and its script, as quiet rows. */
+.dir-rows { margin: 0; display: flex; flex-direction: column; }
+.dir-rows > div { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 12px; align-items: start; padding: 8px 0; border-bottom: 1px solid #1E1E21; }
+.dir-rows > div:first-child { padding-top: 0; }
+.dir-rows dt { font-size: 12px; line-height: 20px; color: #A3A3AB; }
+.dir-rows dd { margin: 0; min-width: 0; line-height: 20px; }
+.dir-voice { display: flex; align-items: baseline; gap: 10px; }
+.dir-voice-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dir-len { font-family: var(--font-mono); font-size: 11px; color: #A3A3AB; white-space: nowrap; }
+.dir-phrases { display: flex; flex-wrap: wrap; gap: 4px; }
+.dir-phrases span { min-width: 22px; height: 20px; box-sizing: border-box; padding: 0 5px; display: inline-grid; place-items: center; border: 1px solid #34343A; border-radius: 3px; font-family: var(--font-mono); font-size: 11px; line-height: 1; color: #C4C4CA; }
+.dir-script { display: flex; flex-direction: column; gap: 6px; }
+.dir-dim { color: #8A8A93; }
+.dir-paste {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #2A2A2E; border-radius: 3px; background: #1C1C1F; color: #EDEDEF;
+  font: inherit; font-size: 13px; line-height: 18px; outline: 0; resize: vertical; user-select: text;
+}
+.dir-paste:focus { border-color: #6F86FF; }
+.dir-paste::placeholder { color: #6E6E77; }

@@ -1,8 +1,9 @@
 // Dialogs from the File, View and Help menus: Save as, Versions, saved workspaces, Getting
-// started, What's new, Report a problem, Preferences, the agent connection, and the
-// approval an agent asks for before it exports.
+// started, What's new, Report a problem, Preferences, the agent connection, Send to Director,
+// and the approval an agent asks for before it exports.
 
-import { useKept } from './drafts'
+import { draftName, useKept, useProjectDraft } from './drafts'
+import { lengthText, sendToDirector, voiceOf } from './director'
 import { useEffect, useState, type ReactNode } from 'react'
 import { ElevenKeyHelp } from './ElevenKeyHelp'
 import { keysFor } from './keymap'
@@ -11,6 +12,7 @@ import {
   call,
   deleteWorkspace,
   getState,
+  mediaById,
   openProjectAt,
   saveWorkspace,
   setLayout,
@@ -454,6 +456,108 @@ export function McpDialog() {
         </label>
       </div>
       <p className="pd-note">Edits an agent makes land in the History tab as “Claude · MCP”, and undo works on them like on yours.</p>
+    </Frame>
+  )
+}
+
+/**
+ * Send to Director: a voice (a sound track's clips as they play) with its phrases and script,
+ * to Director's inbox (director.ts). Opened from a sound clip's menu or File › Send voice to Director….
+ */
+export function DirectorDialog() {
+  const snap = useStore((s) => s.snap)
+  const target = useStore((s) => s.directorTarget)
+  const voice = voiceOf(snap, target)
+  const [open, setOpen] = useKept('director-open', true)
+  // A script pasted for this track, kept as it's typed.
+  const [pasted, setPasted] = useProjectDraft(draftName('director-script', target?.trackId ?? ''), '')
+  const [known, setKnown] = useState<{ script: string | null } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const paths = [...new Set(voice?.clips.map((c) => mediaById(snap, c.mediaId)?.path ?? '') ?? [])].join('\n')
+  useEffect(() => {
+    let live = true
+    setKnown(null)
+    window.studio.services.directorAbout(paths.split('\n')).then((a) => live && setKnown(a))
+    return () => {
+      live = false
+    }
+  }, [paths])
+  const done = () => setState({ dialog: null, directorTarget: null })
+  if (!voice) {
+    return (
+      <Frame title="Send to Director">
+        <p className="pd-text">That voice isn’t on the timeline any more.</p>
+      </Frame>
+    )
+  }
+  const lines = known?.script ? known.script.split(/\r?\n/).filter((l) => l.trim()).length : 0
+  const muted = !!voice.track.mute
+  const t0 = voice.clips[0].startUs
+  const send = async () => {
+    if (busy || muted) return
+    setBusy(true)
+    const ok = await sendToDirector(voice, { script: known?.script ? null : pasted, open })
+    setBusy(false)
+    if (ok) done()
+  }
+  return (
+    <Frame
+      title="Send to Director"
+      foot={
+        <>
+          <span className="pd-grow" />
+          <button type="button" className="pd-btn" onClick={done}>
+            Cancel
+          </button>
+          <button type="button" className="pd-btn primary" onClick={send} disabled={busy || muted} autoFocus>
+            {busy ? 'Sending…' : 'Send'}
+          </button>
+        </>
+      }
+    >
+      <dl className="dir-rows">
+        <div>
+          <dt>Voice</dt>
+          <dd className="dir-voice">
+            <span className="dir-voice-name" title={voice.name}>
+              {voice.name}
+            </span>
+            <span className="dir-len">{lengthText(voice.lengthUs)}</span>
+          </dd>
+        </div>
+        <div>
+          <dt>Phrases</dt>
+          <dd className="dir-phrases" aria-label={`${voice.clips.length} phrase${voice.clips.length === 1 ? '' : 's'}`}>
+            {voice.clips.map((c, i) => (
+              <span key={c.id} title={`${((c.startUs - t0) / 1e6).toFixed(2)}–${((c.startUs + c.durationUs - t0) / 1e6).toFixed(2)} s`}>
+                {i + 1}
+              </span>
+            ))}
+          </dd>
+        </div>
+        <div>
+          <dt>Script</dt>
+          <dd className="dir-script">
+            {!known ? (
+              <span className="dir-dim">…</span>
+            ) : known.script ? (
+              <span>
+                {lines} line{lines === 1 ? '' : 's'}, from the voiceover
+              </span>
+            ) : (
+              <>
+                <span className="dir-dim">None</span>
+                <textarea className="dir-paste" rows={3} value={pasted} onChange={(e) => setPasted(e.target.value)} placeholder="Paste the script here (optional)" aria-label="Script" spellCheck={false} />
+              </>
+            )}
+          </dd>
+        </div>
+      </dl>
+      <label className="pd-checks">
+        <input type="checkbox" checked={open} onChange={(e) => setOpen(e.target.checked)} /> Open Director when it’s there
+      </label>
+      {muted && <p className="error">This track is muted, so Director would hear nothing. Unmute it to send it.</p>}
+      <p className="pd-note">Director hears it word by word and lines each phrase up with its line of the script.</p>
     </Frame>
   )
 }

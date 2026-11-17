@@ -8,6 +8,7 @@ import path from 'node:path'
 import { stemsTest } from './stems'
 import { vmakeTest } from './vmake-jobs'
 import { elevenTest, removeClone } from './dub-voice'
+import { wavInfo } from './director'
 import { MIN_WINDOW } from '../shared/window'
 
 const HELPERS = `
@@ -147,6 +148,8 @@ async function runProbe(win: BrowserWindow, out: string) {
 
 export async function runUiCheck(win: BrowserWindow, out: string, clips: string[], exportDir: string) {
   fs.mkdirSync(out, { recursive: true })
+  // Send to Director writes to a test inbox, never Director's own (scripts/ui-check.mjs sets one).
+  process.env.STUDIO_DIRECTOR_INBOX ||= path.join(path.dirname(exportDir), 'director-inbox')
   if (process.env.STUDIO_UI_PROBE) return runProbe(win, out)
   win.webContents.setFrameRate(30)
   const results: Result[] = []
@@ -4175,6 +4178,141 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      if (listed !== 'Spring promo v2') throw new Error('Home lists it as ' + listed)
      return { before, offered, after: kept, listed, windowTitle: document.title }`,
   )
+
+  // Send to Director: a voiceover with its script and language beside it, on a sound track cut into
+  // three phrases with gaps and two script labels. Sent from the "…" menu of one of its clips on
+  // the Audio page into the test inbox (STUDIO_DIRECTOR_INBOX; nothing is opened in tests): the
+  // package folder (no .partial left), voice.wav as long as the phrases span, and send.json. Then
+  // two of the clips selected and Shift+Ctrl+D: just those two, sent without opening Director.
+  const sendDirector = 'Send to Director: from a sound clip’s menu, the voice, its phrases and its script land in the inbox as voice.wav and send.json'
+  if (!only || only.test(sendDirector)) {
+    const inbox = process.env.STUDIO_DIRECTOR_INBOX!
+    const vo = path.join(path.dirname(exportDir), 'director-voice.wav')
+    const script = 'Första raden.\nAndra raden.\nTredje raden.'
+    try {
+      fs.rmSync(inbox, { recursive: true, force: true })
+      // 8 s of a tone (48 kHz, 16-bit mono), with its script and voice beside it as a voiceover keeps them.
+      const rate = 48_000
+      const pcm = Buffer.alloc(rate * 8 * 2)
+      for (let i = 0; i < rate * 8; i++) pcm.writeInt16LE(Math.round(8000 * Math.sin((2 * Math.PI * 330 * i) / rate)), i * 2)
+      const head = Buffer.alloc(44)
+      head.write('RIFF', 0)
+      head.writeUInt32LE(36 + pcm.length, 4)
+      head.write('WAVEfmt ', 8)
+      head.writeUInt32LE(16, 16)
+      head.writeUInt16LE(1, 20)
+      head.writeUInt16LE(1, 22)
+      head.writeUInt32LE(rate, 24)
+      head.writeUInt32LE(rate * 2, 28)
+      head.writeUInt16LE(2, 32)
+      head.writeUInt16LE(16, 34)
+      head.write('data', 36)
+      head.writeUInt32LE(pcm.length, 40)
+      fs.writeFileSync(vo, Buffer.concat([head, pcm]))
+      fs.writeFileSync(vo.replace(/\.wav$/, '.script.txt'), `${script}\n`)
+      fs.writeFileSync(vo.replace(/\.wav$/, '.voice.json'), JSON.stringify({ voiceId: 'fake-voice', name: 'Test Voice', modelId: 'eleven_v4', speed: 1, languageCode: 'sv' }))
+      // The track: 0.5–2.5, 3.0–5.0 and 5.6–8.0 s on the timeline (the file from 0 s, 2.5 s and 5.1 s).
+      const made = await js(`const E = window.studio.engine
+        const r = await E.call('media.import', { paths: [${JSON.stringify(vo)}] })
+        const mediaId = r.imported[0]
+        await E.call('timeline.insertNewTrack', { mediaId, atUs: 500000 })
+        const onTrack = async () => { const s = await __t.snap(); const t = s.project.tracks.find((x) => !x.main && x.clips.some((c) => c.mediaId === mediaId)); return t && [...t.clips].sort((a, b) => a.startUs - b.startUs) }
+        let c = await __t.until(onTrack, 5000, 'the voice track')
+        await E.call('timeline.split', { atUs: 2500000, clipIds: [c[0].id] })
+        c = await __t.until(async () => { const x = await onTrack(); return x.length === 2 && x }, 3000, 'the first split')
+        await E.call('timeline.split', { atUs: 5500000, clipIds: [c[1].id] })
+        c = await __t.until(async () => { const x = await onTrack(); return x.length === 3 && x }, 3000, 'the second split')
+        await E.call('timeline.trim', { clipId: c[1].id, inUs: c[1].inUs + 500000, durationUs: 2000000, startUs: 3000000 })
+        await E.call('timeline.trim', { clipId: c[2].id, inUs: c[2].inUs + 100000, durationUs: 2400000, startUs: 5600000 })
+        await E.call('labels.add', { items: [{ startUs: 600000, endUs: 2400000, text: 'Första raden.' }, { startUs: 3000000, endUs: 5000000, text: 'Andra raden.' }, { startUs: 5600000, endUs: 8000000, text: 'Sound 9' }] })
+        c = await __t.until(async () => { const x = await onTrack(); return x[1].startUs === 3000000 && x[2].startUs === 5600000 && x }, 3000, 'the trims')
+        return { mediaId, clips: c.map((x) => [x.id, x.startUs, x.durationUs]) }`)
+      const ids: string[] = made.clips.map((c: [string]) => c[0])
+      // The Audio page's "…" on one of its clips › Send to Director…
+      const dialog = await js(`;[...__t.qa('.page-switch button')].find((b) => b.textContent === 'Audio').click()
+        await __t.until(() => __t.q('.ap-lanes'), 3000, 'the Audio page')
+        // The whole timeline in view (Ctrl+F), wherever earlier steps left the zoom.
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true, cancelable: true }))
+        const more = await __t.until(() => __t.qa('.ap-clip-more').find((b) => b.getAttribute('aria-label') === 'More for director-voice'), 5000, 'the clip’s … button')
+        more.click()
+        const item = await __t.until(() => __t.qa('.context-menu button').find((b) => b.textContent.startsWith('Send to Director…')), 2000, 'Send to Director… in its menu')
+        const keys = item.querySelector('kbd')?.textContent
+        item.click()
+        const d = await __t.until(() => __t.q('[role="dialog"][aria-label="Send to Director"]'), 3000, 'the dialog')
+        await __t.until(() => /from the voiceover/.test(d.querySelector('.dir-script')?.textContent ?? ''), 3000, 'the script found')
+        const box = d.querySelector('input[type="checkbox"]')
+        return { keys, voice: d.querySelector('.dir-voice-name').textContent, length: d.querySelector('.dir-len').textContent, phrases: [...d.querySelectorAll('.dir-phrases span')].map((s) => s.textContent).join(' '), script: d.querySelector('.dir-script').textContent, open: box.checked, help: d.querySelector('.pd-note')?.textContent }`)
+      if (dialog.keys !== 'Shift+Ctrl+D') throw new Error(`the menu shows the keys ${dialog.keys}`)
+      if (dialog.voice !== 'director-voice' || dialog.length !== '7.5 s' || dialog.phrases !== '1 2 3' || dialog.script !== '3 lines, from the voiceover' || dialog.open !== true) throw new Error(`the dialog shows ${JSON.stringify(dialog)}`)
+      await shot('28-send-to-director')
+      const sent = await js(`const d = __t.q('[role="dialog"][aria-label="Send to Director"]')
+        ;[...d.querySelectorAll('button')].find((b) => b.textContent === 'Send').click()
+        const toast = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /^Sent/.test(t)), 15000, 'the toast')
+        await __t.until(() => !__t.q('[role="dialog"][aria-label="Send to Director"]'), 2000, 'the dialog to close')
+        return toast`)
+      // In tests nothing opens Director, so the toast says to open it.
+      if (sent !== 'Sent. Open Director to use it.') throw new Error(`the toast said ${sent}`)
+      const packages = () => fs.readdirSync(inbox).sort()
+      const first = packages()
+      if (first.length !== 1 || !/^\d{8}-\d{6}-director-voice$/.test(first[0])) throw new Error(`the inbox has ${JSON.stringify(first)}`)
+      const check = (folder: string, want: { duration: number; phrases: [number, number, string | null][] }) => {
+        const dir = path.join(inbox, folder)
+        const files = fs.readdirSync(dir).sort().join()
+        if (files !== 'send.json,voice.wav') throw new Error(`${folder} has ${files}`)
+        const wav = wavInfo(path.join(dir, 'voice.wav'))
+        if (!wav || fs.statSync(path.join(dir, 'voice.wav')).size < 1000 || wav.rate !== 48_000) throw new Error(`voice.wav: ${JSON.stringify(wav)}`)
+        if (Math.abs(wav.seconds - want.duration) > 0.1) throw new Error(`voice.wav is ${wav.seconds.toFixed(3)} s, not ${want.duration}`)
+        const send = JSON.parse(fs.readFileSync(path.join(dir, 'send.json'), 'utf8'))
+        const near = (a: number, b: number) => Math.abs(a - b) < 0.002
+        const ok =
+          send.version === 1 && send.app === 'Studio' && send.audio === 'voice.wav' && send.name === 'director-voice' && !Number.isNaN(Date.parse(send.createdAt)) &&
+          near(send.duration, want.duration) && send.script === script && send.language === 'sv' && send.phrases.length === want.phrases.length &&
+          want.phrases.every(([a, b, text], i) => near(send.phrases[i].start, a) && near(send.phrases[i].end, b) && send.phrases[i].text === text)
+        if (!ok) throw new Error(`send.json: ${JSON.stringify(send)}`)
+        return { folder, seconds: +wav.seconds.toFixed(3), phrases: send.phrases.map((p: { start: number; end: number }) => [p.start, p.end]) }
+      }
+      const all = check(first[0], { duration: 7.5, phrases: [[0, 2, 'Första raden.'], [2.5, 4.5, 'Andra raden.'], [5.1, 7.5, null]] })
+      // The last two selected (on the Edit page), Shift+Ctrl+D: just those; sent without opening Director (remembered).
+      const two = await js(`;[...__t.qa('.page-switch button')].find((b) => b.textContent === 'Edit').click()
+        await __t.until(() => __t.clipEl(${JSON.stringify(ids[1])}), 3000, 'the clips on the timeline')
+        __t.key('Escape')
+        __t.click(__t.clipEl(${JSON.stringify(ids[1])}))
+        __t.click(__t.clipEl(${JSON.stringify(ids[2])}), { ctrlKey: true })
+        await __t.until(() => window.__studio.getState().selection.length === 2, 2000, 'two selected')
+        __t.key('D', { code: 'KeyD', ctrlKey: true, shiftKey: true })
+        const d = await __t.until(() => __t.q('[role="dialog"][aria-label="Send to Director"]'), 3000, 'the dialog from the keys')
+        const shown = { length: d.querySelector('.dir-len').textContent, phrases: d.querySelectorAll('.dir-phrases span').length }
+        const box = d.querySelector('input[type="checkbox"]')
+        box.click()
+        await __t.until(() => !box.checked, 1000, 'the box unticked')
+        ;[...d.querySelectorAll('button')].find((b) => b.textContent === 'Send').click()
+        const toast = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /^Sent to Director/.test(t)), 15000, 'the toast')
+        await __t.until(() => !__t.q('[role="dialog"][aria-label="Send to Director"]'), 2000, 'the dialog to close')
+        // Remembered: unticked next time; ticked again for whoever runs next.
+        __t.key('D', { code: 'KeyD', ctrlKey: true, shiftKey: true })
+        const again = await __t.until(() => __t.q('[role="dialog"][aria-label="Send to Director"] input[type="checkbox"]'), 3000, 'the dialog again')
+        const remembered = again.checked
+        again.click()
+        __t.key('Escape')
+        await __t.until(() => !__t.q('[role="dialog"]'), 2000, 'the dialog closed')
+        return { ...shown, toast, remembered }`)
+      if (two.length !== '5.0 s' || two.phrases !== 2 || two.toast !== 'Sent to Director: 2 phrases, 5.0 s.' || two.remembered !== false) throw new Error(`the two: ${JSON.stringify(two)}`)
+      const second = packages().filter((f) => f !== first[0])
+      if (second.length !== 1 || !/^\d{8}-\d{6}-director-voice(-2)?$/.test(second[0])) throw new Error(`the inbox has ${JSON.stringify(packages())}`)
+      const part = check(second[0], { duration: 5, phrases: [[0, 2, 'Andra raden.'], [2.6, 5, null]] })
+      // Leave the project as it was.
+      await js(`const s = await __t.snap()
+        await window.studio.engine.call('timeline.delete', { clipIds: ${JSON.stringify(ids)} })
+        const labels = (s.project.labels ?? []).filter((l) => ['Första raden.', 'Andra raden.', 'Sound 9'].includes(l.text)).map((l) => l.id)
+        if (labels.length) await window.studio.engine.call('labels.delete', { labelIds: labels })`)
+      const detail = { dialog, sent, all, two, part }
+      results.push({ step: sendDirector, ok: true, detail })
+      console.log(`[ui-check] ok   ${sendDirector} ${JSON.stringify(detail)}`)
+    } catch (e) {
+      results.push({ step: sendDirector, ok: false, detail: (e as Error).message })
+      console.log(`[ui-check] FAIL ${sendDirector}: ${(e as Error).message}`)
+    }
+  }
 
   // The window can't be made smaller than its smallest size, and the layout still fits there.
   const tiny ='window: it can’t be made smaller than its smallest size, and everything still fits there'

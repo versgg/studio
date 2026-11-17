@@ -137,6 +137,8 @@ const env = {
   STUDIO_SILENT: '1',
   // Media › Download's stand-in: the UI check never calls the download server.
   STUDIO_DOWNLOAD_FAKE: '1',
+  // Send to Director's inbox: a folder of the run's own, never Director's (and nothing is opened).
+  STUDIO_DIRECTOR_INBOX: join(work, 'director-inbox'),
   ...(standIn ? { STUDIO_TRANSCRIPT_URL: `http://127.0.0.1:${standIn.address().port}/api`, STUDIO_UI_CHECK_TRANSCRIPT_STANDIN: '1' } : {}),
 }
 const runApp = (extra) =>

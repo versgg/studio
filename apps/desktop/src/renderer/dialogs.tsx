@@ -6,7 +6,7 @@ import { vmakeCheck, vmakeHasToken, vmakeKnown, vmakeTokenSet } from './vmakeAcc
 import { CloneDialogBody, DesignDialogBody, VoicePickerDialog } from './AudioPanel'
 import { DownloadDialogBody } from './DownloadDialog'
 import { ExportDialog } from './ExportDialog'
-import { McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
+import { DirectorDialog, McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
 import { ShortcutsDialog } from './ShortcutsDialog'
 import { call, fileUrl, findClip, importPaths, mediaById, newProject, removeText, setState, useStore, type Crop } from './store'
 
@@ -44,6 +44,7 @@ export function Dialogs() {
   if (dialog === 'report') return <ReportDialog />
   if (dialog === 'prefs') return <PrefsDialog />
   if (dialog === 'mcp') return <McpDialog />
+  if (dialog === 'director') return <DirectorDialog />
   if (dialog === 'new') return <NewProjectDialog />
   if (dialog === 'shortcuts') return <ShortcutsDialog />
   if (dialog === 'about') return <AboutDialog />
