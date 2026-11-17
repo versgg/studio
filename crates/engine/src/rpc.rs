@@ -1700,7 +1700,13 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
         // Export
         "export.start" => {
             let m = engine.services()?;
-            let (project, _) = engine.project()?;
+            // `projectDir`: a project that isn't open (Home › several projects › Export), read
+            // from its folder as saved; the open one (or none) stays as it is.
+            let open = engine.doc.lock().unwrap().as_ref().map(|d| d.dir.to_string_lossy().into_owned());
+            let project = match params.get("projectDir").and_then(Value::as_str) {
+                Some(dir) if open.as_deref().map(folder_key) != Some(folder_key(dir)) => Arc::new(Doc::open(Path::new(dir)).map_err(io_err)?.project),
+                _ => engine.project()?.0,
+            };
             let mut formats = strings(&params, "formats");
             if formats.is_empty() {
                 formats.push(project_aspect(&project));
@@ -2071,6 +2077,31 @@ mod tests {
 
     /// A request meant for one project (`_project`) is refused once another is open, reads and
     /// edits alike, and the open project is left as it was; without `_project` nothing changes.
+    /// Home › several projects › Export: a project that isn't open is rendered from its folder,
+    /// and the open one stays open, untouched.
+    #[test]
+    fn a_project_that_isnt_open_exports_from_its_folder() {
+        let dir = std::env::temp_dir().join(format!("studio-rpc-test-{}-batch", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = Engine::new(&dir.join("ring"), 1080, 1920, dir.join("projects")).unwrap();
+        let a = dispatch(&e, "project.new", json!({ "name": "A" })).unwrap()["dir"].as_str().unwrap().to_string();
+        let b = dispatch(&e, "project.new", json!({ "name": "B" })).unwrap()["dir"].as_str().unwrap().to_string();
+        dispatch(&e, "text.add", json!({ "atUs": 0, "durationUs": 1_000_000, "text": { "content": "B", "png": "b.png" } })).unwrap();
+        dispatch(&e, "project.open", json!({ "path": a })).unwrap();
+        let out = dir.join("out").to_string_lossy().into_owned();
+        let r = dispatch(&e, "export.start", json!({ "projectDir": b, "formats": ["9:16"], "folder": out })).unwrap();
+        let job = r["jobs"][0].clone();
+        assert!(job["path"].as_str().unwrap().contains("B-1080x1920"), "{job}");
+        dispatch(&e, "export.cancel", json!({ "jobId": job["jobId"] })).unwrap();
+        // A is still the open one (and empty): exporting it, by its folder or not, says so.
+        assert_eq!(e.snapshot()["dir"].as_str().unwrap(), a);
+        assert!(dispatch(&e, "export.start", json!({ "projectDir": a, "formats": ["9:16"], "folder": out })).unwrap_err().message.contains("empty"));
+        assert!(dispatch(&e, "export.start", json!({ "formats": ["9:16"], "folder": out })).unwrap_err().message.contains("empty"));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_request_for_another_project_is_refused_and_changes_nothing() {
         let dir = std::env::temp_dir().join(format!("studio-rpc-test-{}-scope", std::process::id()));

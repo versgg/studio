@@ -1,0 +1,12 @@
+/* Home › several projects › Export (ExportProjectsDialog.tsx): the settings, then each project as it's made. */
+.xp-summary { margin: 0 0 12px; font-size: 12px; color: #8a8a93; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.xp-formats { flex-wrap: wrap; }
+.xp-list { display: flex; flex-direction: column; max-height: 320px; overflow: auto; border-top: 1px solid #1e1e21; }
+.xp-item { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.8fr); align-items: baseline; column-gap: 12px; padding: 7px 0; border-bottom: 1px solid #1e1e21; }
+.xp-name { min-width: 0; font-size: 12px; color: #ededef; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xp-files { margin-left: 8px; font-size: 10px; color: #6b6b73; }
+.xp-state { min-width: 0; font-size: 11px; color: #8a8a93; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xp-item.failed .xp-state { color: #f08080; white-space: normal; }
+.xp-item.waiting .xp-name, .xp-item.cancelled .xp-name { color: #8a8a93; }
+.xp-bar { grid-column: 1 / -1; height: 2px; margin-top: 6px; background: #26262a; border-radius: 1px; overflow: hidden; }
+.xp-bar > span { display: block; height: 100%; background: #8a8a93; transition: width 0.3s; }

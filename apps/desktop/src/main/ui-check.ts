@@ -1095,6 +1095,48 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      return { picked: total, status, ask }`,
   )
   await shot('15c-home-picked')
+  // Several projects exported at once: picked with the box in a card's corner, then Export in the
+  // bar; each is rendered from its folder (none is opened), one after another.
+  await step(
+    'Home: the corner boxes pick two projects, and Export renders both without opening them',
+    `__t.key('Escape')
+     await __t.until(() => !__t.q('.home-card.picked'), 2000, 'nothing picked')
+     const open = (await __t.snap()).dir
+     const card = (n) => __t.qa('.home-card').find((c) => c.querySelector('.title')?.textContent.trim() === n)
+     card('Box 01').querySelector('.home-pick').click()
+     card('Box 02').querySelector('.home-pick').click()
+     await __t.until(() => __t.qa('.home-card.picked').length === 2, 2000, 'two picked')
+     ;(await __t.until(() => __t.qa('.home-picked button').find((b) => b.textContent === 'Export 2…'), 2000, 'Export 2…')).click()
+     await __t.until(() => __t.q('.modal[aria-label="Export projects"]'), 3000, 'the Export projects dialog')
+     const folder = __t.q('.modal input[aria-label="Folder"]')
+     const dir = ${JSON.stringify(path.join(exportDir, 'batch'))}
+     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(folder, dir)
+     folder.dispatchEvent(new Event('input', { bubbles: true }))
+     const check = __t.q('.modal input[type="checkbox"]')
+     if (check.checked) check.click()
+     window.__batchDir = dir
+     return { summary: __t.q('.xp-summary').textContent, formats: __t.qa('.xp-formats button.on').map((b) => b.textContent), button: __t.qa('.modal footer button').map((b) => b.textContent) }`,
+  )
+  await shot('15c2-home-export-projects')
+  await step(
+    'Home: Export projects makes each project’s file, one after the other, and the open project stays open',
+    `const open = (await __t.snap()).dir
+     ;[...__t.qa('.modal footer button')].find((b) => b.textContent === 'Export 2 projects').click()
+     await __t.until(() => __t.qa('.xp-item').length === 2, 3000, 'the two projects listed')
+     const states = new Set()
+     await __t.until(() => { for (const i of __t.qa('.xp-item')) states.add(i.className.replace('xp-item ', '')); return __t.qa('.xp-item.done').length === 2 || __t.q('.xp-item.failed') }, 180000, 'both exported')
+     if (__t.q('.xp-item.failed')) throw new Error(__t.q('.xp-item.failed .xp-state').textContent)
+     const files = ['Box 01-9x16-v1.mp4', 'Box 02-9x16-v1.mp4'].map((f) => window.__batchDir + '/' + f)
+     const exist = await window.studio.app.existing(files)
+     if (!exist.every(Boolean)) throw new Error('missing: ' + files.filter((_, i) => !exist[i]).join(', '))
+     if ((await __t.snap()).dir !== open) throw new Error('another project was opened')
+     const summary = __t.q('.xp-summary').textContent
+     ;[...__t.qa('.modal footer button')].find((b) => b.textContent === 'Done').click()
+     await __t.until(() => !__t.q('.modal[aria-label="Export projects"]'), 2000, 'the dialog to close')
+     __t.key('Escape')
+     return { summary, seen: [...states], files: files.map((f) => f.split('/').pop()) }`,
+  )
+
   await step(
     'Home: in the list, a box from a row picks the rows it crosses, and its release opens nothing',
     `__t.key('Escape')

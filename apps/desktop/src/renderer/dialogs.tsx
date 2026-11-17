@@ -5,6 +5,7 @@ import type { VmakeAccount } from '../shared/api'
 import { vmakeCheck, vmakeHasToken, vmakeKnown, vmakeTokenSet } from './vmakeAccount'
 import { CloneDialogBody, DesignDialogBody, VoicePickerDialog } from './AudioPanel'
 import { DownloadDialogBody } from './DownloadDialog'
+import { ExportProjectsDialog } from './ExportProjectsDialog'
 import { ExportDialog } from './ExportDialog'
 import { DirectorDialog, McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
 import { ShortcutsDialog } from './ShortcutsDialog'
@@ -72,6 +73,12 @@ export function Dialogs() {
     return (
       <Modal title="Download" onClose={close} wide>
         <DownloadDialogBody close={close} />
+      </Modal>
+    )
+  if (dialog === 'exportProjects')
+    return (
+      <Modal title="Export projects" onClose={close} wide>
+        <ExportProjectsDialog close={close} />
       </Modal>
     )
   return null

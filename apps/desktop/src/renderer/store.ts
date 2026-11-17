@@ -244,7 +244,7 @@ export interface Toast {
   text: string
 }
 
-export type Dialog = null | 'export' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director'
+export type Dialog = null | 'export' | 'exportProjects' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director'
 
 /** Where the library is looking: everything, loose imports, or a linked folder's id. */
 export type LibraryScope = 'all' | 'loose' | string
@@ -1463,12 +1463,18 @@ export interface ExportOptions {
   fps?: number
   captions?: string
   openFolder?: boolean
+  /** A project that isn't open (Home › several projects › Export), rendered from its folder. */
+  projectDir?: string
+  /** The engine's refusal thrown (with the project's name around it), not shown as a toast. */
+  throwErrors?: boolean
 }
 
 /** Starts the exports; returns their job ids (null if the engine refused). */
 export async function startExport(formats: string[], quality: string, folder: string, baseName: string, clipIds?: string[] | null, o: ExportOptions = {}): Promise<string[] | null> {
-  const { openFolder, ...rest } = o
-  const r = await call<{ jobs: { jobId: string; width: number; height: number; sound?: string; path: string; encoder: string }[] }>('export.start', { formats, quality, folder, baseName, ...rest, ...(clipIds?.length ? { clipIds } : {}) })
+  const { openFolder, throwErrors, ...rest } = o
+  const params = { formats, quality, folder, baseName, ...rest, ...(clipIds?.length ? { clipIds } : {}) }
+  type Started = { jobs: { jobId: string; width: number; height: number; sound?: string; path: string; encoder: string }[] }
+  const r = throwErrors ? ((await window.studio.engine.call('export.start', params)) as Started) : await call<Started>('export.start', params)
   if (!r) return null
   const jobs: ExportJob[] = r.jobs.map((j) => ({ ...j, state: 'queued', fraction: 0, ...earlyExport.get(j.jobId) }))
   for (const j of r.jobs) earlyExport.delete(j.jobId)

@@ -11,10 +11,10 @@ import { useStrip } from './media-cache'
 import './export.css'
 import { call, exportTimeLeft, findClip, getState, mediaById, setState, startExport, toast, useStore, type ExportJob, type Snapshot, type Us } from './store'
 
-const PREFS_KEY = 'studio.export.v2'
+export const PREFS_KEY = 'studio.export.v2'
 const OLD_PREFS_KEY = 'studio.export.v1'
 
-interface Prefs {
+export interface Prefs {
   formats?: string[]
   quality?: string
   folder?: string
@@ -24,7 +24,7 @@ interface Prefs {
   captions?: string
   after?: string
 }
-function loadPrefs(): Prefs {
+export function loadPrefs(): Prefs {
   try {
     return JSON.parse(localStorage.getItem(PREFS_KEY) ?? localStorage.getItem(OLD_PREFS_KEY) ?? '{}')
   } catch {
@@ -34,23 +34,23 @@ function loadPrefs(): Prefs {
 
 const WHERE: Record<string, string> = { '9:16': 'Reels, TikTok, Shorts', '4:5': 'Meta feed', '1:1': 'Square feed', '16:9': 'YouTube' }
 const GLYPH: Record<string, [number, number]> = { '9:16': [18, 32], '4:5': [26, 32], '1:1': [30, 30], '16:9': [40, 23] }
-const QUALITY = [
+export const QUALITY = [
   ['fast', 'Fast', 'Graphics card encoder. Quick drafts.'],
   ['balanced', 'Balanced', 'Graphics card, higher bitrate. Ads.'],
   ['best', 'Best', 'Software encoder. Slower, cleanest.'],
 ] as const
 /** The sound alone, each a file of its own: id, name, spec, what it's for, MB per second. */
-const SOUNDS = [
+export const SOUNDS = [
   ['mp3', 'MP3', '320 kbps', 'Plays anywhere', 320 / 8 / 1000],
   ['wav', 'WAV', '24-bit, 48 kHz', 'Uncompressed, for editing', (48000 * 3 * 2) / 1e6],
 ] as const
 const ORDER: string[] = [...FORMATS.map(([f]) => f), ...SOUNDS.map(([s]) => s)]
 const soundOf = (f: string) => SOUNDS.find(([s]) => s === f)
-const MBPS: Record<string, number> = { fast: 10, balanced: 12, best: 16 }
+export const MBPS: Record<string, number> = { fast: 10, balanced: 12, best: 16 }
 const BITRATES = [8, 10, 12, 16, 20, 25]
 const AUDIO_KBPS = 320
 const TOKENS = ['{project}', '{format}', '{version}', '{date}', '{language}']
-const DEFAULT_PATTERN = '{project}-{format}-v{version}'
+export const DEFAULT_PATTERN = '{project}-{format}-v{version}'
 
 /** 0:20.5 */
 const len = (us: Us) => {
@@ -62,7 +62,7 @@ const language = () => (navigator.language || 'en').split('-')[0]
 const clean = (name: string) => name.replace(/[<>:"/\\|?*]/g, '-').trim()
 const sep = (folder: string) => (folder.includes('\\') ? '\\' : '/')
 
-function fileStem(pattern: string, project: string, format: string, version: number) {
+export function fileStem(pattern: string, project: string, format: string, version: number) {
   const out = pattern
     .split('{project}')
     .join(project)

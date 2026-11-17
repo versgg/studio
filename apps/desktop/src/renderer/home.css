@@ -90,3 +90,13 @@
 .home-card-text .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .home-card-text .sub { font-size: 12px; color: #8A8A93; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .home-box { position: absolute; z-index: 5; border: 1px solid #6F86FF; background: rgba(111, 134, 255, 0.1); pointer-events: none; }
+
+/* A project's pick box (Home.tsx PickBox): top left of a card, before the name in the list; shown on
+   hover, and on every project once one is picked. */
+.home-pick { position: absolute; top: 8px; left: 8px; z-index: 1; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 3px; border: 1.5px solid #EDEDEF; background: rgba(14, 14, 16, 0.55); color: #111114; opacity: 0; transition: opacity 0.12s ease, background-color 0.12s ease; cursor: pointer; }
+.home-pick.on { background: #FFFFFF; border-color: #FFFFFF; }
+.home-card:hover .home-pick, .home-grid.picking .home-pick, .home-row:hover .home-pick, .home-table.picking .home-pick, .home-pick:focus-visible { opacity: 1; }
+.home-pick:hover { background: rgba(14, 14, 16, 0.8); }
+.home-pick.on:hover { background: #FFFFFF; }
+.home-name .home-pick { position: static; flex: 0 0 auto; width: 16px; height: 16px; border-color: #6b6b73; }
+.home-name .home-pick.on { border-color: #FFFFFF; }

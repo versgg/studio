@@ -12,6 +12,7 @@ import { openMenu } from './ContextMenu'
 import { openCapcut } from './CapcutDialog'
 import { askNewProject, fileUrl, forgetProject, freeProjectName, getState, newProject, openProjectAt, openSharedProject, recentProjects, setState, toast, useStore } from './store'
 import { useBoxSelect } from './boxSelect'
+import { exportProjects } from './batchExport'
 import { Slider } from './Slider'
 import './project-dialogs.css'
 import { startFromTemplate, TEMPLATE_CATEGORIES, TEMPLATES, type Template } from './templates'
@@ -161,6 +162,11 @@ export function Home() {
     if (!add && !t.closest('[data-project]')) setPicked([])
     startBox(e, add ? picked : [])
   }
+  // The box in a card's corner picks it or not (as Ctrl+click does), without opening it.
+  const togglePick = (dir: string) => {
+    anchorRef.current = dir
+    setPicked((now) => (now.includes(dir) ? now.filter((d) => d !== dir) : [...now, dir]))
+  }
   // A click opens a project; Ctrl+click picks it or not, Shift+click picks the run from the last one.
   const clickProject = (e: React.MouseEvent, p: ProjectInfo) => {
     if (drew.current || renaming?.dir === p.dir) return
@@ -194,6 +200,7 @@ export function Home() {
     if (picked.includes(p.dir) && pickedShown.length > 1) {
       const list = pickedShown
       openMenu(e.clientX, e.clientY, [
+        { label: `Export ${list.length} projects…`, run: () => exportProjects(list) },
         { label: `Duplicate ${list.length} projects`, run: () => duplicate(list) },
         'sep',
         { label: `Delete ${list.length} projects…`, run: () => askDelete(list) },
@@ -205,6 +212,7 @@ export function Home() {
     openMenu(e.clientX, e.clientY, [
       { label: 'Open', run: () => open(p.dir) },
       { label: 'Rename…', run: () => setRenaming({ dir: p.dir, text: p.name }) },
+      { label: 'Export…', run: () => exportProjects([p]) },
       { label: 'Duplicate', run: () => duplicate([p]) },
       { label: 'Show in folder', run: () => window.studio.app.showItem(p.dir) },
       'sep',
@@ -443,6 +451,9 @@ export function Home() {
               {pickedShown.length > 0 && (
                 <span className="home-picked" role="status">
                   {pickedShown.length} selected
+                  <button type="button" className="home-sort" onClick={() => exportProjects(pickedShown)}>
+                    {pickedShown.length === 1 ? 'Export…' : `Export ${pickedShown.length}…`}
+                  </button>
                   <button type="button" className="home-sort" onClick={() => askDelete(pickedShown)}>
                     Delete…
                   </button>
@@ -483,7 +494,7 @@ export function Home() {
             projects === null || shown.length === 0 ? (
               <p className="home-note">{projects === null ? 'Loading…' : query ? 'No project matches that.' : 'No projects yet. Start one above.'}</p>
             ) : (
-              <div className="home-grid" ref={gridRef} style={{ gridTemplateColumns: `repeat(${view.perRow}, minmax(0, 1fr))`, columnGap: GRID_GAP }}>
+              <div className={`home-grid${pickedShown.length ? ' picking' : ''}`} ref={gridRef} style={{ gridTemplateColumns: `repeat(${view.perRow}, minmax(0, 1fr))`, columnGap: GRID_GAP }}>
                 {shown.map((p) => (
                   <div
                     key={p.dir}
@@ -499,6 +510,7 @@ export function Home() {
                   >
                     <span className="home-card-art">
                       <ProjectPic p={p} sharp={sharp} />
+                      <PickBox on={picked.includes(p.dir)} name={p.name} onToggle={() => togglePick(p.dir)} />
                       <span className="home-tpl-dur">{len(p.durationUs)}</span>
                     </span>
                     <span className="home-card-text">
@@ -515,7 +527,7 @@ export function Home() {
             )
           ) : (
             <div className="home-table-wrap">
-              <table className="home-table">
+              <table className={`home-table${pickedShown.length ? ' picking' : ''}`}>
                 <thead>
                   <tr>
                     <th scope="col">Name</th>
@@ -555,6 +567,7 @@ export function Home() {
                       >
                         <td>
                           <span className="home-name">
+                            <PickBox on={picked.includes(p.dir)} name={p.name} onToggle={() => togglePick(p.dir)} />
                             {p.poster ? <img src={fileUrl(p.poster)} alt="" draggable={false} style={{ width: w, height: view.thumb, flexBasis: w }} /> : <span className="home-poster" style={{ width: w, height: view.thumb, flexBasis: w }} />}
                             <span>
                               {nameOf(p)}
@@ -639,6 +652,30 @@ function stillFor(p: ProjectInfo) {
 }
 
 /** A grid card's picture in the project's own format; big cards swap the 360 px poster for a sharper still. */
+/** A card's pick box: shown on hover, and on every card once one is picked. */
+function PickBox({ on, name, onToggle }: { on: boolean; name: string; onToggle: () => void }) {
+  return (
+    <span
+      role="checkbox"
+      aria-checked={on}
+      aria-label={`Select ${name}`}
+      title={on ? 'Selected' : 'Select (or Ctrl+click the project)'}
+      className={`home-pick${on ? ' on' : ''}`}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation()
+        onToggle()
+      }}
+    >
+      {on && (
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-7" />
+        </svg>
+      )}
+    </span>
+  )
+}
+
 function ProjectPic({ p, sharp }: { p: ProjectInfo; sharp: boolean }) {
   const [still, setStill] = useState<string | null>(null)
   useEffect(() => {
