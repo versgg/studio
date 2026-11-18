@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { trProjectName, trRunning, type TrItem, type TrJob, type TrLine, type TrText, type TrVoice, type TrVoiceChoice } from '../shared/translate'
 import { ClaudeSignedOut, translateSpeech } from './dub-read'
+import { canShorten } from '../shared/speech-check'
 import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cutSample, cutTake, fitLines, iso2, removeClone, retime, speakTake, type Spoken } from './dub-voice'
 import { ffmpeg } from './ffmpeg'
 import { timingOf } from '../shared/speech-timing'
@@ -448,7 +449,11 @@ async function speak(job: TrJob, items: TrItem[], texts: TrText[], said: TrItem[
   for (const [voiceId, group] of groups) {
     g++
     const v = group[0].voice!
-    let script = group.map((i) => ({ id: safe(i.id), item: i, translation: texts.find((t) => t.id === i.id)!.translation }))
+    // A sentence written in the review stays as written through the shorter takes (a price for this market).
+    let script = group.map((i) => {
+      const t = texts.find((x) => x.id === i.id)!
+      return { id: safe(i.id), item: i, translation: t.translation, edited: !!t.edited }
+    })
     const need = script.reduce((a, l) => a + l.translation.length, 0) / (CPS[job.lang] ?? 14)
     const have = group.reduce((a, i) => a + room.get(i.id)!.seconds, 0)
     const speed = Math.min(1.1, Math.max(0.95, need / Math.max(1, have)))
@@ -480,16 +485,18 @@ async function speak(job: TrJob, items: TrItem[], texts: TrText[], said: TrItem[
         const cut = await cutTake(take, script.map((s) => s.id), job.dir, `${g}-${round}`)
         const { placed, long } = fitLines(cut, spoken, end, round < 3 ? 1.08 : 1.12)
         if (!best || long.length < best.long.length) best = { placed, cut, long, script }
-        if (!long.length || round === 3) break
+        // Only Claude's own sentences are said more simply; the review's stay as written.
+        const shorten = canShorten(long, script)
+        if (!shorten.length || round === 3) break
         // Too long for their moments: the whole script again, those sentences simpler.
-        patch(job, { state: 'reading', stage: `Claude is making ${long.length} sentence${long.length === 1 ? '' : 's'} shorter` })
+        patch(job, { state: 'reading', stage: `Claude is making ${shorten.length} sentence${shorten.length === 1 ? '' : 's'} shorter` })
         const shorter = script.map((s) => {
           const r = room.get(s.item.id)!
           const c = cut.find((x) => x.id === s.id)!
           const now = s.translation.length
-          return { id: s.id, heard: s.item.text, seconds: r.seconds, budget: long.includes(s.id) ? Math.max(Math.round(now * 0.7), Math.round((now * r.seconds * 1.05) / c.dur)) : Math.max(r.budget, now) }
+          return { id: s.id, heard: s.item.text, seconds: r.seconds, budget: shorten.includes(s.id) ? Math.max(Math.round(now * 0.7), Math.round((now * r.seconds * 1.05) / c.dur)) : Math.max(r.budget, now) }
         })
-        const again = await translateSpeech(shorter, job.lang, { from: job.from, previous: script.map((s) => ({ id: s.id, text: s.item.text, translation: s.translation })) })
+        const again = await translateSpeech(shorter, job.lang, { from: job.from, previous: script.map((s) => ({ id: s.id, text: s.item.text, translation: s.translation, edited: s.edited })) })
         script = script.map((s) => ({ ...s, translation: again.find((a) => a.id === s.id)?.translation ?? s.translation }))
         seed += 7
       }
@@ -539,7 +546,11 @@ export function go(id: string, o: { picks: string[]; edits?: Record<string, stri
   const f = path.join(job.dir, 'translation.json')
   if (o.edits && Object.keys(o.edits).length && fs.existsSync(f)) {
     const t = readJson<{ texts: TrText[] }>(f)
-    for (const x of t.texts) if (o.edits[x.id] != null && o.edits[x.id].trim()) x.translation = o.edits[x.id].trim()
+    for (const x of t.texts)
+      if (o.edits[x.id] != null && o.edits[x.id].trim()) {
+        x.translation = o.edits[x.id].trim()
+        x.edited = true
+      }
     fs.writeFileSync(f, JSON.stringify(t, null, 1))
   }
   fs.rmSync(path.join(job.dir, REVIEW_DRAFT), { force: true })

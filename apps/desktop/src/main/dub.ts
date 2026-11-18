@@ -34,6 +34,7 @@ import { VOICE_GONE, cloneSpeaker } from '../shared/reclone'
 import { dubRunning, unchanged, type DubJob, type DubLook, type DubScan, type DubTake, type DubText, type DubVoiceLine } from '../shared/dub'
 import { buildBase, measureLooks } from './dub-look'
 import { ClaudeSignedOut, langName, readTexts, translateSpeech, type SpeechText } from './dub-read'
+import { canShorten } from '../shared/speech-check'
 import { scanText } from './dub-scan'
 import { CPS, FAKE as ELEVEN_FAKE, cloneFrom, cloneVoice, cutTake, fitLines, iso2, listen, mixBed, removeClone, retime, speakTake, type Spoken } from './dub-voice'
 import { timingOf } from '../shared/speech-timing'
@@ -557,14 +558,16 @@ async function dubVoice(job: DubJob, o: { part: string; partEnd: number; speech:
     const cut = await cutTake(take, said.map((l) => l.id), job.dir, round)
     const { placed, long } = fitLines(cut, spoken, o.partEnd, round < 3 ? 1.08 : 1.12)
     if (!best || long.length < best.long.length) best = { placed, cut, long }
-    if (!long.length || round === 3) break
+    // Only Claude's own sentences are said more simply; the review's stay as written.
+    const shorten = canShorten(long, said)
+    if (!shorten.length || round === 3) break
     // Too long to say in their moments: the whole script again, those sentences simpler.
     const shorter = room.filter((r) => o.lineIds.includes(r.id)).map((r) => {
       const c = cut.find((x) => x.id === r.id)!
       const now = said.find((s) => s.id === r.id)!.translation.length
-      return long.includes(r.id) ? { ...r, budget: Math.max(Math.round(now * 0.7), Math.round((now * r.seconds * 1.05) / c.dur)) } : { ...r, budget: Math.max(r.budget, now) }
+      return shorten.includes(r.id) ? { ...r, budget: Math.max(Math.round(now * 0.7), Math.round((now * r.seconds * 1.05) / c.dur)) } : { ...r, budget: Math.max(r.budget, now) }
     })
-    patch(job, { state: 'reading', stage: `Claude is making ${long.length} sentence${long.length === 1 ? '' : 's'} shorter`, fraction: 0.5 + round * 0.08 })
+    patch(job, { state: 'reading', stage: `Claude is making ${shorten.length} sentence${shorten.length === 1 ? '' : 's'} shorter`, fraction: 0.5 + round * 0.08 })
     said = await translateSpeech(shorter, job.lang, { from: o.speech.language, previous: said, signal: undefined })
     seed += 7
   }
@@ -695,7 +698,11 @@ export function go(id: string, o: { texts: string[]; lines: string[]; edits?: Re
     const sf = file(`speech-${job.lang}.json`)
     if (fs.existsSync(sf)) {
       const s = readJson<{ lines: SpeechText[] }>(sf)
-      for (const x of s.lines) if (o.edits[x.id] != null) x.translation = o.edits[x.id]
+      for (const x of s.lines)
+        if (o.edits[x.id] != null) {
+          x.translation = o.edits[x.id]
+          x.edited = true
+        }
       fs.writeFileSync(sf, JSON.stringify(s, null, 1))
     }
   }

@@ -50,7 +50,8 @@ export type TrVoiceChoice = { use: 'voice'; voiceId: string; name: string } | { 
 export type TrStems = { voice?: string; bed: string[]; fromUs: number }
 
 /** Claude's translation of one item, with what it says back in the project's language (to check meaning). */
-export type TrText = { id: string; translation: string; back: string }
+/** `edited`: changed in the review (kept as written; Claude never rewrites it). */
+export type TrText = { id: string; translation: string; back: string; edited?: boolean }
 
 export type TrVoice = 'same' | 'text'
 

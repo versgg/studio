@@ -18,6 +18,9 @@ import os from 'node:os'
 import path from 'node:path'
 import type { DubScan, DubText } from '../shared/dub'
 import { DUB_FONTS } from '../shared/dub'
+import { checkSpeech, keepEdited, numbers, type SpeechLine, type SpeechText } from '../shared/speech-check'
+
+export { numbers, type SpeechLine, type SpeechText }
 
 export class ClaudeSignedOut extends Error {}
 
@@ -94,7 +97,6 @@ function prompt(scan: DubScan, lang: string, context: string) {
 
 const EMOJI = /\p{Extended_Pictographic}/gu
 export const emojis = (s: string) => (s.match(EMOJI) ?? []).sort().join('')
-export const numbers = (s: string) => (s.match(/\d+(?:[.,]\d+)?/g) ?? []).map((n) => n.replace(',', '.')).sort().join(' ')
 
 /** What's wrong with an answer, if anything (the reason goes back to Claude for a second try). */
 export function checkTexts(scan: DubScan, texts: DubText[]): string | null {
@@ -184,31 +186,10 @@ export async function readTexts(scan: DubScan, dir: string, lang: string, o: { c
   return answer.texts
 }
 
-/** A spoken sentence to translate: what was heard, and how many characters fit its moment. */
-export type SpeechLine = { id: string; heard: string; seconds: number; budget: number }
-/** Claude's answer for one: what was said (misheard names put right) and the translation. */
-export type SpeechText = { id: string; text: string; translation: string }
-
 const SPEECH_SCHEMA = {
   type: 'object',
   properties: { lines: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, text: { type: 'string' }, translation: { type: 'string' } }, required: ['id', 'text', 'translation'] } } },
   required: ['lines'],
-}
-
-/** What's wrong with a speech translation, if anything (back to Claude for one more try). */
-export function checkSpeech(lines: SpeechLine[], got: SpeechText[], slack = 1.15): string | null {
-  const ids = new Set(lines.map((l) => l.id))
-  const missing = lines.filter((l) => !got.some((g) => g.id === l.id)).map((l) => l.id)
-  if (missing.length) return `No translation for ${missing.join(', ')}.`
-  const long: string[] = []
-  for (const g of got) {
-    if (!ids.has(g.id)) return `${g.id} is not one of the sentences.`
-    if (!g.translation.trim()) return `${g.id} has no translation.`
-    if (numbers(g.text) !== numbers(g.translation)) return `${g.id}: keep the numbers as said (${numbers(g.text) || 'none'}).`
-    const l = lines.find((x) => x.id === g.id)!
-    if (g.translation.length > l.budget * slack) long.push(`${g.id} (${g.translation.length} characters, room for about ${l.budget})`)
-  }
-  return long.length ? `These are too long to say in their time: ${long.join('; ')}. Make them shorter by saying them more simply, not by dropping meaning or abbreviating.` : null
 }
 
 /**
@@ -216,10 +197,11 @@ export function checkSpeech(lines: SpeechLine[], got: SpeechText[], slack = 1.15
  * to its moment: about `budget` characters (its room × the language's speaking rate). Names
  * speech recognition got wrong are put right from the on-screen text (`known`), e.g. a product
  * heard as "Lumma Vee" that the video shows as "Lumavee". With `previous`, the script is
- * made shorter where `lines` say so, as a whole again (never one sentence on its own).
+ * made shorter where `lines` say so, as a whole again (never one sentence on its own), keeping
+ * the numbers it has now; a sentence written in the review (`edited`) comes back as written.
  */
 export async function translateSpeech(lines: SpeechLine[], lang: string, o: { from?: string; known?: string[]; previous?: SpeechText[]; signal?: AbortSignal } = {}): Promise<SpeechText[]> {
-  if (FAKE) return lines.map((l) => ({ id: l.id, text: l.heard, translation: `${lang.toUpperCase()}: ${l.heard}` }))
+  if (FAKE) return keepEdited(lines.map((l) => ({ id: l.id, text: l.heard, translation: `${lang.toUpperCase()}: ${l.heard}` })), o.previous)
   const exe = findClaude()
   if (!exe) throw new ClaudeSignedOut('Claude Code is not installed on this computer, so nothing can translate the speech.')
   const name = langName(lang)
@@ -231,20 +213,27 @@ export async function translateSpeech(lines: SpeechLine[], lang: string, o: { fr
     '- about as many characters as "budget" (what fits the time the original took); never longer by much, and if the original is long, say it more simply rather than speed it up;',
     '- keep brand names, product names, numbers and percentages; write names the way they are pronounced as words (Lumavee, not LUMAVEE, which a voice would spell out letter by letter); no abbreviations, brackets or stage directions; numbers as they are spoken naturally;',
     '- keep what each sentence says: drop filler words before you drop meaning.',
-    o.previous ? `This is a second pass: your last translation is given as "now". Keep it, except make the sentences listed as too long shorter (to their budget), and adjust their neighbours only if the meaning needs it.` : '',
+    o.previous ? `This is a second pass: your last translation is given as "now". Keep it, except make the sentences listed as too long shorter (to their budget), and adjust their neighbours only if the meaning needs it. Keep the numbers and prices in "now", even where they differ from what was heard: they were set for this market.` : '',
+    o.previous?.some((p) => p.edited) ? 'Sentences marked "fixed" were written by the person who reviewed the translation: return their "now" exactly as it is.' : '',
     'Return every id.',
-    JSON.stringify(lines.map((l) => ({ id: l.id, heard: l.heard, seconds: Math.round(l.seconds * 10) / 10, budget: l.budget, ...(o.previous ? { now: o.previous.find((p) => p.id === l.id)?.translation } : {}) }))),
+    JSON.stringify(
+      lines.map((l) => {
+        const was = o.previous?.find((p) => p.id === l.id)
+        return { id: l.id, heard: l.heard, seconds: Math.round(l.seconds * 10) / 10, budget: l.budget, ...(was ? { now: was.translation } : {}), ...(was?.edited ? { fixed: true } : {}) }
+      }),
+    ),
   ]
     .filter(Boolean)
     .join('\n')
   const content: unknown[] = [{ type: 'text', text }]
   let answer = await runClaude<{ lines: SpeechText[] }>(exe, content, o.signal, SPEECH_SCHEMA, 'lines')
-  const wrong = checkSpeech(lines, answer.lines)
+  const wrong = checkSpeech(lines, answer.lines, 1.15, o.previous)
   if (wrong) {
     content.push({ type: 'text', text: `Your answer had a problem: ${wrong} Answer again for every id.` })
     answer = await runClaude<{ lines: SpeechText[] }>(exe, content, o.signal, SPEECH_SCHEMA, 'lines')
-    const still = checkSpeech(lines, answer.lines, 1.3)
+    const still = checkSpeech(lines, answer.lines, 1.3, o.previous)
     if (still && !/too long/.test(still)) throw new Error(`Claude's translation didn't hold up: ${still}`)
   }
-  return lines.map((l) => answer.lines.find((a) => a.id === l.id)!)
+  const kept = keepEdited(answer.lines, o.previous)
+  return lines.map((l) => kept.find((a) => a.id === l.id)!)
 }

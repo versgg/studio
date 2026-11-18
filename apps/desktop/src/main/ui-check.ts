@@ -11,6 +11,9 @@ import { elevenTest, removeClone } from './dub-voice'
 import { wavInfo } from './director'
 import { MIN_WINDOW } from '../shared/window'
 
+/** A spoken sentence changed in the Translations review: a market's own price, far too long for its moment. */
+const PRICED = 'Nå koster den bare 199 kr, og den holder hele vinteren, så du slipper å kjøpe en ny hver eneste måned, igjen og igjen og igjen.'
+
 const HELPERS = `
 window.__t = {
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -3627,6 +3630,15 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
       'Translations: the review shows each line with its back-translation, and Translate lands the language in its own project',
       `const backs = __t.qa('.tr-back').length
        if (!backs) throw new Error('no back-translations')
+       // The friend's case: a price changed in the Norwegian review ("199 kr"; the original says
+       // something else) on a sentence too long for its moment, so the take is said again
+       // shorter. It must be said as typed (checked in voice.json after this step).
+       __t.qa('.tr-tabs button').find((b) => /^(Norwegian|Norsk)$/.test(b.textContent))?.click()
+       const spoken = await __t.until(() => __t.qa('.tr-item').find((r) => r.querySelector('.dub-orig')?.textContent === 'Det här är testet.')?.querySelector('textarea.dub-edit:not([disabled])'), 5000, 'the voiceover’s short first sentence in the Norwegian review')
+       const price = ${JSON.stringify(PRICED)}
+       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(spoken, price)
+       spoken.dispatchEvent(new Event('input', { bubbles: true }))
+       await __t.until(() => __t.qa('.tr-item textarea.dub-edit').some((t) => t.value === price), 3000, 'the price typed')
        __t.qa('.tr-buttons button').find((b) => /Translate 2 languages/.test(b.textContent)).click()
        const { dir } = window.__tr
        const jobs = async () => (await window.studio.services.translateJobs(dir)).filter((j) => j.source === dir)
@@ -3655,12 +3667,26 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
          if (!music) throw new Error('no music from the separation under it: ' + sounds.join(' | '))
          if (sounds.some((p) => /speaks-with-music \\(Vocals\\)\\.mp3$/.test(p))) throw new Error('its Swedish voice is still there')
        }
-       return { project: s.project.name, texts, said: said.length, music }`,
+       return { project: s.project.name, texts, said: said.length, music, copy: no.project }`,
     )
     // The clip's voice was set to keep its clone: one clone for both languages stays in the
     // (stand-in) account, and it's the voice picked for it from then on; every other is gone.
     const landed = results.find((x) => x.step === 'Translations: the review shows each line with its back-translation, and Translate lands the language in its own project')
     const keptOne = process.env.STUDIO_STEMS_FAKE === '1' && fs.existsSync(speaks) ? 1 : 0
+    // The price typed in the review is what the Norwegian voice says, through the shorter take.
+    if (landed?.ok) {
+      const copy = (landed as { detail?: { copy?: string } }).detail?.copy
+      const vf = copy ? path.join(copy, 'translation', 'voice.json') : ''
+      const lines = vf && fs.existsSync(vf) ? (JSON.parse(fs.readFileSync(vf, 'utf8')) as { lines: { text: string }[] }).lines : []
+      // Every take, the shorter ones too, says it as typed (Claude's rewrite worked from the Swedish).
+      const takes = vf ? fs.readdirSync(path.dirname(vf)).filter((f) => /^take-.*\.json$/.test(f)).map((f) => (JSON.parse(fs.readFileSync(path.join(path.dirname(vf), f), 'utf8')) as { script: string }).script) : []
+      const lost = takes.filter((t) => /Det här är testet/.test(t))
+      const wrong = !lines.some((l) => l.text === PRICED) ? `the price typed in the review isn't said: ${JSON.stringify(lines.map((l) => l.text))}` : lost.length ? `${lost.length} of ${takes.length} takes said Claude's words instead of the price typed: ${JSON.stringify(lost[0])}` : null
+      if (wrong) {
+        Object.assign(landed, { ok: false, detail: wrong })
+        console.log(`[ui-check] FAIL ${landed.step}: ${wrong}`)
+      } else Object.assign(landed, { detail: { ...(landed.detail as object), price: `kept in ${takes.length} takes` } })
+    }
     if (landed?.ok && elevenTest.live() !== keptOne) {
       Object.assign(landed, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account, not ${keptOne}` })
       console.log(`[ui-check] FAIL ${landed.step}: ${elevenTest.live()} clone(s) left in the account, not ${keptOne}`)
