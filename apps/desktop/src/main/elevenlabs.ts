@@ -8,7 +8,13 @@ import path from 'node:path'
 import { elevenProblem } from '../shared/eleven-permissions'
 import type { DesignRound } from '../shared/api'
 
-const API = 'https://api.elevenlabs.io'
+const API = () => process.env.STUDIO_ELEVEN_URL || 'https://api.elevenlabs.io'
+/**
+ * How long Studio waits for the account's voice list and details. ElevenLabs has stopped
+ * answering exactly these for an account while it still spoke (2026-11-18: voices, user and
+ * subscription silent for minutes, models and history in 0.3 s), so they mustn't hold anything up.
+ */
+export const listWait = () => Number(process.env.STUDIO_ELEVEN_LIST_WAIT) || 20_000
 /** The voice changer can't use v4; this is the multilingual speech-to-speech model. */
 export const VOICE_CHANGER_MODEL = 'eleven_multilingual_sts_v2'
 /** voice_settings.speed: ElevenLabs allows 0.7–1.2 (1 = normal). */
@@ -53,18 +59,19 @@ export class ElevenLabs {
   private async req(p: string, init: RequestInit = {}, timeoutMs = 60_000): Promise<Response> {
     let r: Response
     try {
-      r = await fetch(API + p, { ...init, headers: { 'xi-api-key': this.key, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(timeoutMs) })
+      r = await fetch(API() + p, { ...init, headers: { 'xi-api-key': this.key, ...(init.headers ?? {}) }, signal: AbortSignal.timeout(timeoutMs) })
     } catch (e) {
+      if ((e as Error).name === 'TimeoutError') throw new ElevenError(`ElevenLabs didn’t answer in ${Math.round(timeoutMs / 1000)} s.`, false, 'timeout')
       throw new ElevenError(`ElevenLabs did not answer: ${String((e as Error).message).slice(0, 200)}`)
     }
     if (!r.ok) throw await failure(r)
     return r
   }
 
-  private json = async (p: string, init?: RequestInit) => (await this.req(p, init)).json()
+  private json = async (p: string, init?: RequestInit, timeoutMs?: number) => (await this.req(p, init, timeoutMs)).json()
 
   async subscription() {
-    const s = await this.json('/v1/user/subscription')
+    const s = await this.json('/v1/user/subscription', undefined, listWait())
     return { tier: s.tier as string, used: s.character_count as number, limit: s.character_limit as number, canClone: !!s.can_use_instant_voice_cloning, resetsAt: s.next_character_count_reset_unix as number | null }
   }
 
@@ -95,13 +102,25 @@ export class ElevenLabs {
     return out
   }
 
+  /**
+   * The voices the account spoke with lately (its history, newest first), for when ElevenLabs
+   * won't send the voice list: they still speak. Studio's dub clones are left out (most are
+   * deleted after use).
+   */
+  async recentVoices(): Promise<Voice[]> {
+    const seen = new Map<string, Voice>()
+    for (const h of await this.history(1))
+      if (!seen.has(h.voiceId) && h.voiceName && !/\(Studio dub\)$/.test(h.voiceName)) seen.set(h.voiceId, { id: h.voiceId, name: h.voiceName, category: 'recent', description: '', labels: {}, previewUrl: null })
+    return [...seen.values()].slice(0, 40)
+  }
+
   /** Every voice in the account (all pages), plus any matching `search`. */
   async voices(search = ''): Promise<Voice[]> {
     const out: Voice[] = []
     let token: string | null = null
     for (let page = 0; page < 20; page++) {
       const q = new URLSearchParams({ page_size: '100', include_total_count: 'false', ...(search ? { search } : {}), ...(token ? { next_page_token: token } : {}) })
-      const r = await this.json(`/v2/voices?${q}`)
+      const r = await this.json(`/v2/voices?${q}`, undefined, listWait())
       for (const v of r.voices ?? []) out.push({ id: v.voice_id, name: v.name, category: v.category ?? 'premade', description: v.description ?? '', labels: v.labels ?? {}, previewUrl: v.preview_url ?? null })
       token = r.next_page_token ?? null
       if (!r.has_more || !token) break
@@ -111,7 +130,7 @@ export class ElevenLabs {
 
   /** One voice from the account: the cheapest way to check the key may read voices. */
   async voicesPage() {
-    await this.json('/v2/voices?page_size=1&include_total_count=false')
+    await this.json('/v2/voices?page_size=1&include_total_count=false', undefined, listWait())
   }
 
   /** The public Voice Library (community voices), searched. */

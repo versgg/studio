@@ -236,7 +236,11 @@ export interface StudioApi {
     onVmakeJob(cb: (job: VmakeJob) => void): () => void
     elevenAccount(): Promise<ElevenAccount | ServiceError>
     /** After saving a key: whether it works, and which of the free checks it isn't allowed ("Models (Read)"). */
-    elevenCheckKey(): Promise<{ works: boolean; notAllowed: string[]; error?: string }>
+    elevenCheckKey(): Promise<{ works: boolean; notAllowed: string[]; silent?: string[]; error?: string }>
+    /** What ElevenLabs last sent (voices, models, credits), kept on this computer; shown at once. */
+    elevenKept(): Promise<{ voices?: Voice[]; voicesAt?: number; models?: ElevenModel[]; account?: ElevenAccount }>
+    /** The voices the account spoke with lately (its history), for when the voice list won't come. */
+    elevenRecent(): Promise<Voice[] | ServiceError>
     elevenModels(): Promise<ElevenModel[] | ServiceError>
     elevenVoices(search?: string): Promise<Voice[] | ServiceError>
     elevenLibrary(search: string): Promise<Voice[] | ServiceError>

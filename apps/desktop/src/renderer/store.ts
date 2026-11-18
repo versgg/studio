@@ -327,7 +327,7 @@ export interface State {
   /** The open project's dubs by id (a busy clip's `busy`). */
   dubJobs: Record<string, DubJob>
   /** ElevenLabs: whether a key is saved, the account, its voices and models, the chosen voice. */
-  eleven: { hasKey: boolean | null; account?: ElevenAccount; models?: ElevenModel[]; voices?: Voice[]; error?: string }
+  eleven: { hasKey: boolean | null; account?: ElevenAccount; models?: ElevenModel[]; voices?: Voice[]; error?: string; /** The list isn't this moment's: kept from before, or only the voices used lately. */ stale?: boolean; /** Why the voice list is an older one. */ note?: string }
   voice: Voice | null
   /** Which page the window shows: the editor, or the Audio page (Audacity-style). */
   page: 'edit' | 'audio' | 'home'

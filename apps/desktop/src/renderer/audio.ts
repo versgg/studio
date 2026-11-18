@@ -7,6 +7,7 @@ import { alreadyRunning, bringInFor, endTask, findClip, freshName, getState, med
 
 /** The voice list's sections, in order: the user's own clones first. */
 export const VOICE_GROUPS: [string, string][] = [
+  ['recent', 'Used lately'],
   ['cloned', 'Your voice clones'],
   ['professional', 'Professional clones'],
   ['generated', 'Designed voices'],
@@ -39,22 +40,73 @@ const isError = (r: unknown): r is { error: string; auth?: boolean } => !!r && t
 const FALLBACK_MODELS = [{ id: 'eleven_v4', name: 'Eleven v4', maxChars: 0, languages: [] as string[] }]
 
 /**
- * Checks the saved key and loads the account, models and voices. A refused key asks for a new
- * one; a key that isn't allowed one of these keeps working for the rest, with the reason shown.
+ * Checks the saved key and loads the account, models and voices. What ElevenLabs sent last is
+ * shown at once and each answer lands as it comes, so a slow or silent one never holds up a
+ * voiceover (2026-11-18: ElevenLabs went silent on one account's voices and details for minutes
+ * while it still spoke). A refused key asks for a new one; a key that isn't allowed one of
+ * these keeps working for the rest, with the reason shown.
  */
-export async function loadEleven() {
+let loading: Promise<void> | null = null
+export function loadEleven() {
+  loading ??= loadElevenNow().finally(() => (loading = null))
+  return loading
+}
+
+const when = (t?: number) => (t ? new Date(t).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '')
+
+async function loadElevenNow() {
   const keys = await window.studio.services.keys()
   if (!keys.elevenlabs) return setState({ eleven: { hasKey: false } })
-  setState({ eleven: { ...getState().eleven, hasKey: true, error: undefined } })
-  const [account, models, voices] = await Promise.all([window.studio.services.elevenAccount(), window.studio.services.elevenModels(), window.studio.services.elevenVoices()])
-  const refused = [account, models, voices].find((r) => isError(r) && r.auth)
-  if (refused && isError(refused)) return setState({ eleven: { hasKey: false, error: refused.error } })
-  const errors = [account, models, voices].filter(isError).map((e) => e.error)
-  const list = isError(voices) ? [] : voices
-  setState({ eleven: { hasKey: true, account: isError(account) ? undefined : account, models: isError(models) ? FALLBACK_MODELS : models, voices: list, error: errors.length ? [...new Set(errors)].join(' ') : undefined } })
+  const kept = await window.studio.services.elevenKept()
+  const saved = savedVoice()
+  const now = getState().eleven
+  const first = now.voices ?? kept.voices ?? (saved ? [saved] : undefined)
+  setState({ eleven: { hasKey: true, account: now.account ?? kept.account, models: now.models ?? kept.models, voices: first, stale: !now.voices && !!first, note: now.note, error: undefined } })
+  const land = (patch: Partial<ReturnType<typeof getState>['eleven']>) => setState({ eleven: { ...getState().eleven, ...patch } })
+  let refused: string | null = null
+  const errors: string[] = []
+  const take = async <T,>(p: Promise<T | { error: string; auth?: boolean }>, ok: (v: T) => void, quiet = false) => {
+    const r = await p
+    if (isError(r)) {
+      if (r.auth) refused = r.error
+      else if (!quiet || !/didn’t answer/.test(r.error)) errors.push(r.error)
+      return false
+    }
+    ok(r)
+    return true
+  }
+  const [, , listed] = await Promise.all([
+    take(window.studio.services.elevenModels(), (models) => land({ models })),
+    // The credits line just waits if ElevenLabs is slow with them.
+    take(window.studio.services.elevenAccount(), (account) => land({ account }), true),
+    take(window.studio.services.elevenVoices(), (voices) => land({ voices, stale: false, note: undefined }), true),
+  ])
+  if (refused) return setState({ eleven: { hasKey: false, error: refused } })
+  const e = getState().eleven
+  if (!e.models?.length) land({ models: FALLBACK_MODELS })
+  if (!listed) {
+    // No list this time: the one kept from before, else the voices spoken with lately (the history still answers).
+    let list = kept.voices
+    let why = list?.length ? `These are your voices as of ${when(kept.voicesAt)}.` : ''
+    if (!list?.length) {
+      const recent = await window.studio.services.elevenRecent()
+      if (!isError(recent) && recent.length) {
+        list = recent
+        why = 'These are the voices you used lately; they still speak.'
+      }
+    }
+    if (!list?.length && saved) {
+      list = [saved]
+      why = `${saved.name}, your last voice, still speaks.`
+    }
+    land({ voices: list ?? [], stale: true, note: `ElevenLabs didn’t send your voice list just now.${why ? ` ${why}` : ''}` })
+    // Asked again in a minute, quietly.
+    setTimeout(() => void window.studio.services.elevenVoices().then((v) => !isError(v) && getState().eleven.hasKey && land({ voices: v, stale: false, note: undefined })), 60_000)
+  }
+  land({ error: errors.length ? [...new Set(errors)].join(' ') : undefined })
+  const list = getState().eleven.voices ?? []
   if (!getState().voice && list.length) {
     const first = VOICE_GROUPS.map(([g]) => list.find((v) => v.category === g)).find(Boolean)
-    const saved = savedVoice()
     chooseVoice(saved ?? first ?? list[0])
   }
 }
@@ -86,7 +138,8 @@ export async function checkElevenKey() {
   const r = await window.studio.services.elevenCheckKey()
   if (!r.works) return setCheck('elevenlabs', { ok: false, text: r.error ?? 'ElevenLabs refused that key.' })
   const n = r.notAllowed
-  setCheck('elevenlabs', n.length ? { ok: false, text: `Key works. Not allowed: ${n.join(', ')}. Edit the key on elevenlabs.io to turn ${n.length === 1 ? 'it' : 'them'} on.` } : { ok: true, text: 'Key works.' })
+  const silent = r.silent?.length ? ` ElevenLabs didn’t answer for ${r.silent.join(' and ')} just now; that’s on their side, not the key.` : ''
+  setCheck('elevenlabs', n.length ? { ok: false, text: `Key works. Not allowed: ${n.join(', ')}. Edit the key on elevenlabs.io to turn ${n.length === 1 ? 'it' : 'them'} on.${silent}` } : { ok: true, text: `Key works.${silent}` })
 }
 
 export async function saveElevenKey(key: string) {

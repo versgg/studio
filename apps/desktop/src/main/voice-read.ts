@@ -20,6 +20,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { transcribe } from './transcript'
 import { FAKE } from './dub-voice'
+import { kept } from './eleven-cache'
 import { ElevenLabs } from './elevenlabs'
 import { ffmpeg } from './ffmpeg'
 import { getSecret } from './secrets'
@@ -144,7 +145,13 @@ export async function accountVoices(): Promise<{ id: string; name: string }[]> {
   if (FAKE) return (await fakeEleven.voices()).map((v) => ({ id: v.id, name: v.name }))
   const key = getSecret('elevenlabs')
   if (!key) throw new Error('No ElevenLabs key is saved.')
-  return (await new ElevenLabs(key).voices()).filter((v) => v.category !== 'library').map((v) => ({ id: v.id, name: v.name }))
+  // ElevenLabs not sending the list: the one it sent last (eleven-cache.ts), if any.
+  const list = await new ElevenLabs(key).voices().catch((e) => {
+    const k = kept().voices
+    if (!k?.length) throw e
+    return k
+  })
+  return list.filter((v) => v.category !== 'library' && v.category !== 'recent').map((v) => ({ id: v.id, name: v.name }))
 }
 
 // Words into sentences (at most 9 s each): shared/speech-timing.ts.
@@ -177,7 +184,7 @@ async function findVoice(file: string, said: string): Promise<{ voice: ReadVoice
     note = `The ElevenLabs history couldn’t be read (${(e as Error).message})`
   }
   try {
-    const voices = (await el.voices()).filter((v) => v.category !== 'library')
+    const voices = (await el.voices().catch((e) => (FAKE || !kept().voices?.length ? Promise.reject(e) : kept().voices!))).filter((v) => v.category !== 'library')
     const v = matchName(path.basename(file), voices)
     if (v) return { voice: { voiceId: v.id, name: v.name, model: DEFAULT_MODEL, speed: 1, how: 'name' } }
   } catch (e) {

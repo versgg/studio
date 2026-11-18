@@ -61,6 +61,8 @@ const api: StudioApi = {
     },
     elevenAccount: () => ipcRenderer.invoke('eleven:account'),
     elevenCheckKey: () => ipcRenderer.invoke('eleven:checkKey'),
+    elevenKept: () => ipcRenderer.invoke('eleven:kept'),
+    elevenRecent: () => ipcRenderer.invoke('eleven:recent'),
     elevenModels: () => ipcRenderer.invoke('eleven:models'),
     elevenVoices: (search) => ipcRenderer.invoke('eleven:voices', search),
     elevenLibrary: (search) => ipcRenderer.invoke('eleven:library', search),

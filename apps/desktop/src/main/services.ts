@@ -21,6 +21,8 @@ import * as stems from './stems'
 import * as translate from './translate'
 import * as download from './download'
 import { accountVoices, readVoice } from './voice-read'
+import { forgetKept, keep, kept } from './eleven-cache'
+import type { ElevenAccount, ElevenModel } from '../shared/api'
 import * as capcut from './capcut'
 import { Vmake, VmakeAuthError } from './vmake'
 import { known as vmakeKnown, learn as vmakeLearn } from './vmake-catalog'
@@ -102,6 +104,7 @@ export function registerServices() {
   ipcMain.handle('secrets:set', (_e, name: SecretName, value: string) => (NAMES.includes(name) ? { stored: setSecret(name, value) } : { error: 'unknown key' }))
   ipcMain.handle('secrets:clear', (_e, name: SecretName) => {
     if (NAMES.includes(name)) clearSecret(name)
+    if (name === 'elevenlabs') forgetKept()
   })
 
   // The test stand-in's account: nothing is asked of Vmake.
@@ -231,20 +234,40 @@ export function registerServices() {
       ['models_read', () => el.models()],
     ]
     const notAllowed: string[] = []
+    // ElevenLabs not answering one of these says nothing about the key (it has gone silent on
+    // an account's voices and details while speaking); the check goes on with the others.
+    const silent: string[] = []
     for (const [id, run] of checks) {
       try {
         await run()
       } catch (e) {
-        if (e instanceof ElevenError && !e.auth && (e.code === 'missing_permissions' || e.message.includes("isn't allowed"))) notAllowed.push(elevenPermissionName(id))
+        if (e instanceof ElevenError && e.code === 'timeout') silent.push(({ user_read: 'your account details', voices_read: 'your voice list' } as Record<string, string>)[id] ?? 'the models')
+        else if (e instanceof ElevenError && !e.auth && (e.code === 'missing_permissions' || e.message.includes("isn't allowed"))) notAllowed.push(elevenPermissionName(id))
         else if (e instanceof ElevenError && e.auth) return { works: false, notAllowed: [], error: e.message }
         else return { works: false, notAllowed, error: (e as Error).message }
       }
     }
-    return { works: true, notAllowed }
+    return { works: true, notAllowed, silent }
   })
-  ipcMain.handle('eleven:account', () => eleven((el) => el.subscription()))
-  ipcMain.handle('eleven:models', () => eleven((el) => el.models()))
-  ipcMain.handle('eleven:voices', (_e, search?: string) => eleven((el) => el.voices(search ?? '')))
+  // Each answer kept, so the next start shows it at once (`eleven:kept`).
+  const answered = (r: unknown) => !(r && typeof r === 'object' && 'error' in r)
+  ipcMain.handle('eleven:kept', () => kept())
+  ipcMain.handle('eleven:recent', () => eleven((el) => el.recentVoices()))
+  ipcMain.handle('eleven:account', async () => {
+    const r = await eleven((el) => el.subscription())
+    if (answered(r)) keep({ account: r as ElevenAccount })
+    return r
+  })
+  ipcMain.handle('eleven:models', async () => {
+    const r = await eleven((el) => el.models())
+    if (answered(r)) keep({ models: r as ElevenModel[] })
+    return r
+  })
+  ipcMain.handle('eleven:voices', async (_e, search?: string) => {
+    const r = await eleven((el) => el.voices(search ?? ''))
+    if (!search && answered(r)) keep({ voices: r as Voice[], voicesAt: Date.now() })
+    return r
+  })
   ipcMain.handle('eleven:library', (_e, search: string) => eleven((el) => el.library(search)))
   ipcMain.handle('eleven:speak', (_e, o: { voice: Voice; text: string; modelId: string; stability: number; similarity: number; speed?: number; languageCode?: string; out: string }) =>
     eleven(async (el) => {

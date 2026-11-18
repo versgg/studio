@@ -405,6 +405,7 @@ export function KeyLines({ error }: { error?: string }) {
   return (
     <>
       {check && !check.ok && <p className="lib-note error">{check.text}</p>}
+      {check?.ok && check.text !== 'Key works.' && <p className="lib-note">{check.text}</p>}
       {error && error !== check?.text && <p className="lib-note error">{error}</p>}
       {(error || (check && !check.ok)) && <ElevenKeyHelp />}
     </>
@@ -501,6 +502,7 @@ function VoiceoverSection() {
       <p className="lib-note mono">
         {text.length.toLocaleString()} / {max.toLocaleString()} characters{left != null ? ` · ${left.toLocaleString()} credits left` : ''}
       </p>
+      {eleven.note && <p className="lib-note">{eleven.note}</p>}
       <KeyLines error={eleven.error} />
       <div className="lib-links">
         {eleven.account?.canClone && (

@@ -4,6 +4,7 @@
 
 import type { BrowserWindow } from 'electron'
 import fs from 'node:fs'
+import http from 'node:http'
 import path from 'node:path'
 import { stemsTest } from './stems'
 import { vmakeTest } from './vmake-jobs'
@@ -817,6 +818,65 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      return __t.qa('.audio-heading').map((h) => h.textContent)`,
   )
   await shot('13-audio')
+  // ElevenLabs silent on the account's voice list and details while it still answers the rest
+  // (as it was for the user on 2026-11-18): a stand-in server that never answers those. The
+  // voiceover must not wait for them: the voices used lately come from the history, the key
+  // check says it's ElevenLabs, not the key, and a list that does come is kept for next time.
+  {
+    let voicesAnswer = false
+    const silent = http.createServer((req, res) => {
+      const url = req.url ?? ''
+      const json = (o: unknown) => (res.writeHead(200, { 'content-type': 'application/json' }), res.end(JSON.stringify(o)))
+      if (url.startsWith('/v1/models')) return json([{ model_id: 'eleven_v4', name: 'Eleven v4', can_do_text_to_speech: true, maximum_text_length_per_request: 5000, languages: [] }])
+      if (url.startsWith('/v1/history'))
+        return json({
+          history: [
+            { voice_id: 'recent-1', voice_name: 'Recent Voice', text: 'Hej och välkommen.', model_id: 'eleven_v4', date_unix: 1795000000, settings: {} },
+            { voice_id: 'dub-1', voice_name: 'Anna (Studio dub)', text: 'Hej.', model_id: 'eleven_v4', date_unix: 1794990000, settings: {} },
+            { voice_id: 'recent-1', voice_name: 'Recent Voice', text: 'Igen.', model_id: 'eleven_v4', date_unix: 1794980000, settings: {} },
+          ],
+          has_more: false,
+        })
+      if (url.startsWith('/v2/voices') && voicesAnswer) return json({ voices: [{ voice_id: 'kept-1', name: 'Kept Voice', category: 'cloned', labels: {} }], has_more: false })
+      // /v2/voices, /v1/user/subscription: never answered.
+    })
+    await new Promise<void>((r) => silent.listen(0, '127.0.0.1', () => r()))
+    process.env.STUDIO_ELEVEN_URL = `http://127.0.0.1:${(silent.address() as import('node:net').AddressInfo).port}`
+    process.env.STUDIO_ELEVEN_LIST_WAIT = '1500'
+    await step(
+      'Audio › Voice: ElevenLabs not sending the voice list doesn’t hold up the voiceover (the voices used lately, the key check blames ElevenLabs, a list that comes is kept)',
+      `const field = await __t.until(() => __t.q('.audio-card input[type=password]'), 5000, 'the key field')
+       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, 'ui-check stand-in')
+       field.dispatchEvent(new Event('input', { bubbles: true }))
+       ;(await __t.until(() => [...field.closest('.key-row').querySelectorAll('button')].find((b) => b.textContent.trim() === 'Save' && !b.disabled), 3000, 'Save')).click()
+       const t0 = Date.now()
+       const make = await __t.until(() => __t.qa('.audio-card button').find((b) => /Make voiceover/.test(b.textContent)), 10000, 'the voiceover card')
+       const shownAfter = Date.now() - t0
+       const note = await __t.until(() => __t.qa('.audio-card .lib-note').map((n) => n.textContent).find((t) => /^ElevenLabs didn’t send your voice list just now\. These are the voices you used lately/.test(t)), 8000, 'the note about the voice list')
+       const check = await __t.until(() => __t.qa('.lib-note').map((n) => n.textContent).find((t) => t === 'Key works. ElevenLabs didn’t answer for your account details and your voice list just now; that’s on their side, not the key.'), 10000, 'the key check')
+       const voices = window.__studio.getState().eleven.voices.map((v) => v.name)
+       if (JSON.stringify(voices) !== JSON.stringify(['Recent Voice'])) throw new Error('voices: ' + JSON.stringify(voices))
+       if (window.__studio.getState().voice?.name !== 'Recent Voice') throw new Error('the voice picked: ' + JSON.stringify(window.__studio.getState().voice))
+       if (make.disabled && !__t.q('.audio-card textarea')) throw new Error('nothing to type a script into')
+       return { shownAfter, note, check, voices }`,
+    )
+    voicesAnswer = true
+    await step(
+      'Audio › Voice: a voice list ElevenLabs does send is kept on this computer, and forgotten with the key',
+      `const list = await window.studio.services.elevenVoices()
+       if (!Array.isArray(list) || list[0]?.name !== 'Kept Voice') throw new Error('the list: ' + JSON.stringify(list))
+       const kept = await window.studio.services.elevenKept()
+       if (kept.voices?.[0]?.name !== 'Kept Voice' || !kept.voicesAt || !kept.models?.length) throw new Error('kept: ' + JSON.stringify(kept))
+       await window.studio.services.clearKey('elevenlabs')
+       const gone = await window.studio.services.elevenKept()
+       if (gone.voices || gone.models) throw new Error('still kept after the key went: ' + JSON.stringify(gone))
+       return { kept: kept.voices.map((v) => v.name), forgotten: true }`,
+    )
+    delete process.env.STUDIO_ELEVEN_URL
+    delete process.env.STUDIO_ELEVEN_LIST_WAIT
+    silent.closeAllConnections()
+    silent.close()
+  }
   await step(
     'recording (from the fake test microphone) lands on an audio track at the playhead',
     `let s = await __t.snap(); const before = s.project.media.length
