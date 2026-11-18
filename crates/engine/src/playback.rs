@@ -867,8 +867,22 @@ fn premix_worker(ff: Arc<Ffmpeg>, mixes: Arc<Mixes>) {
 /// The FFmpeg command that mixes the timeline's sound to raw floats.
 fn mix_args(project: &Project, rate: u32, channels: u16) -> Vec<String> {
     let mut args = graph::build(&graph::timeline_from(project, 0, false), None, true, false);
+    silence_missing(&mut args);
     args.extend(["-map".into(), "[aout]".into(), "-f".into(), "f32le".into(), "-ac".into(), channels.to_string(), "-ar".into(), rate.to_string(), "pipe:1".into()]);
     args
+}
+
+/// A file that's gone (moved, renamed or deleted) is heard as silence for as long as its clip
+/// plays, so the rest of the timeline is still heard (FFmpeg won't start without every input).
+fn silence_missing(args: &mut [String]) {
+    for i in 4..args.len().saturating_sub(1) {
+        if args[i] == "-i" && args[i - 4] == "-ss" && args[i - 2] == "-t" && !std::path::Path::new(&args[i + 1]).exists() {
+            let span = args[i - 1].clone();
+            for (k, a) in ["-f", "lavfi", "-t", &span, "-i", "anullsrc=r=48000:cl=stereo"].into_iter().enumerate() {
+                args[i - 4 + k] = a.to_string();
+            }
+        }
+    }
 }
 
 /// What a mix is known by: its command and length. The same sound mixes the same way, whatever
@@ -976,6 +990,29 @@ mod tests {
         let peak = buf.iter().fold(0f32, |a, x| a.max(x.abs()));
         let args = graph::build(&graph::timeline_from(&p, 0, false), None, true, false);
         assert!(peak > 0.05, "silence (peak {peak}): ffmpeg {}", args.join(" "));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_thats_gone_is_silence_and_the_rest_is_still_heard() {
+        // Repro (2026-11-18): clips whose files were moved stopped every sound ("audio mix
+        // failed: Error opening input files: No such file or directory"), the song too.
+        let Ok(ff) = Ffmpeg::detect() else { return };
+        let dir = std::env::temp_dir().join(format!("studio-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let song = dir.join("song.wav");
+        assert!(ff.cmd().args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=4", song.to_str().unwrap()]).status().unwrap().success());
+        let mut p = Project::new("T", "9:16");
+        p.media = vec![
+            Media { id: "s".into(), path: song.to_string_lossy().into(), name: "song.wav".into(), kind: MediaKind::Audio, duration_us: 4 * SECOND, has_audio: true, ..Default::default() },
+            Media { id: "v".into(), path: dir.join("moved away.mp4").to_string_lossy().into(), name: "moved away.mp4".into(), kind: MediaKind::Video, duration_us: 3 * SECOND, width: 108, height: 192, fps: 30.0, has_audio: true, ..Default::default() },
+        ];
+        p.insert("v", 0).unwrap();
+        p.insert_on_new_track("s", 0).unwrap();
+        let buf = mix(&ff, &p, 48_000, 2, false).unwrap();
+        assert_eq!(buf.len() as u64 * 4, mix_bytes(p.duration_us(), 48_000, 2));
+        let peak = buf.iter().fold(0f32, |a, x| a.max(x.abs()));
+        assert!(peak > 0.05, "the song is heard (peak {peak})");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

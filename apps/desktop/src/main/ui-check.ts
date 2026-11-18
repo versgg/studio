@@ -4476,6 +4476,45 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     }
   }
 
+  // A file moved and renamed (by hand, or by another tool) is found again by its content once
+  // the folder it's in now is added; its clip keeps playing it. A copy of the same file added
+  // earlier (the first test clip) isn't taken instead.
+  const moved = 'Media: a clip whose file was moved and renamed plays again once the folder it’s in now is added (found by its content)'
+  if (!only || only.test(moved)) {
+    const base = path.join(path.dirname(exportDir), 'moved-files')
+    const was = path.join(base, 'Clips')
+    const now = path.join(base, 'Renders')
+    try {
+      fs.rmSync(base, { recursive: true, force: true })
+      fs.mkdirSync(was, { recursive: true })
+      fs.mkdirSync(now, { recursive: true })
+      fs.copyFileSync(clips[0], path.join(was, 'clip-1.mp4'))
+      const placed = await js(`await window.__studio.importPaths([${JSON.stringify(was)}])
+        const m = (await __t.snap()).project.media.find((x) => x.path === ${JSON.stringify(path.join(was, 'clip-1.mp4'))})
+        if (!m) throw new Error('the folder wasn’t added')
+        const clipId = await window.studio.engine.call('timeline.insert', { mediaId: m.id })
+        await __t.until(async () => (await __t.snap()).project.media.find((x) => x.id === m.id)?.poster, 20000, 'its poster')
+        return { mediaId: m.id, clipId }`)
+      fs.renameSync(path.join(was, 'clip-1.mp4'), path.join(now, 'V1 clip 1 · renamed.mp4'))
+      const detail = await js(`const before = (await __t.snap()).project.media.length
+        await window.__studio.importPaths([${JSON.stringify(now)}])
+        const toast = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /^Found 1 moved file again/.test(t)), 5000, 'the toast')
+        const s = await __t.snap()
+        const m = s.project.media.find((x) => x.id === ${JSON.stringify(placed.mediaId)})
+        const clip = s.project.tracks.flatMap((t) => t.clips).find((c) => c.id === ${JSON.stringify(placed.clipId)})
+        if (!m?.path.endsWith('V1 clip 1 · renamed.mp4') || clip?.mediaId !== m.id || m.missing) throw new Error('not found again: ' + JSON.stringify({ path: m?.path, clip: clip?.mediaId, missing: m?.missing }))
+        if (s.project.media.length !== before) throw new Error('the moved file was added as another file: ' + before + ' → ' + s.project.media.length)
+        return { toast, file: m.path.split(/[\\\\/]/).pop() }`)
+      results.push({ step: moved, ok: true, detail })
+      console.log(`[ui-check] ok   ${moved} ${JSON.stringify(detail)}`)
+    } catch (e) {
+      results.push({ step: moved, ok: false, detail: (e as Error).message })
+      console.log(`[ui-check] FAIL ${moved}: ${(e as Error).message}`)
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true })
+    }
+  }
+
   // The window can't be made smaller than its smallest size, and the layout still fits there.
   const tiny ='window: it can’t be made smaller than its smallest size, and everything still fits there'
   if (!only || only.test(tiny)) {

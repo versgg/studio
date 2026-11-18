@@ -1197,14 +1197,19 @@ interface FolderResult {
   failed?: { path: string; error: string }[]
   path?: string
   error?: string
+  relinked?: number
 }
 
-function reportFolders(folders: FolderResult[]) {
+/** Folders' new and missing files, and missing files found again (moved or renamed). */
+function reportFolders(folders: FolderResult[], relinked = 0) {
+  if (relinked) toast(`Found ${relinked} moved file${relinked === 1 ? '' : 's'} again. ${relinked === 1 ? 'Its clips play' : 'Their clips play'} from where ${relinked === 1 ? 'it is' : 'they are'} now.`)
   for (const f of folders) {
     if (f.error) toast(`${basename(f.path ?? '')}: ${f.error}`, 'error')
     else if (f.added || f.missing || f.failed?.length) {
       const parts = [f.added ? `${f.added} new file${f.added === 1 ? '' : 's'}` : '', f.missing ? `${f.missing} missing` : '', f.failed?.length ? `${f.failed.length} unreadable` : ''].filter(Boolean)
-      toast(`${f.name}: ${parts.join(', ')}`, f.failed?.length || f.missing ? 'error' : 'info')
+      // Moved files are found again (even renamed) once the folder they're in now is added.
+      const hint = f.missing ? `. Moved ${f.missing === 1 ? 'it' : 'them'}? Add the folder ${f.missing === 1 ? 'it’s' : 'they’re'} in now and Studio finds ${f.missing === 1 ? 'it' : 'them'} again.` : ''
+      toast(`${f.name}: ${parts.join(', ')}${hint}`, f.failed?.length || f.missing ? 'error' : 'info')
     }
   }
 }
@@ -1222,7 +1227,7 @@ export async function importPaths(paths: string[], insertAt?: Us): Promise<strin
   const label = paths.length === 1 ? basename(paths[0]) : `${paths.length} items`
   setState({ importing: [...state.importing, label] })
   const r = await scope
-    .call<{ imported: string[]; failed: { path: string; error: string }[]; folders?: FolderResult[] }>('media.import', { paths })
+    .call<{ imported: string[]; failed: { path: string; error: string }[]; folders?: FolderResult[]; relinked?: number }>('media.import', { paths })
     .catch((e) => {
       if (!projectChanged(e)) throw e
       return undefined
@@ -1232,7 +1237,7 @@ export async function importPaths(paths: string[], insertAt?: Us): Promise<strin
       setState({ importing: state.importing.filter((_, k) => k !== i) })
     })
   if (!r) return []
-  reportFolders(r.folders ?? [])
+  reportFolders(r.folders ?? [], r.relinked)
   const linked = r.folders?.filter((f) => f.folderId).pop()
   if (linked) setState({ libraryScope: linked.folderId!, libraryDir: '' })
   if (r.failed.length) toast(`${r.failed.length} file${r.failed.length === 1 ? '' : 's'} could not be imported: ${r.failed.map((f) => f.path.split(/[\\/]/).pop()).join(', ')}`, 'error')
@@ -1265,13 +1270,13 @@ export async function importFolderDialog() {
 export async function syncFolders(quiet = false) {
   if (!state.snap?.project.folders?.length) return
   const r = quiet ? await window.studio.engine.call('media.syncFolders').catch(() => undefined) : await call('media.syncFolders')
-  if (r) reportFolders(r.folders ?? [])
+  if (r) reportFolders(r.folders ?? [], r.relinked)
 }
 
 export async function syncFolder(folderId: string) {
   const r = await call<FolderResult>('media.syncFolder', { folderId })
   if (!r) return
-  if (r.added || r.missing || r.failed?.length) reportFolders([r])
+  if (r.added || r.missing || r.failed?.length || r.relinked) reportFolders([r], r.relinked)
   else toast(`${r.name}: up to date`)
 }
 

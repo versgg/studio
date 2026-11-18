@@ -314,7 +314,26 @@ impl Engine {
                 m.jobs.submit_urgent(job);
             }
         }
+        // Files added before Studio kept their signatures get them now, in the background, so a
+        // file moved or renamed later is found again by its content.
+        let unsigned: Vec<(String, String)> = doc.project.media.iter().filter(|x| x.sig.is_none() && x.parts.is_none() && !x.missing).map(|x| (x.id.clone(), x.path.clone())).collect();
+        let cache = doc.cache_dir();
         *self.doc.lock().unwrap() = Some(doc);
+        if !unsigned.is_empty() {
+            let doc = self.doc.clone();
+            let _ = std::thread::Builder::new().name("signatures".into()).spawn(move || {
+                let sigs: Vec<(String, String, String)> = unsigned.into_iter().filter_map(|(id, path)| Some((id, path.clone(), studio_media::file_sig(Path::new(&path))?))).collect();
+                if let Some(d) = doc.lock().unwrap().as_mut().filter(|d| d.cache_dir() == cache) {
+                    d.quiet_update(|p| {
+                        for (id, path, sig) in &sigs {
+                            if let Some(m) = p.media.iter_mut().find(|m| &m.id == id && &m.path == path) {
+                                m.sig = Some(sig.clone());
+                            }
+                        }
+                    });
+                }
+            });
+        }
         self.changed();
         self.snapshot()
     }
@@ -383,8 +402,18 @@ impl Engine {
         if imported.is_empty() && folders.is_empty() {
             return Err(RpcError::new(EDIT_FAILED, "None of those files could be imported."));
         }
+        // Missing files found again among these (moved or renamed): a file that became one
+        // already in the project comes back as that one.
+        let relinked = self.relink_moved();
+        for id in ids.values_mut().chain(imported.iter_mut()) {
+            if let Some((old, _)) = relinked.iter().find(|(_, new)| new == id) {
+                *id = old.clone();
+            }
+        }
+        imported.dedup();
+        self.recount(&mut folders, &relinked);
         self.changed();
-        Ok(json!({ "imported": imported, "ids": ids, "failed": failed, "folders": folders }))
+        Ok(json!({ "imported": imported, "ids": ids, "failed": failed, "folders": folders, "relinked": relinked.len() }))
     }
 
     /// Links a folder and mirrors its tree in the library, or rescans it if it (or a folder
@@ -455,6 +484,122 @@ impl Engine {
         }
         self.changed();
         Ok(json!({ "folderId": folder_id, "name": name, "added": count, "missing": missing, "failed": failed }))
+    }
+
+    /// Finds missing files again among the project's own files: one moved or renamed and added
+    /// since from where it is now (its new folder linked, or the files imported). By content
+    /// when that tells (the files' signatures; for files added before Studio kept those, the
+    /// same poster frame, made the same way from the same file), else by the same name and
+    /// length. One undo step. Returns the `(old, new)` pairs: `new` became `old`, the entry
+    /// the timeline uses, which keeps its thumbnails, waveform and proxy.
+    fn relink_moved(&self) -> Vec<(String, String)> {
+        let Ok(m) = self.services() else { return vec![] };
+        let (project, cache) = {
+            let g = self.doc.lock().unwrap();
+            let Some(d) = g.as_ref() else { return vec![] };
+            if d.project.media.iter().all(|x| Path::new(&x.path).exists()) {
+                return vec![];
+            }
+            (d.project.clone(), d.cache_dir())
+        };
+        let gone_ids: Vec<String> = project.media.iter().filter(|x| !Path::new(&x.path).exists()).map(|x| x.id.clone()).collect();
+        let gone = |x: &Media| gone_ids.contains(&x.id);
+        let candidates = project.moved_candidates(&gone);
+        if candidates.is_empty() {
+            return vec![];
+        }
+        // What each file looks like: its poster (its waveform, for sound alone), read from the
+        // cache. A file added just now has none yet, so it's made here, the same way, when a
+        // missing file has one to compare it with and no signatures can tell.
+        let look_file = |x: &Media| if x.kind == MediaKind::Audio { x.peaks.clone() } else { x.poster.clone() };
+        let mut looks: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut make: Vec<&Media> = vec![];
+        for (old_id, like) in &candidates {
+            let Some(old) = project.media(old_id) else { continue };
+            let Some(bytes) = look_file(old).and_then(|p| std::fs::read(p).ok()) else { continue };
+            looks.insert(old.id.clone(), bytes);
+            for n in like.iter().filter_map(|id| project.media(id)) {
+                if looks.contains_key(&n.id) || make.iter().any(|x| x.id == n.id) || old.sig.is_some() && n.sig.is_some() {
+                    continue;
+                }
+                match look_file(n).and_then(|p| std::fs::read(p).ok()) {
+                    Some(bytes) => {
+                        looks.insert(n.id.clone(), bytes);
+                    }
+                    None if n.kind != MediaKind::Audio => make.push(n),
+                    None => {}
+                }
+            }
+        }
+        let made: Vec<(String, Vec<u8>)> = std::thread::scope(|s| {
+            make.chunks(make.len().div_ceil(8).max(1))
+                .map(|chunk| {
+                    let (ff, cache) = (&m.ff, &cache);
+                    s.spawn(move || {
+                        chunk
+                            .iter()
+                            .filter_map(|n| {
+                                let out = cache.join(format!("relink-{}.jpg", n.id));
+                                let bytes = ff.poster(Path::new(&n.path), &out, n.kind, n.duration_us).ok().and_then(|()| std::fs::read(&out).ok());
+                                let _ = std::fs::remove_file(&out);
+                                Some((n.id.clone(), bytes?))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect()
+        });
+        looks.extend(made);
+        let same = |a: &Media, b: &Media| -> Option<bool> {
+            if let (Some(x), Some(y)) = (&a.sig, &b.sig) {
+                return Some(x == y);
+            }
+            // The same poster is the same file. A different one proves nothing: one made by an
+            // older Studio may have been taken another way.
+            (looks.get(&a.id)? == looks.get(&b.id)?).then_some(true)
+        };
+        let pairs = project.moved_files(&gone, &same);
+        if pairs.is_empty() {
+            return pairs;
+        }
+        let n = pairs.len();
+        if self.edit_inner(&format!("Relink {n} moved file{}", if n == 1 { "" } else { "s" }), |p| Ok(p.relink(&pairs))).is_err() {
+            return vec![];
+        }
+        // Anything of theirs the cache lacks (a cleared cache) is made from where they are now.
+        if let Some(d) = self.doc.lock().unwrap().as_ref() {
+            let missing_file = |p: &Option<String>| p.as_ref().is_none_or(|p| !Path::new(p).is_file());
+            for media in d.project.media.iter().filter(|x| pairs.iter().any(|(old, _)| old == &x.id)) {
+                let used = d.project.is_used(&media.id);
+                let browse = missing_file(&media.poster) && media.kind != MediaKind::Audio;
+                let look = used && wants_look(media);
+                let proxy = used && missing_file(&media.proxy) && wants_proxy(media);
+                if browse || look || proxy {
+                    m.jobs.submit(job_for(media, &cache, browse, look, proxy));
+                }
+            }
+        }
+        pairs
+    }
+
+    /// Folder results as they are after files were found again (`relinked`): a folder's
+    /// missing files counted now, and the files found again in it not counted as new.
+    fn recount(&self, folders: &mut [Value], relinked: &[(String, String)]) {
+        let g = self.doc.lock().unwrap();
+        let Some(d) = g.as_ref() else { return };
+        for f in folders.iter_mut() {
+            if let Some(id) = f.get("folderId").and_then(Value::as_str).map(str::to_string) {
+                let ours = || d.project.media.iter().filter(|x| x.folder.as_deref() == Some(id.as_str()));
+                f["missing"] = json!(ours().filter(|x| x.missing).count());
+                let found = ours().filter(|x| relinked.iter().any(|(old, _)| old == &x.id)).count() as u64;
+                if let Some(added) = f.get("added").and_then(Value::as_u64) {
+                    f["added"] = json!(added.saturating_sub(found));
+                }
+            }
+        }
     }
 
     /// Renders the selected clips to one file in the project's `compounds` folder and puts
@@ -755,7 +900,8 @@ fn wants_look(media: &Media) -> bool {
 
 fn media_from(path: &str, p: studio_media::Probe, dir: Option<String>) -> Media {
     let name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string());
-    Media { path: path.to_string(), name, kind: p.kind, duration_us: p.duration_us, width: p.width, height: p.height, fps: p.fps, has_audio: p.has_audio, dir, codec: p.codec, sample_rate: p.sample_rate, ..Default::default() }
+    let sig = studio_media::file_sig(Path::new(path));
+    Media { path: path.to_string(), name, kind: p.kind, duration_us: p.duration_us, width: p.width, height: p.height, fps: p.fps, has_audio: p.has_audio, dir, codec: p.codec, sample_rate: p.sample_rate, sig, ..Default::default() }
 }
 
 /// Background changes (thumbnails, waveforms, proxies arriving) are batched: at most one
@@ -1132,12 +1278,26 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
             let _one_at_a_time = engine.imports.lock().unwrap_or_else(|e| e.into_inner());
             let id = s(&params, "folderId")?;
             let path = engine.doc.lock().unwrap().as_ref().ok_or_else(no_project)?.project.folders.iter().find(|f| f.id == id).map(|f| f.path.clone());
-            engine.link_or_sync(&path.ok_or_else(|| RpcError::invalid_params(format!("no folder {id}")))?)
+            let mut r = [engine.link_or_sync(&path.ok_or_else(|| RpcError::invalid_params(format!("no folder {id}")))?)?];
+            let relinked = engine.relink_moved();
+            engine.recount(&mut r, &relinked);
+            let [mut r] = r;
+            r["relinked"] = json!(relinked.len());
+            if !relinked.is_empty() {
+                engine.changed();
+            }
+            Ok(r)
         }
         "media.syncFolders" => {
             let _one_at_a_time = engine.imports.lock().unwrap_or_else(|e| e.into_inner());
             let paths: Vec<String> = engine.doc.lock().unwrap().as_ref().ok_or_else(no_project)?.project.folders.iter().map(|f| f.path.clone()).collect();
-            Ok(json!({ "folders": paths.iter().map(|p| engine.link_or_sync(p).unwrap_or_else(|e| json!({ "path": p, "error": e.message }))).collect::<Vec<_>>() }))
+            let mut folders: Vec<Value> = paths.iter().map(|p| engine.link_or_sync(p).unwrap_or_else(|e| json!({ "path": p, "error": e.message }))).collect();
+            let relinked = engine.relink_moved();
+            engine.recount(&mut folders, &relinked);
+            if !relinked.is_empty() {
+                engine.changed();
+            }
+            Ok(json!({ "folders": folders, "relinked": relinked.len() }))
         }
         "media.unlinkFolder" => {
             let id = s(&params, "folderId")?;
@@ -2120,6 +2280,60 @@ mod tests {
         // For B (with or without a trailing slash), or saying nothing, it goes through.
         assert!(dispatch_on(&e, 0, "project.current", json!({ "_project": format!("{b}/") })).is_ok());
         assert!(dispatch_on(&e, 0, "project.current", json!({})).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Files moved and renamed are found again when the folder they're in now is added: by their
+    /// signatures, or (a file added before Studio kept those) by the same poster frame. The
+    /// timeline's clips keep their media and settings; a file of an old name with other content
+    /// isn't taken. Skipped without FFmpeg.
+    #[test]
+    fn moved_and_renamed_files_are_found_again_when_their_new_folder_is_added() {
+        let dir = std::env::temp_dir().join(format!("studio-rpc-test-{}-relink", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("Clips")).unwrap();
+        std::fs::create_dir_all(dir.join("Renders")).unwrap();
+        let e = Engine::new(&dir.join("ring"), 1080, 1920, dir.join("projects")).unwrap();
+        let Ok(m) = e.services() else { return };
+        dispatch(&e, "project.openLatest", Value::Null).unwrap();
+        // Three clips alike in all but their picture: the same size, length and sound.
+        let clip = |colour: &str, out: &Path| {
+            let args = ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", &format!("color=c={colour}:s=108x192:r=30:d=2"), "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"];
+            assert!(m.ff.cmd().args(args).arg("-y").arg(out).status().unwrap().success());
+        };
+        for c in ["red", "blue", "green"] {
+            clip(c, &dir.join(format!("Clips/{c}.mp4")));
+        }
+        dispatch(&e, "media.import", json!({ "paths": [dir.join("Clips").to_string_lossy()] })).unwrap();
+        let media = || e.snapshot()["project"]["media"].as_array().unwrap().clone();
+        let id_of = |name: &str| media().iter().find(|x| x["name"] == name).unwrap()["id"].as_str().unwrap().to_string();
+        let (red, blue, green) = (id_of("red.mp4"), id_of("blue.mp4"), id_of("green.mp4"));
+        let clips: Vec<String> = [&red, &blue, &green].iter().map(|id| dispatch(&e, "timeline.insert", json!({ "mediaId": id })).unwrap().as_str().unwrap().to_string()).collect();
+        let t0 = Instant::now();
+        while !media().iter().all(|x| x["poster"].as_str().is_some_and(|p| Path::new(p).is_file())) {
+            assert!(t0.elapsed() < Duration::from_secs(30), "posters never came");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // Green was added before Studio kept signatures.
+        e.doc.lock().unwrap().as_mut().unwrap().quiet_update(|p| p.media.iter_mut().find(|x| x.id == green).unwrap().sig = None);
+        // Moved and renamed; and another file takes red's old name.
+        std::fs::rename(dir.join("Clips/red.mp4"), dir.join("Renders/V1 clip 1 · the red one.mp4")).unwrap();
+        std::fs::rename(dir.join("Clips/blue.mp4"), dir.join("Renders/V1 clip 2 · the blue one.mp4")).unwrap();
+        std::fs::rename(dir.join("Clips/green.mp4"), dir.join("Renders/green, take 3.mp4")).unwrap();
+        clip("yellow", &dir.join("Renders/red.mp4"));
+        let rescan = dispatch(&e, "media.syncFolders", Value::Null).unwrap();
+        assert_eq!((rescan["folders"][0]["missing"].clone(), rescan["relinked"].clone()), (json!(3), json!(0)));
+        let r = dispatch(&e, "media.import", json!({ "paths": [dir.join("Renders").to_string_lossy()] })).unwrap();
+        assert_eq!(r["relinked"], json!(3), "{r}");
+        assert_eq!((r["folders"][0]["added"].clone(), r["folders"][0]["missing"].clone()), (json!(1), json!(0)), "only the yellow one is new: {r}");
+        let path_of = |id: &str| media().iter().find(|x| x["id"] == id).unwrap()["path"].as_str().unwrap().to_string();
+        assert!(path_of(&red).ends_with("Renders/V1 clip 1 · the red one.mp4"), "by signature, not by the old name");
+        assert!(path_of(&blue).ends_with("Renders/V1 clip 2 · the blue one.mp4"));
+        assert!(path_of(&green).ends_with("Renders/green, take 3.mp4"), "by its poster");
+        assert_eq!(media().len(), 4, "the three found again, and the yellow one");
+        let (project, _) = e.project().unwrap();
+        assert_eq!(clips.iter().map(|c| project.clip(c).unwrap().media_id.clone()).collect::<Vec<_>>(), vec![red, blue, green]);
+        assert!(project.media.iter().all(|x| !x.missing));
         let _ = std::fs::remove_dir_all(dir);
     }
 

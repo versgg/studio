@@ -246,10 +246,62 @@ pub fn scan_folder(root: &Path) -> std::io::Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
+/// What a file is known by wherever it's moved and whatever it's renamed: its size and a hash
+/// (64-bit FNV-1a, the same on every machine and version) of its first, middle and last 64 KB.
+/// Reads at most 192 KB, so it's quick for any file. `None` if it can't be read.
+pub fn file_sig(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const PART: u64 = 64 * 1024;
+    let mut f = std::fs::File::open(path).ok()?;
+    let size = f.metadata().ok()?.len();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |bytes: &[u8]| {
+        for b in bytes {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(&size.to_le_bytes());
+    let mut buf = vec![0u8; PART as usize];
+    for at in [0, size.saturating_sub(PART) / 2, size.saturating_sub(PART)] {
+        f.seek(SeekFrom::Start(at)).ok()?;
+        let mut got = 0;
+        while got < buf.len() {
+            match f.read(&mut buf[got..]).ok()? {
+                0 => break,
+                n => got += n,
+            }
+        }
+        feed(&buf[..got]);
+    }
+    Some(format!("{size:x}-{hash:016x}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_file_keeps_its_signature_when_moved_or_renamed() {
+        let dir = std::env::temp_dir().join(format!("studio-sig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("new")).unwrap();
+        let bytes: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(dir.join("clip-1.mp4"), &bytes).unwrap();
+        let before = file_sig(&dir.join("clip-1.mp4")).unwrap();
+        std::fs::rename(dir.join("clip-1.mp4"), dir.join("new/V6 clip 1 · renamed.mp4")).unwrap();
+        assert_eq!(file_sig(&dir.join("new/V6 clip 1 · renamed.mp4")).unwrap(), before);
+        // One byte changed in the middle is another file.
+        let mut other = bytes.clone();
+        other[150_000] ^= 1;
+        std::fs::write(dir.join("other.mp4"), &other).unwrap();
+        assert_ne!(file_sig(&dir.join("other.mp4")).unwrap(), before);
+        std::fs::write(dir.join("tiny.mp4"), b"abc").unwrap();
+        assert!(file_sig(&dir.join("tiny.mp4")).unwrap().starts_with("3-"));
+        assert_eq!(file_sig(&dir.join("gone.mp4")), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn scans_a_folder_tree_for_media() {

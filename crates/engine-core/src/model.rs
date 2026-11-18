@@ -74,6 +74,10 @@ pub struct Media {
     /// The sound's own sample rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample_rate: Option<u32>,
+    /// What the file is known by wherever it's moved and whatever it's renamed: its size and a
+    /// hash of its start, middle and end (`studio_media::file_sig`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig: Option<String>,
 }
 
 /// One clip inside a compound clip, whether it sat on the main track, and its picture
@@ -2067,6 +2071,95 @@ impl Project {
         Ok(before - self.media.len())
     }
 
+    /// For each file that's gone (`gone`), the files in the project it may have become, moved
+    /// or renamed: the same kind, picture size, sound or none, and length (within a frame).
+    /// Compound clips' renders (made by Studio, in the project) are left out.
+    pub fn moved_candidates(&self, gone: &dyn Fn(&Media) -> bool) -> Vec<(String, Vec<String>)> {
+        let here: Vec<&Media> = self.media.iter().filter(|m| !gone(m)).collect();
+        self.media
+            .iter()
+            .filter(|m| m.parts.is_none() && gone(m))
+            .filter_map(|old| {
+                let frame = if old.fps > 0.0 { (1e6 / old.fps) as Us } else { 40_000 };
+                let like: Vec<String> = here
+                    .iter()
+                    .filter(|n| n.kind == old.kind && n.width == old.width && n.height == old.height && n.has_audio == old.has_audio && (n.duration_us - old.duration_us).abs() <= frame)
+                    .map(|n| n.id.clone())
+                    .collect();
+                (!like.is_empty()).then(|| (old.id.clone(), like))
+            })
+            .collect()
+    }
+
+    /// Each file that's gone paired with the file in the project that is it, moved or renamed
+    /// (from `moved_candidates`). `same(old, new)` says whether two files have the same content:
+    /// `Some(true)` proven, `Some(false)` proven not, `None` when it can't tell. A proven one is
+    /// taken first: of several copies, the one with the same name, else the one added last (the
+    /// folder just added, not an older copy elsewhere); else the only candidate with the same
+    /// name that isn't proven another file. Each file is taken once.
+    pub fn moved_files(&self, gone: &dyn Fn(&Media) -> bool, same: &dyn Fn(&Media, &Media) -> Option<bool>) -> Vec<(String, String)> {
+        let mut taken: Vec<String> = vec![];
+        let mut pairs = vec![];
+        for (old_id, like) in self.moved_candidates(gone) {
+            let Some(old) = self.media(&old_id) else { continue };
+            let free: Vec<&Media> = like.iter().filter(|id| !taken.contains(id)).filter_map(|id| self.media(id)).collect();
+            let named = |n: &&&Media| n.name.to_lowercase() == old.name.to_lowercase();
+            let verdicts: Vec<(&Media, Option<bool>)> = free.iter().map(|n| (*n, same(old, n))).collect();
+            let proven: Vec<&Media> = verdicts.iter().filter(|(_, v)| *v == Some(true)).map(|(n, _)| *n).collect();
+            let pick = if !proven.is_empty() {
+                proven.iter().find(named).or(proven.last()).copied()
+            } else {
+                let by_name: Vec<&Media> = verdicts.iter().filter(|(n, v)| *v != Some(false) && n.name.to_lowercase() == old.name.to_lowercase()).map(|(n, _)| *n).collect();
+                (by_name.len() == 1).then(|| by_name[0])
+            };
+            if let Some(n) = pick {
+                taken.push(n.id.clone());
+                pairs.push((old_id.clone(), n.id.clone()));
+            }
+        }
+        pairs
+    }
+
+    /// Files found again after they moved or were renamed: each `(old, new)` pair's `old` (the
+    /// entry clips use) takes the place of `new` (the same file, added again from where it is
+    /// now): its path, name, linked folder and subfolder. `new` goes, and anything that used it
+    /// uses `old`. Its thumbnails, waveform and proxy stay: they're of the same file.
+    /// Returns how many were found again.
+    pub fn relink(&mut self, pairs: &[(String, String)]) -> usize {
+        let mut count = 0;
+        for (old, new) in pairs {
+            let (Some(oi), Some(ni)) = (self.media.iter().position(|m| &m.id == old), self.media.iter().position(|m| &m.id == new)) else { continue };
+            if oi == ni {
+                continue;
+            }
+            let n = self.media.remove(ni);
+            let oi = if ni < oi { oi - 1 } else { oi };
+            let o = &mut self.media[oi];
+            o.path = n.path;
+            o.name = n.name;
+            o.folder = n.folder;
+            o.dir = n.dir;
+            o.missing = false;
+            o.sig = n.sig.or(o.sig.take());
+            o.poster = o.poster.take().or(n.poster);
+            o.strip = o.strip.take().or(n.strip);
+            o.peaks = o.peaks.take().or(n.peaks);
+            o.proxy = o.proxy.take().or(n.proxy);
+            for c in self.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+                if &c.media_id == new {
+                    c.media_id = old.clone();
+                }
+            }
+            for part in self.media.iter_mut().filter_map(|m| m.parts.as_mut()).flatten() {
+                if &part.clip.media_id == new {
+                    part.clip.media_id = old.clone();
+                }
+            }
+            count += 1;
+        }
+        count
+    }
+
     /// Changes a clip's settings. A new speed keeps its source range, so the clip gets longer
     /// or shorter and the main track closes up behind it; while linkage is on, the sound
     /// extracted from it takes the same speed and direction.
@@ -2808,6 +2901,62 @@ mod tests {
         assert!(p.set_format("3:2").is_err());
         p.set_format("16:9").unwrap();
         assert_eq!((p.width, p.height), (1920, 1080));
+    }
+
+    /// Media at `path` (its name the file's), `secs` long, with `poster` standing for its content.
+    fn file(id: &str, path: &str, secs: f64, poster: Option<&str>) -> Media {
+        Media { path: path.into(), name: path.rsplit('/').next().unwrap().into(), poster: poster.map(str::to_string), ..media(id, MediaKind::Video, secs) }
+    }
+
+    #[test]
+    fn moved_and_renamed_files_are_found_again_by_content_then_by_name() {
+        let mut p = Project::new("T", "9:16");
+        p.media = vec![
+            file("m1", "/old/clip-1 pink.mp4", 3.0, Some("A")),
+            file("m2", "/old/clip-2 blue.mp4", 3.0, Some("B")),
+            file("m3", "/old/intro.mp4", 5.0, None),
+            file("m4", "/old/outro.mp4", 3.0, None),
+            Media { folder: Some("f9".into()), dir: Some("Takes".into()), ..file("n5", "/new/V6 clip 1 · the pink one.mp4", 3.0, Some("A")) },
+            file("n6", "/new/V6 clip 2 · the blue one.mp4", 3.0, Some("B")),
+            file("n7", "/new/intro.mp4", 5.0, None),
+            file("n8", "/new/something else.mp4", 3.0, Some("C")),
+            file("n9", "/new/intro, longer.mp4", 9.0, None),
+        ];
+        let a = p.insert("m1", 0).unwrap();
+        let b = p.insert("m2", 0).unwrap();
+        let c = p.insert("n6", 0).unwrap();
+        let gone = |m: &Media| m.path.starts_with("/old/");
+        // Posters made the same way from the same file are the same; a different one proves nothing.
+        let same = |x: &Media, y: &Media| (x.poster.is_some() && x.poster == y.poster).then_some(true);
+        let pairs = p.moved_files(&gone, &same);
+        assert_eq!(pairs, vec![("m1".into(), "n5".into()), ("m2".into(), "n6".into()), ("m3".into(), "n7".into())], "outro has no file of its name or content");
+        assert_eq!(p.relink(&pairs), 3);
+        assert_eq!(p.media.len(), 6, "the entries added again go");
+        let m1 = p.media("m1").unwrap();
+        assert_eq!((m1.path.as_str(), m1.name.as_str(), m1.folder.as_deref(), m1.dir.as_deref()), ("/new/V6 clip 1 · the pink one.mp4", "V6 clip 1 · the pink one.mp4", Some("f9"), Some("Takes")));
+        assert_eq!(m1.poster.as_deref(), Some("A"), "its thumbnails stay");
+        assert_eq!(p.clip(&a).unwrap().media_id, "m1");
+        assert_eq!(p.clip(&b).unwrap().media_id, "m2");
+        assert_eq!(p.clip(&c).unwrap().media_id, "m2", "a clip of the file added again plays the entry it became");
+        assert!(p.media("n5").is_none() && p.media("m4").is_some());
+    }
+
+    #[test]
+    fn a_file_of_the_same_name_isnt_taken_when_it_is_proven_another_or_there_are_two() {
+        let mut p = Project::new("T", "9:16");
+        p.media = vec![
+            Media { sig: Some("s6".into()), ..file("n0", "/d/an older copy.mp4", 3.0, None) },
+            Media { sig: Some("s1".into()), ..file("m1", "/old/clip-1.mp4", 3.0, None) },
+            Media { sig: Some("s2".into()), ..file("n2", "/new/clip-1.mp4", 3.0, None) },
+            file("m3", "/old/clip-3.mp4", 3.0, None),
+            file("n4", "/a/clip-3.mp4", 3.0, None),
+            file("n5", "/b/clip-3.mp4", 3.0, None),
+            Media { sig: Some("s6".into()), ..file("m6", "/old/take.mp4", 3.0, None) },
+            Media { sig: Some("s6".into()), ..file("n7", "/c/renamed take.mp4", 3.0, None) },
+        ];
+        let gone = |m: &Media| m.path.starts_with("/old/");
+        let same = |x: &Media, y: &Media| Some(x.sig.as_ref()? == y.sig.as_ref()?);
+        assert_eq!(p.moved_files(&gone, &same), vec![("m6".into(), "n7".into())], "the same signature is the same file, whatever its name; of two copies, the one added last");
     }
 
     #[test]
