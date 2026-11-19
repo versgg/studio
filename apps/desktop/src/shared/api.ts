@@ -341,6 +341,10 @@ export interface StudioApi {
     translateGo(id: string, o: { picks: string[]; edits?: Record<string, string> }): Promise<TrJob | null>
     translateRetry(id: string): Promise<TrJob | null>
     translateCancel(id: string): Promise<TrJob | null>
+    /** Change words said: the copy's sentences said again with new words (main/translate.ts `respeak`). */
+    translateRespeak(project: string, edits: Record<string, string>): Promise<TrLine[] | ServiceError>
+    /** A translation copy's sentences as they're said now, each with what it said before it was translated. */
+    translateSpoken(project: string): Promise<{ lang: string; from: string; lines: { id: string; file: string; text: string; dur: number; original: string }[] } | ServiceError>
     translateResult(id: string): Promise<{ job: TrJob; items: TrItem[]; texts: TrText[]; voice: TrLine[] | null; stems: Record<string, TrStems>; draft: { off: string[]; edits: Record<string, string> } | null } | ServiceError>
     /** Saves (null: deletes) a language's review draft as it's typed: its unticked lines and changed words. */
     translateDraft(id: string, value: { off: string[]; edits: Record<string, string> } | null): Promise<void | ServiceError>

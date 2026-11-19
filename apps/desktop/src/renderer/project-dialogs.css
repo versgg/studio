@@ -75,3 +75,6 @@
 }
 .dir-paste:focus { border-color: #6F86FF; }
 .dir-paste::placeholder { color: #6E6E77; }
+.pd-words { align-items: start; }
+.pd-words > span { padding-top: 7px; }
+.pd-said-before { margin: 0 0 0 74px; line-height: 17px; }

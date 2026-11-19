@@ -621,6 +621,58 @@ export function result(id: string) {
   }
 }
 
+/**
+ * Change words said (right-click on a sentence of a translation's copy): sentences said again
+ * with new words by the voice that said them, each with the sentence before it in that voice for
+ * its tone, in the translation's language, model and speed, fitted before the next sentence (up to
+ * 12 % faster), as a dub's reroll is. A clone made for the translation is made again from its
+ * sample and deleted after; a kept one speaks as it is. Returns the sentences as they'll play.
+ */
+export async function respeak(project: string, edits: Record<string, string>): Promise<TrLine[]> {
+  const dir = path.join(project, 'translation')
+  const vf = path.join(dir, 'voice.json')
+  if (!fs.existsSync(path.join(dir, 'job.json'))) throw new Error('This project isn’t a translation.')
+  if (!fs.existsSync(vf)) throw new Error('This translation has no new voice (it was translated as text only).')
+  const job = readJson<TrJob>(path.join(dir, 'job.json'))
+  const voice = readJson<{ lines: TrLine[] }>(vf)
+  const { items, durationUs } = readJson<{ items: TrItem[]; durationUs: number }>(path.join(dir, 'items.json'))
+  const lines = [...voice.lines].sort((a, b) => a.atUs - b.atUs)
+  const el = eleven()
+  if (!el && !ELEVEN_FAKE) throw new Error('No ElevenLabs key is saved.')
+  const tag = `w${Date.now().toString(36)}`
+  const out: TrLine[] = []
+  for (const [id, text] of Object.entries(edits)) {
+    const words = text.trim().replace(/\s+/g, ' ')
+    const line = lines.find((l) => l.id === id)
+    const v = items.find((i) => i.id === id)?.voice
+    if (!line || !words) continue
+    if (!v) throw new Error('That sentence has no voice of its own to say it with.')
+    const i = lines.indexOf(line)
+    const before = lines.slice(0, i).reverse().find((l) => items.find((x) => x.id === l.id)?.voice?.voiceId === v.voiceId)
+    const script = [...(before ? [{ id: safe(before.id), translation: before.text }] : []), { id: safe(id), translation: words }]
+    const c = v.clone
+    const kept = c?.key ? voiceChoices(job.source)[c.key] : undefined
+    if (c && !(kept?.use === 'voice') && !c.sample) throw new Error('The clone this sentence was said with is gone, and so is what it was cloned from.')
+    const made = c && kept?.use !== 'voice' ? (c.keep ? await keptClone(job, el, c) : await cloneFrom(el, c.sample, c.name)) : ''
+    const speakAs = kept?.use === 'voice' ? kept.voiceId : made || v.voiceId
+    try {
+      // A new seed each time: the same words with the same seed come back as the same take.
+      const take = await speakTake(el, { voiceId: speakAs, lines: script, lang: job.lang, model: v.model, seed: Math.floor(Math.random() * 2 ** 31), speed: v.speed ?? 1, out: path.join(dir, `take-${tag}-${safe(id)}.mp3`) })
+      const cut = (await cutTake(take, script.map((s) => s.id), dir, tag)).find((x) => x.id === safe(id))!
+      const next = lines[i + 1]
+      const room = (next ? next.atUs - line.atUs : durationUs - line.atUs) / 1e6 - 0.04
+      const tempo = Math.min(1.12, Math.max(1, cut.dur / Math.max(0.1, room)))
+      const file = await retime(cut.file, tempo, path.join(dir, `line-${safe(id)}-${tag}-fit.wav`))
+      Object.assign(line, { file, dur: cut.dur / tempo, tempo, text: words, words: cut.words.map((w) => ({ text: w.text, start: w.start / tempo, end: w.end / tempo })) })
+      out.push({ ...line })
+    } finally {
+      if (made && !c?.keep) await removeClone(el, made).catch(() => {})
+    }
+  }
+  fs.writeFileSync(vf, JSON.stringify(voice, null, 1))
+  return out
+}
+
 /** The jobs a project has: those translating it (it's the source) and its own (it's a copy). */
 export function list(project: string): TrJob[] {
   loadAll()

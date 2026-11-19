@@ -23,6 +23,8 @@ import {
   type Layout,
 } from './store'
 import './project-dialogs.css'
+import { changeWordsSaid, spokenLineOf, type SpokenLine } from './wordsSaid'
+import { TR_LANGS } from '../shared/translate'
 
 function Frame({ title, children, foot, wide }: { title: string; children: ReactNode; foot?: ReactNode; wide?: boolean }) {
   const close = () => setState({ dialog: null })
@@ -44,6 +46,69 @@ function Frame({ title, children, foot, wide }: { title: string; children: React
   )
 }
 const close = () => setState({ dialog: null })
+
+/**
+ * Change words said… (right-click on a sentence a translation or a dub spoke): what it says now,
+ * to change; Say it has the same voice say the new words there (wordsSaid.ts).
+ */
+export function ChangeWordsDialog() {
+  const clipId = useStore((s) => s.wordsTarget)
+  const [line, setLine] = useState<SpokenLine | null | 'none'>(null)
+  const [text, setText] = useState('')
+  useEffect(() => {
+    if (!clipId) return
+    let gone = false
+    void spokenLineOf(clipId).then((l) => {
+      if (gone) return
+      setLine(l ?? 'none')
+      if (l) setText(l.text)
+    })
+    return () => {
+      gone = true
+    }
+  }, [clipId])
+  const ready = line && line !== 'none' && text.trim() && text.trim() !== line.text
+  const go = () => {
+    if (!ready || !clipId || typeof line !== 'object' || !line) return
+    setState({ dialog: null, wordsTarget: null })
+    void changeWordsSaid(clipId, line, text.trim())
+  }
+  const name = (code: string) => TR_LANGS.find((l) => l.code === code)?.name ?? code
+  return (
+    <Frame
+      title="Change words said"
+      foot={
+        <>
+          <span className="pd-note">{line && line !== 'none' ? `The same voice says it, in about ${line.dur.toFixed(1)} s. Ctrl+Z goes back.` : ''}</span>
+          <button type="button" className="pd-btn" onClick={() => setState({ dialog: null, wordsTarget: null })}>
+            Cancel
+          </button>
+          <button type="button" className="pd-btn primary" onClick={go} disabled={!ready}>
+            Say it
+          </button>
+        </>
+      }
+    >
+      {line === null ? (
+        <p className="pd-note">Reading what’s said…</p>
+      ) : line === 'none' ? (
+        <p className="pd-note">This sound isn’t a sentence a translation or a dub said, so there are no words to change.</p>
+      ) : (
+        <>
+          <label className="pd-field pd-words">
+            <span>{name(line.lang) || 'Said'}</span>
+            <textarea autoFocus rows={3} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && go()} spellCheck />
+          </label>
+          {line.original && (
+            <p className="pd-note pd-said-before">
+              {line.from ? `In ${name(line.from)}` : 'Before'}: “{line.original}”
+            </p>
+          )}
+        </>
+      )}
+    </Frame>
+  )
+}
 
 export function SaveAsDialog() {
   const snap = useStore((s) => s.snap)

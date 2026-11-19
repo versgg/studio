@@ -246,7 +246,7 @@ export interface Toast {
   text: string
 }
 
-export type Dialog = null | 'export' | 'exportProjects' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director' | 'changeVoice'
+export type Dialog = null | 'export' | 'exportProjects' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director' | 'changeVoice' | 'changeWords'
 
 /** Where the library is looking: everything, loose imports, or a linked folder's id. */
 export type LibraryScope = 'all' | 'loose' | string
@@ -322,6 +322,8 @@ export interface State {
   vmakeTarget: { mediaId: string; clipId?: string } | null
   /** What Change voice… is for: sound clips on the timeline, or files in the library. */
   voiceTarget: { clipIds: string[] } | { mediaIds: string[] } | null
+  /** The sentence Change words said… is for (a clip a translation or a dub spoke). */
+  wordsTarget: string | null
   /** What Send to Director sends: a sound track's clips (only these when several were selected; null for all of them). */
   directorTarget: { trackId: string; clipIds: string[] | null } | null
   /** The open project's text removals, by job id (a busy clip's `busy`). */
@@ -406,6 +408,7 @@ let state: State = {
   tasks: [],
   vmakeTarget: null,
   voiceTarget: null,
+  wordsTarget: null,
   directorTarget: null,
   vmakeJobs: {},
   dubJobs: {},
@@ -1018,7 +1021,7 @@ export function startStore() {
     if (now && !sameFolder(now, openDir)) {
       const from = openDir
       openDir = now
-      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, voiceTarget: null, directorTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
+      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, voiceTarget: null, wordsTarget: null, directorTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
       for (const f of switchHooks) {
         try {
           f(from, now)
@@ -1726,6 +1729,11 @@ export function freshName(stem: string, ext: string) {
 
 export function openVmake(target: { mediaId: string; clipId?: string }) {
   setState({ dialog: 'vmake', vmakeTarget: target })
+}
+
+/** Change words said…: a translated or dubbed sentence's words, to change (wordsSaid.ts). */
+export function openChangeWords(clipId: string) {
+  setState({ dialog: 'changeWords', wordsTarget: clipId, menu: null })
 }
 
 /** Change voice…: the voice list, for sound clips or library files (audio.ts `changeVoice`). */

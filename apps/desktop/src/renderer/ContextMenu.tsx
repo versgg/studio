@@ -5,6 +5,7 @@ import { askDirector } from './director'
 import { keysFor, keysLabel } from './keymap'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { setUi as setAudioUi } from './audioState'
+import { isTranslatedLine } from './wordsSaid'
 import {
   breakCompound,
   call,
@@ -21,6 +22,7 @@ import {
   makeCompound,
   mediaById,
   openChangeVoice,
+  openChangeWords,
   openVmake,
   paste,
   pasteAttributes,
@@ -117,6 +119,8 @@ export function clipMenu(): MenuEntry[] {
     ...(one?.track.main && media?.kind === 'video' ? [{ label: 'Remove text with Vmake…', run: () => openVmake({ mediaId: media.id, clipId: one.clip.id }) }] : []),
     ...(one?.track.main && media?.kind === 'video' ? [{ label: 'Dub…', run: () => openDub({ mediaId: media.id, clipId: one.clip.id }) }] : []),
     ...(speaking.length ? [{ label: 'Change voice…', run: () => openChangeVoice({ clipIds: speaking }) }] : []),
+    // One sentence a translation or a dub said: its words, to change and have said again.
+    ...(one && (dubbed || isTranslatedLine(one.clip.id)) ? [{ label: 'Change words said…', run: () => openChangeWords(one.clip.id) }] : []),
     ...(dubbed ? [{ label: dubbed === 1 ? 'Reroll voice' : `Reroll voice (${dubbed} sentences)`, run: () => void rerollClips(sel) }] : []),
     ...(sel.some(isCompound) ? [{ label: 'Break compound clip', keys: keysFor('breakCompound'), run: breakCompound }] : []),
     'sep',

@@ -203,6 +203,25 @@ export function registerServices() {
   ipcMain.handle('translate:retry', (_e, id: string) => translate.retry(id))
   ipcMain.handle('translate:cancel', (_e, id: string) => translate.cancel(id))
   ipcMain.handle('translate:result', (_e, id: string) => tried(() => translate.result(id)))
+  // Change words said: the copy's sentences said again with new words (translate.ts `respeak`).
+  ipcMain.handle('translate:respeak', async (_e, project: string, edits: Record<string, string>) => {
+    try {
+      return await translate.respeak(project, edits)
+    } catch (e) {
+      return failure(e)
+    }
+  })
+  // What the copy's sentences say now, and what each said in the language it was translated from.
+  ipcMain.handle('translate:spoken', (_e, project: string) =>
+    tried(() => {
+      const dir = path.join(project, 'translation')
+      const read = <T>(f: string): T | null => (fs.existsSync(path.join(dir, f)) ? (JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as T) : null)
+      const job = read<{ lang: string; from: string }>('job.json')
+      const items = read<{ items: { id: string; text: string }[] }>('items.json')?.items ?? []
+      const lines = read<{ lines: { id: string; file: string; text: string; dur: number }[] }>('voice.json')?.lines ?? []
+      return { lang: job?.lang ?? '', from: job?.from ?? '', lines: lines.map((l) => ({ id: l.id, file: l.file, text: l.text, dur: l.dur, original: items.find((i) => i.id === l.id)?.text ?? '' })) }
+    }),
+  )
   ipcMain.handle('translate:draft', (_e, id: string, value: translate.TrDraft | null) => tried(() => translate.saveDraft(id, value)))
   ipcMain.handle('translate:applied', (_e, id: string) => translate.applied(id))
   ipcMain.handle('translate:failed', (_e, id: string, reason: string) => translate.failed(id, reason))

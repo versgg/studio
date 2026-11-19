@@ -3812,6 +3812,50 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
         console.log(`[ui-check] FAIL ${landed.step}: ${wrong}`)
       } else Object.assign(landed, { detail: { ...(landed.detail as object), price: `kept in ${takes.length} takes` } })
     }
+    // Change words said: in the Norwegian copy, a sentence the translation said is right-clicked,
+    // its words changed and said again by its voice where its clip is; Ctrl+Z puts the old back.
+    const projectsDir = process.env.STUDIO_PROJECTS_DIR ?? ''
+    const copies = projectsDir && fs.existsSync(projectsDir) ? fs.readdirSync(projectsDir).map((n) => path.join(projectsDir, n)).filter((d) => / · Norsk(\.studio)?$/.test(path.basename(d)) && fs.existsSync(path.join(d, 'translation', 'voice.json'))) : []
+    const copy = copies.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0]
+    if (copy)
+      await step(
+        'Translations: right-click › Change words said on a translated sentence shows its words; new ones are said by its voice where it is, and Ctrl+Z puts the old back',
+        `const S = window.__studio
+         const copy = ${JSON.stringify(copy)}
+         const back = (await __t.snap()).dir
+         await S.openProjectAt(copy)
+         await __t.until(async () => (await __t.snap()).dir === copy, 8000, 'the Norwegian copy')
+         try {
+           const s = await __t.snap()
+           const said = (c) => s.project.media.find((m) => m.id === c.mediaId)?.path ?? ''
+           const clip = s.project.tracks.flatMap((t) => t.clips).find((c) => /[\\\\/]translation[\\\\/]line-[^\\\\/]*\\.wav$/.test(said(c)))
+           if (!clip) throw new Error('no sentence the translation said on the timeline')
+           window.__studioDev.store.setState({ selection: [clip.id], focus: 'timeline', positionUs: clip.startUs })
+           const el = await __t.until(() => __t.clipEl(clip.id), 5000, 'its clip')
+           const r = __t.rect(el)
+           el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 10 }))
+           ;(await __t.until(() => __t.qa('.context-menu button').find((b) => b.textContent.includes('Change words said')), 3000, 'Change words said… in the menu')).click()
+           const box = await __t.until(() => __t.q('.pd-words textarea'), 8000, 'its words')
+           const before = box.value
+           const spokenBefore = (await window.studio.services.translateSpoken(copy)).lines.find((l) => l.file === said(clip))
+           if (!before || before !== spokenBefore?.text) throw new Error('the box shows ' + JSON.stringify(before) + ', the sentence says ' + JSON.stringify(spokenBefore?.text))
+           const label = __t.q('.pd-words > span')?.textContent
+           Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, 'Nå sier hun noe helt nytt.')
+           box.dispatchEvent(new Event('input', { bubbles: true }))
+           ;(await __t.until(() => [...__t.qa('.pd-btn.primary')].find((b) => b.textContent === 'Say it' && !b.disabled), 3000, 'Say it')).click()
+           const after = await __t.until(async () => { const x = await __t.snap(); const c = x.project.tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id); const m = c && x.project.media.find((m) => m.id === c.mediaId); return m && /-w[0-9a-z]+-fit\\.wav$/.test(m.path) && { c, m } }, 30000, 'the sentence said again')
+           const line = (await window.studio.services.translateSpoken(copy)).lines.find((l) => l.file === after.m.path)
+           if (line?.text !== 'Nå sier hun noe helt nytt.') throw new Error('the translation keeps: ' + JSON.stringify(line))
+           if (after.c.startUs !== clip.startUs) throw new Error('it moved: ' + clip.startUs + ' → ' + after.c.startUs)
+           await window.studio.engine.call('edit.undo', {})
+           const undone = (await __t.snap()).project.tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id)
+           if (undone?.mediaId !== clip.mediaId) throw new Error('Ctrl+Z didn’t put the old take back')
+           return { label, before, after: line.text, file: after.m.path.split(/[\\\\/]/).pop() }
+         } finally {
+           await S.openProjectAt(back)
+           await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+         }`,
+      )
     if (landed?.ok && elevenTest.live() !== keptOne) {
       Object.assign(landed, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account, not ${keptOne}` })
       console.log(`[ui-check] FAIL ${landed.step}: ${elevenTest.live()} clone(s) left in the account, not ${keptOne}`)

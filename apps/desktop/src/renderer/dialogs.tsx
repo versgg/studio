@@ -7,7 +7,7 @@ import { ChangeVoiceDialog, CloneDialogBody, DesignDialogBody, VoicePickerDialog
 import { DownloadDialogBody } from './DownloadDialog'
 import { ExportProjectsDialog } from './ExportProjectsDialog'
 import { ExportDialog } from './ExportDialog'
-import { DirectorDialog, McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
+import { ChangeWordsDialog, DirectorDialog, McpDialog, PrefsDialog, ReportDialog, SaveAsDialog, SaveLayoutDialog, StartDialog, VersionsDialog, WhatsNewDialog, WorkspacesDialog } from './ProjectDialogs'
 import { ShortcutsDialog } from './ShortcutsDialog'
 import { call, fileUrl, findClip, importPaths, mediaById, newProject, removeText, setState, useStore, type Crop } from './store'
 
@@ -31,7 +31,7 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
   )
 }
 
-const close = () => setState({ dialog: null, exportClips: null, voiceTarget: null })
+const close = () => setState({ dialog: null, exportClips: null, voiceTarget: null, wordsTarget: null })
 
 export function Dialogs() {
   const dialog = useStore((s) => s.dialog)
@@ -57,6 +57,7 @@ export function Dialogs() {
         <VoicePickerDialog close={close} />
       </Modal>
     )
+  if (dialog === 'changeWords') return <ChangeWordsDialog />
   if (dialog === 'changeVoice')
     return (
       <Modal title="Change voice" onClose={close} wide>
