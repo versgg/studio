@@ -3577,6 +3577,33 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
   // Claude or ElevenLabs): two languages from the tab, the review, and the Norwegian copy with
   // its text translated. Last, as it opens the copy.
   if (process.env.STUDIO_CLAUDE_FAKE === '1' && process.env.STUDIO_ELEVEN_FAKE === '1') {
+    // Two voices in one voiceover (an ElevenLabs Text to Dialogue file): each sentence is found
+    // in the history with the voice that said it, and the translation speaks it in that voice.
+    const dialogue = path.join(path.dirname(exportDir), 'dialogue voiceover.wav')
+    if (fs.existsSync(dialogue))
+      await step(
+        'Translations: a voiceover two voices speak (a dialogue) gives each sentence the voice that said it',
+        `const S = window.__studio
+         const back = (await __t.snap()).dir
+         await S.newProject('Two voices', '9:16')
+         await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+         try {
+           const imp = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(dialogue)}] })
+           const clip = await window.studio.engine.call('timeline.insertNewTrack', { mediaId: imp.imported[0], atUs: 0 })
+           ${cat('Translations')}
+           const same = await __t.until(() => __t.qa('.lib-setting button').find((b) => b.textContent === 'Same voice'), 5000, 'Same voice')
+           if (same.getAttribute('aria-pressed') !== 'true') same.click()
+           const notes = await __t.until(() => { const n = __t.qa('.lib-note').map((x) => x.textContent); return n.some((t) => /^Test Voice speaks it again/.test(t)) && n.some((t) => /^Erik speaks it again/.test(t)) && n }, 15000, 'both voices found')
+           const lines = (await S.collectTranslation()).items.filter((i) => i.kind === 'line')
+           const voices = lines.map((i) => [i.text, i.voice?.voiceId, i.voice?.name])
+           if (lines.length !== 2 || lines[0].voice?.voiceId !== 'fake-voice' || lines[1].voice?.voiceId !== 'fake-erik') throw new Error('the sentences’ voices: ' + JSON.stringify(voices))
+           if (lines.some((i) => i.voice?.clone)) throw new Error('a voice is cloned though both are in the account')
+           return { voices, notes: notes.filter((t) => /speaks it again/.test(t)) }
+         } finally {
+           await S.openProjectAt(back)
+           await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+         }`,
+      )
     await step(
       'Translations: a voiceover Studio didn’t make is heard, its ElevenLabs voice found in the history, and it’s spoken again sentence by sentence (never cloned)',
       `${cat('Translations')}

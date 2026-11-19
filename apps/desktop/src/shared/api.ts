@@ -25,7 +25,7 @@ export type TrSound = {
   /** A dub's clone that isn't kept (or a translation's, `translation`): cloned again from this sample for the take, then deleted. */
   clone?: { sample: string; name: string; translation?: boolean }
   /** A voiceover Studio didn't make, as it was heard (main/voice-read.ts): its sentences in seconds into the file (none: no speech), how its voice was found, or why it wasn't. */
-  read?: { sentences: { text: string; start: number; end: number; words?: { text: string; start: number; end: number }[] }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; language?: string; mixed?: boolean }
+  read?: { sentences: { text: string; start: number; end: number; words?: { text: string; start: number; end: number }[]; /** Who said it, when two or more voices speak in the file. */ voice?: { voiceId: string; name: string; model: string; speed: number } }[]; how?: 'studio' | 'history' | 'name' | 'picked'; note?: string; language?: string; mixed?: boolean }
 }
 /** Overlay text a dub left in the picture as filmed: in the dub's own time; `dir` is its folder's name. */
 export type TrFilmed = { dir: string; text: string; startUs: number; endUs: number; box: { x: number; y: number; w: number; h: number } }

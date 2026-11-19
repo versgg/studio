@@ -26,6 +26,7 @@ import { ffmpeg } from './ffmpeg'
 import { getSecret } from './secrets'
 import { overOtherSound } from '../shared/voice-mix'
 import { sentencesOf } from '../shared/speech-timing'
+import { historyLines, voicesBySentence } from '../shared/voice-match'
 
 export type VoiceHow = 'studio' | 'history' | 'name' | 'picked'
 
@@ -40,14 +41,14 @@ export interface ReadVoice {
 export interface VoiceRead {
   file: string
   /** What it says, sentence by sentence, in seconds into the file, with each word's time (`words`, since v2). Empty: no speech. */
-  sentences: { text: string; start: number; end: number; words?: { text: string; start: number; end: number }[] }[]
+  sentences: { text: string; start: number; end: number; words?: { text: string; start: number; end: number }[]; /** Who said it, in a file two or more voices speak in (since v3; shared/voice-match.ts). */ voice?: ReadVoice }[]
   language: string
   voice: ReadVoice | null
   /** Why no voice was found, when none was ('kept', from an earlier Studio: the user chose to keep its sound as it is). */
   note?: string
   /** The voice is over music or other sound (measured outside its words). */
   mixed?: boolean
-  /** How it was read: 2 keeps each word's time and hears a short file's one or two words. */
+  /** How it was read: 2 keeps each word's time and hears a short file's one or two words; 3 finds each sentence's voice. */
   v?: number
 }
 
@@ -64,15 +65,23 @@ const cacheFile = (project: string, file: string) => {
   return path.join(project, 'cache', 'voices', `${id}.json`)
 }
 
-/** What's known of `file` already (null: not read yet, or the file is gone). */
-export function knownVoice(project: string, file: string): VoiceRead | null {
+/** What was kept of `file`, however old (null: nothing). */
+function keptRead(project: string, file: string): VoiceRead | null {
   try {
-    const r = JSON.parse(fs.readFileSync(cacheFile(project, file), 'utf8')) as VoiceRead
-    // Heard as nothing before v2, which took a short file's one or two words for no speech: heard again once.
-    return !r.v && !r.sentences.length ? null : r
+    return JSON.parse(fs.readFileSync(cacheFile(project, file), 'utf8')) as VoiceRead
   } catch {
     return null
   }
+}
+
+/** What's known of `file` already (null: not read yet, or the file is gone). */
+export function knownVoice(project: string, file: string): VoiceRead | null {
+  const r = keptRead(project, file)
+  if (!r) return null
+  // Heard as nothing before v2, which took a short file's one or two words for no speech: heard again once.
+  if (!r.v && !r.sentences.length) return null
+  // Read before each sentence's voice was looked for: read again once (its words are kept, see readVoice).
+  return (r.v ?? 1) < 3 && r.sentences.length ? null : r
 }
 
 function keep(project: string, r: VoiceRead) {
@@ -92,12 +101,22 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
   if (!job) {
     job = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${path.basename(file)} is missing.`)
+      // Read before (v2): its words as they were heard, only the voices looked for again.
+      const old = keptRead(project, file)
+      if (old?.v === 2 && old.sentences.length) {
+        const sentences = old.sentences.map(({ voice: _v, ...s }) => s)
+        const r: VoiceRead = { ...old, sentences, v: 3 }
+        // An earlier Studio's "keep its own sound" stays as it was.
+        if (old.note !== 'kept') Object.assign(r, { voice: null, note: undefined }, await findVoice(file, sentences.map((s) => s.text).join(' '), sentences))
+        keep(project, r)
+        return r
+      }
       const words = FAKE ? fakeWords(file) : await heard(file)
       const length = await lengthOf(file)
       const short = length > 0 && length <= SHORT_FILE
       const sentences = sentencesOf(words.words, short ? 1 : 3).map((x) => ({ ...x, words: words.words.filter((w) => w.start >= x.start - 0.001 && w.end <= x.end + 0.001) }))
-      const r: VoiceRead = { file, sentences, language: words.language, voice: null, v: 2 }
-      if (sentences.length) Object.assign(r, await findVoice(file, sentences.map((s) => s.text).join(' ')), { mixed: await overMusic(file, words.words) })
+      const r: VoiceRead = { file, sentences, language: words.language, voice: null, v: 3 }
+      if (sentences.length) Object.assign(r, await findVoice(file, sentences.map((s) => s.text).join(' '), sentences), { mixed: await overMusic(file, words.words) })
       keep(project, r)
       return r
     })().finally(() => reading.delete(k))
@@ -168,7 +187,7 @@ const wordsOf = (s: string) =>
     .filter(Boolean)
 
 /** The voice of a file: Studio's note beside it, the account's history, its name; or why not. */
-async function findVoice(file: string, said: string): Promise<{ voice: ReadVoice | null; note?: string }> {
+async function findVoice(file: string, said: string, sentences: VoiceRead['sentences']): Promise<{ voice: ReadVoice | null; note?: string }> {
   const beside = `${file.replace(/\.[^.\\/]+$/, '')}.voice.json`
   if (fs.existsSync(beside)) {
     const v = JSON.parse(fs.readFileSync(beside, 'utf8')) as { voiceId: string; modelId: string; speed?: number; name?: string }
@@ -178,7 +197,21 @@ async function findVoice(file: string, said: string): Promise<{ voice: ReadVoice
   if (!el) return { voice: null, note: 'No ElevenLabs key is saved, so its voice can’t be looked up.' }
   let note: string | undefined
   try {
-    const v = matchHistory(said, await el.history())
+    const history = await el.history()
+    const v = matchHistory(said, history)
+    // Two or more voices in it (a dialogue, lines joined into one file): each sentence its own.
+    const each = voicesBySentence(sentences, history)
+    if (each) {
+      each.forEach((h, i) => {
+        if (h) sentences[i].voice = { voiceId: h.voiceId, name: h.voiceName || 'A voice in it', model: modelFor(h.model), speed: h.speed || 1, how: 'history' }
+      })
+      // The file's own voice (for a sentence no voice holds): the one found, else the one that says the most.
+      if (!v) {
+        const count = new Map<string, { n: number; voice: ReadVoice }>()
+        for (const s of sentences) if (s.voice) count.set(s.voice.voiceId, { n: (count.get(s.voice.voiceId)?.n ?? 0) + 1, voice: s.voice })
+        return { voice: [...count.values()].sort((a, b) => b.n - a.n)[0].voice }
+      }
+    }
     if (v) return { voice: v }
   } catch (e) {
     note = `The ElevenLabs history couldn’t be read (${(e as Error).message})`
@@ -238,7 +271,7 @@ const FAKE_SAID = 'Det här är testet. Nu kommer den andra meningen som är lit
 function fakeWords(file: string) {
   const name = path.basename(file)
   if (!/voiceover|speaks/i.test(name)) return { language: 'sv', words: [] }
-  const said = /speaks/i.test(name) ? FAKE_SPEAKS : FAKE_SAID
+  const said = /dialogue/i.test(name) ? FAKE_DIALOGUE : /speaks/i.test(name) ? FAKE_SPEAKS : FAKE_SAID
   const words = said.split(' ').map((text, i) => ({ text, start: 0.4 + i * 0.4 + (i > 3 ? 0.6 : 0), end: 0.7 + i * 0.4 + (i > 3 ? 0.6 : 0) }))
   // A file named "norsk" speaks Norwegian (the voice changer's other way, in tests).
   return { language: /norsk/i.test(name) ? 'no' : 'sv', words }
@@ -247,8 +280,14 @@ function fakeWords(file: string) {
 /** What a clip that speaks says, in a voice the stand-in account doesn't have. */
 const FAKE_SPEAKS = 'Hej och välkommen hit. Det här är min favorit och jag använder den varje dag.'
 
+/** What a file named "dialogue" says: Test Voice asks, Erik answers (one Text to Dialogue item in the history). */
+const FAKE_DIALOGUE = 'Hej, vad gör du idag? Jag ska till stranden med barnen.'
+
 const fakeEleven = {
-  history: async () => [{ voiceId: 'fake-voice', voiceName: 'Test Voice', model: 'eleven_v3', text: FAKE_SAID, speed: 1.05, at: 1 }],
+  history: async () => [
+    { voiceId: 'fake-voice', voiceName: 'Test Voice', model: 'eleven_v3', text: FAKE_SAID, speed: 1.05, at: 1 },
+    ...historyLines([{ voice_id: null, text: null, model_id: 'eleven_v3', date_unix: 2, dialogue: [{ text: 'Hej, vad gör du idag?', voice_id: 'fake-voice', voice_name: 'Test Voice' }, { text: 'Jag ska till stranden med barnen.', voice_id: 'fake-erik', voice_name: 'Erik' }] }]),
+  ],
   voices: async () => [
     { id: 'fake-voice', name: 'Test Voice', category: 'generated' },
     { id: 'fake-erik', name: 'Erik', category: 'cloned' },

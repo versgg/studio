@@ -7,6 +7,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { elevenProblem } from '../shared/eleven-permissions'
 import type { DesignRound } from '../shared/api'
+import { historyLines } from '../shared/voice-match'
 
 const API = () => process.env.STUDIO_ELEVEN_URL || 'https://api.elevenlabs.io'
 /**
@@ -93,9 +94,8 @@ export class ElevenLabs {
     for (let page = 0; page < pages; page++) {
       const q = new URLSearchParams({ page_size: '1000', ...(after ? { start_after_history_item_id: after } : {}) })
       const r = await this.json(`/v1/history?${q}`)
-      for (const h of r.history ?? []) {
-        if (h.voice_id && h.text) out.push({ voiceId: h.voice_id, voiceName: h.voice_name ?? '', model: h.model_id ?? '', text: h.text, speed: h.settings?.speed ?? 1, at: h.date_unix ?? 0 })
-      }
+      // A Text to Dialogue item lists its lines, each with its voice (shared/voice-match.ts).
+      out.push(...historyLines(r.history ?? []))
       after = r.last_history_item_id ?? ''
       if (!r.has_more || !after) break
     }

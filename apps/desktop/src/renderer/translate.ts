@@ -178,7 +178,9 @@ export async function collect(snap: Snapshot, lang?: string) {
         const part = playedPart(c, sn)
         if (!part) continue
         const it: TrItem = { id: `v:${c.id}~${n}`, kind: 'line', text: part.text, startUs: part.at[0], endUs: part.at[1], heard: { path: m.path, mediaId: m.id, start: part.start, end: part.end, mixed, fromUs, spanUs: toUs - fromUs } }
-        addLine(it, s, m, c.id, base, { start: part.start, end: part.end }, { how: s.voiceId ? s.read.how : undefined, note: s.read.note, keptOld: s.read.note === 'kept' })
+        // Two or more voices in the file (a dialogue): each sentence goes with the voice that said it.
+        const said = sn.voice ? { ...s, voiceId: sn.voice.voiceId, name: sn.voice.name, model: sn.voice.model, speed: sn.voice.speed } : s
+        addLine(it, said, m, c.id, base, { start: part.start, end: part.end }, { how: said.voiceId ? (sn.voice ? 'history' : s.read.how) : undefined, note: s.read.note, keptOld: s.read.note === 'kept' })
       }
       continue
     }
