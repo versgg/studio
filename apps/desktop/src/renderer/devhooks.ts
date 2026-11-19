@@ -12,7 +12,8 @@ import * as stickers from './stickers'
 import * as presets from './textPresets'
 import * as textRender from './textRender'
 import * as textExport from './textExport'
+import * as live from './liveText'
 import { getState, setState } from './store'
 import * as vision from './vision'
 
-if (window.studio?.silent) (window as unknown as { __studioDev: object }).__studioDev = { act, audioSamples, captions, looks, masks, presets, sounds, stickers, textRender, vision, textExport, store: { getState, setState } }
+if (window.studio?.silent) (window as unknown as { __studioDev: object }).__studioDev = { act, audioSamples, captions, looks, masks, presets, sounds, stickers, textRender, vision, textExport, live, store: { getState, setState } }

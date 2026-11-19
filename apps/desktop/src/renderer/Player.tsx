@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { attachLiveCanvas, frameMatrix, layoutOf, liveVersion, placeAt, redraw, setLivePlace, subscribeLive, type Place } from './liveText'
-import { groupLines } from './captions'
+import { changesAllLines, groupLines } from './captions'
 import { isReels } from './reels'
 import { ReelsOverlay, ReelsTextButton } from './ReelsView'
 import { call, deleteSelection, exitSource, getState, mediaById, setState, step, togglePlay, useStore, type Clip, type Media, type Project, type Snapshot, type Track, type Us } from './store'
@@ -295,9 +295,9 @@ function Stage({ fw, pw, ph }: { fw: number; fh: number; pw: number; ph: number 
       } else own[name] = value
     }
     if (!Object.keys(own).length && !keyed) return false
-    // A caption line with Apply to all captions on: every line of its language goes there too.
+    // A caption line set to All lines (its own choice, captions.ts): every line of its language goes there too.
     const track = snap.project.tracks.find((t) => t.clips.some((c) => c.id === clip.id))
-    if (clip.caption && !keyed && track && getUi('insp.capAll', true)) {
+    if (clip.caption && !keyed && track && changesAllLines(track.id, clip)) {
       const ids = groupLines(getState().snap, track.id).map((l) => l.clip.id)
       call('clip.set', { clipIds: ids, ...own, label: 'Move all captions' })
       return true

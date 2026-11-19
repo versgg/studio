@@ -9,7 +9,7 @@ import { applyCaptionLook, brandOf, captionTracks, editCaptionLine, restyleCapti
 import { CaptionLinesTab } from './CaptionsPanel'
 import { StemsTab } from './StemsTab'
 import { DubTab } from './DubTab'
-import { captionLookOf, ownKeys, previewCaptionLook } from './captions'
+import { captionLookOf, changesAllLines, ownKeys, previewCaptionLook, setChangesAllLines } from './captions'
 import { liveVersion, lookOf as liveLook, previewTextLook, subscribeLive } from './liveText'
 import { PresetStyles } from './PresetStyles'
 import { DEFAULT_TEXT } from './textPresets'
@@ -831,10 +831,10 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
   const { v } = useClipValues(clip)
   const tabs = clip.caption ? ['captions', 'text', 'animation'] : ['text', 'animation', 'tracking']
   const cur = tabs.includes(tab) ? tab : tabs[0]
-  // Apply to all: every caption line of this track (on unless you untick it), or every text clip (off unless you tick it).
-  const [allCaptions, setAllCaptions] = useUi('insp.capAll', true)
+  // A caption line: All lines or This line, chosen line by line (captions.ts). Text: Apply to all text (off unless you tick it).
+  const [, rescope] = useState(0)
   const [allText, setAllText] = useUi('insp.textAll', false)
-  const all = clip.caption ? allCaptions : allText
+  const all = clip.caption ? changesAllLines(track.id, clip) : allText
   const snap = useStore((s) => s.snap)
   const capInfo = clip.caption ? captionTracks(snap).find((t) => t.track.id === track.id) : undefined
   const area = useRef<HTMLTextAreaElement>(null)
@@ -870,6 +870,8 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
     const keys = ownKeys(clip)
     const base = captionLookOf(track.id) as unknown as Record<string, unknown> | undefined
     if (!keys.length || !base) return
+    setChangesAllLines(track.id, clip, true)
+    rescope((n) => n + 1)
     return updateText(clip.id, { ...Object.fromEntries(keys.map((k) => [k, base[k] ?? null])), own: null } as unknown as Partial<TextLook>)
   }
   const ownHere = clip.caption ? ownKeys(clip).length > 0 : false
@@ -922,7 +924,16 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
         <>
           {clip.caption ? (
             // Which lines a change to the look goes to: the language's every line, or this one.
-            <SegRow label="Change" className="insp-scope" value={all ? 'all' : 'one'} items={[['all', 'All lines'], ['one', 'This line']]} onPick={(v) => setAllCaptions(v === 'all')} />
+            <SegRow
+              label="Change"
+              className="insp-scope"
+              value={all ? 'all' : 'one'}
+              items={[['all', 'All lines'], ['one', 'This line']]}
+              onPick={(v) => {
+                setChangesAllLines(track.id, clip, v === 'all')
+                rescope((n) => n + 1)
+              }}
+            />
           ) : (
             <label className="insp-all">
               <input type="checkbox" checked={all} onChange={(e) => setAllText(e.target.checked)} />

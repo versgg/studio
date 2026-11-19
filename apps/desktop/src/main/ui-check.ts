@@ -4696,6 +4696,132 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      return { ownKept: upper[1].text.color, afterWords: typed[1].text.color, others: upper[0].text.color, reset: after[1].text.color }`,
   )
 
+  // The user's own clicks, as they made them: one caption pink with This line (the colour
+  // picker's own colour), then the next caption clicked. It showed pink while selected and white
+  // once it wasn't, and This line stayed on for it (2026-11-19). Each caption now keeps its own
+  // choice; the next one is on All lines and shows, live and drawn, its own look.
+  await step(
+    'Captions: This line on one caption leaves the next one on All lines, shown in its own colour while selected and after',
+    `const style = { font: 'Metropolis', size: 60, weight: 600, color: '#FFFFFF', align: 'center', lineHeight: 1.2, letterSpacing: 0, case: 'none', stroke: null, background: null, shadow: null, preset: 'Clean · xx · 72' }
+     const r = await window.studio.engine.call('captions.set', { lines: Array.from({ length: 6 }, (_, i) => ({ startUs: i * 800000, endUs: (i + 1) * 800000, text: 'Caption ' + (i + 1) })), style })
+     const lines = async () => { const t = (await __t.snap()).project.tracks.find((x) => x.id === r.trackId); return [...(t?.clips ?? [])].sort((a, b) => a.startUs - b.startUs) }
+     const dev = window.__studioDev
+     const tab = (name) => __t.until(() => [...__t.qa('.insp-tabs button')].find((x) => x.textContent === name), 5000, 'the Inspector’s ' + name + ' tab')
+     const scopeNow = () => [...__t.qa('.insp-scope button')].find((b) => b.getAttribute('aria-pressed') === 'true' || b.classList.contains('on'))?.textContent
+     // Clicking a caption on the timeline leaves the playhead where it is (on the first caption here).
+     const pickLine = async (i, move = false) => {
+       const id = (await lines())[i].id
+       if (move) dev.store.setState({ positionUs: (await lines())[i].startUs + 100000 })
+       __t.click(await __t.until(() => __t.clipEl(id), 5000, 'caption ' + (i + 1)))
+       await __t.until(() => dev.store.getState().selection[0] === id, 3000, 'caption ' + (i + 1) + ' selected')
+       await __t.sleep(400)
+       return id
+     }
+     await __t.until(async () => (await lines()).every((c) => c.text.png), 15000, 'the captions drawn')
+     // The first caption: This line, pink from the colour picker.
+     await pickLine(0, true)
+     ;(await tab('Text')).click()
+     ;(await __t.until(() => [...__t.qa('.insp-scope button')].find((x) => x.textContent === 'This line'), 3000, 'This line')).click()
+     ;(await __t.until(() => __t.q('.insp-swatches[aria-label="Colour"] button.more'), 3000, 'Another colour')).click()
+     const hex = await __t.until(() => __t.q('.cpick input[aria-label="Hex code"]'), 3000, 'the hex field')
+     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(hex, '#F847FF')
+     hex.dispatchEvent(new Event('input', { bubbles: true }))
+     await __t.until(async () => (await lines())[0].text.color === '#F847FF', 8000, 'the first caption pink')
+     // The next caption, clicked on the timeline.
+     const second = await pickLine(1)
+     const scopeSecond = scopeNow()
+     const live = dev.live.lookOf((await lines())[1]).color
+     const liveFirst = dev.live.lookOf((await lines())[0]).color
+     const shownColour = __t.q('.insp-swatches[aria-label="Colour"] button[aria-pressed="true"]')?.getAttribute('aria-label')
+     // Clicked off.
+     dev.store.setState({ selection: [] })
+     await __t.sleep(1500)
+     const after = await lines()
+     // What the first caption's drawing shows (its letters' colour, in 16 steps).
+     const img = await createImageBitmap(await (await fetch('studio-file://cache/' + encodeURIComponent(after[0].text.png))).blob())
+     const cv = document.createElement('canvas')
+     cv.width = img.width
+     cv.height = img.height
+     const g = cv.getContext('2d')
+     g.drawImage(img, 0, 0)
+     const d = g.getImageData(0, 0, cv.width, cv.height).data
+     const count = new Map()
+     for (let i = 0; i < d.length; i += 4) if (d[i + 3] >= 250) { const k = '#' + [d[i], d[i + 1], d[i + 2]].map((v) => (v >> 4).toString(16)).join('').toUpperCase(); count.set(k, (count.get(k) ?? 0) + 1) }
+     const drawnFirst = [...count].sort((a, b) => b[1] - a[1])[0]?.[0]
+     const back = await pickLine(0)
+     const scopeFirst = scopeNow()
+     dev.store.setState({ selection: [] })
+     await window.studio.engine.call('captions.set', { trackId: r.trackId, lines: [], style: {} })
+     const seen = { scopeSecond, live, liveFirst, drawnFirst, shownColour, saved: after.map((c) => c.text.color), own: after.map((c) => (c.text.own ?? []).join('+')), scopeFirst }
+     const wrong = []
+     if (scopeSecond !== 'All lines') wrong.push('the next caption is on ' + scopeSecond)
+     if (live !== '#FFFFFF') wrong.push('the next caption is drawn ' + live + ' while selected')
+     if (after[1].text.color !== '#FFFFFF' || after.slice(1).some((c) => c.text.color !== '#FFFFFF')) wrong.push('other captions changed: ' + after.map((c) => c.text.color).join(' '))
+     if (after[0].text.color !== '#F847FF' || !(after[0].text.own ?? []).includes('color')) wrong.push('the first caption lost its pink')
+     if (scopeFirst !== 'This line') wrong.push('the first caption is back on ' + scopeFirst)
+     if (drawnFirst !== '#F4F') wrong.push('the first caption’s drawing is ' + drawnFirst + ', not pink')
+     if (wrong.length) throw new Error(wrong.join('; ') + ' — ' + JSON.stringify(seen))
+     return seen`,
+  )
+
+  // The colour picker dragged with All lines on (a colour every few frames, each a redraw of
+  // every caption), then another caption clicked and clicked off: every caption, live and drawn,
+  // ends in the colour it was given.
+  await step(
+    'Captions: the colour picker dragged with All lines, another caption clicked and clicked off: every caption is drawn in its colour',
+    `const style = { font: 'Metropolis', size: 60, weight: 600, color: '#FFFFFF', align: 'center', lineHeight: 1.2, letterSpacing: 0, case: 'none', stroke: null, background: null, shadow: null, preset: 'Clean · xx · 72' }
+     const n = 24
+     const r = await window.studio.engine.call('captions.set', { lines: Array.from({ length: n }, (_, i) => ({ startUs: i * 700000, endUs: (i + 1) * 700000, text: 'Picked ' + (i + 1) })), style })
+     const lines = async () => { const t = (await __t.snap()).project.tracks.find((x) => x.id === r.trackId); return [...(t?.clips ?? [])].sort((a, b) => a.startUs - b.startUs) }
+     const dev = window.__studioDev
+     const q = (hex) => '#' + [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) >> 4).toString(16)).join('').toUpperCase()
+     const colourOf = async (png) => {
+       if (!png) return 'no drawing'
+       const img = await createImageBitmap(await (await fetch('studio-file://cache/' + encodeURIComponent(png))).blob())
+       const c = document.createElement('canvas')
+       c.width = img.width
+       c.height = img.height
+       const g = c.getContext('2d')
+       g.drawImage(img, 0, 0)
+       const d = g.getImageData(0, 0, c.width, c.height).data
+       const count = new Map()
+       for (let i = 0; i < d.length; i += 4) if (d[i + 3] >= 250) { const k = '#' + [d[i], d[i + 1], d[i + 2]].map((v) => (v >> 4).toString(16)).join('').toUpperCase(); count.set(k, (count.get(k) ?? 0) + 1) }
+       return [...count].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'empty'
+     }
+     await __t.until(async () => (await lines()).every((c) => c.text.png), 15000, 'the captions drawn')
+     const first = (await lines())[0]
+     dev.store.setState({ positionUs: first.startUs + 100000 })
+     __t.click(await __t.until(() => __t.clipEl(first.id), 5000, 'the first caption'))
+     ;(await __t.until(() => [...__t.qa('.insp-tabs button')].find((x) => x.textContent === 'Text'), 5000, 'the Text tab')).click()
+     const all = await __t.until(() => [...__t.qa('.insp-scope button')].find((x) => x.textContent === 'All lines'), 3000, 'All lines')
+     if (all.getAttribute('aria-pressed') !== 'true') all.click()
+     ;(await __t.until(() => __t.q('.insp-swatches[aria-label="Colour"] button.more'), 3000, 'Another colour')).click()
+     const hex = await __t.until(() => __t.q('.cpick input[aria-label="Hex code"]'), 3000, 'the hex field')
+     // A drag through the picker: a new colour every 120 ms, ending on pink.
+     for (const h of ['#F0A0FF', '#F070FF', '#F850F0', '#F847FF']) {
+       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(hex, h)
+       hex.dispatchEvent(new Event('input', { bubbles: true }))
+       await __t.sleep(120)
+     }
+     // Another caption clicked (the playhead stays), then clicked off.
+     const other = (await lines())[1]
+     __t.click(await __t.until(() => __t.clipEl(other.id), 5000, 'the second caption'))
+     await __t.sleep(300)
+     const liveSecond = dev.live.lookOf((await lines())[1]).color
+     dev.store.setState({ selection: [] })
+     const done = await __t.until(async () => { const l = await lines(); return l.every((c) => c.text.color === '#F847FF') && l }, 15000, 'every caption pink')
+     await __t.sleep(3000)
+     const wrong = []
+     for (const c of await lines()) {
+       const shows = await colourOf(c.text.png)
+       const live = dev.live.lookOf(c).color
+       if (shows !== q(c.text.color) || live !== c.text.color) wrong.push(c.text.content + ': look ' + c.text.color + ', live ' + live + ', drawing ' + shows)
+     }
+     await window.studio.engine.call('captions.set', { trackId: r.trackId, lines: [], style: {} })
+     if (wrong.length) throw new Error(wrong.length + ' of ' + n + ' captions: ' + wrong.slice(0, 4).join('; '))
+     return { captions: n, liveSecond, every: 'pink, live and drawn' }`,
+  )
+
   // What the player shows of a caption line is its drawing (a PNG); the Inspector shows its look.
   // Two quick changes to All lines (the second stopping the first one's drawings) and an Undo
   // brought back the first change half drawn: lines whose look said one colour and whose drawing

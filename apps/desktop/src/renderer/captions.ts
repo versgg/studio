@@ -141,6 +141,20 @@ const placeOf = (c: Clip | undefined): LinePlace => (c ? { posX: c.posX ?? 0, po
 const NOT_LOOK = new Set(['content', 'png', 'boxW', 'boxH', 'words', 'preset', 'own'])
 /** The keys of the look a caption line was given on its own. */
 export const ownKeys = (c: Clip | undefined): string[] => (c?.text?.own ?? []).filter((k) => !NOT_LOOK.has(k))
+
+/**
+ * Which lines a change to a caption line goes to (Inspector › Text › Change, and moving it in
+ * the player), chosen line by line: a line set to This line, or given a look of its own, is
+ * This line; every other line is All lines. It used to be one switch for every line: This line
+ * on one caption left the next one clicked on This line too, and its changes went to it alone
+ * (the user, 2026-11-19). Kept by row and start, as a line's id changes when its row is set again.
+ */
+const lineScopes = new Map<string, 'all' | 'one'>()
+const scopeKey = (trackId: string, clip: Clip) => `${getState().snap?.dir ?? ''}|${trackId}|${clip.startUs}`
+export const changesAllLines = (trackId: string, clip: Clip) => (lineScopes.get(scopeKey(trackId, clip)) ?? (ownKeys(clip).length ? 'one' : 'all')) === 'all'
+export function setChangesAllLines(trackId: string, clip: Clip, all: boolean) {
+  lineScopes.set(scopeKey(trackId, clip), all ? 'all' : 'one')
+}
 /** What a line was given on its own, with the list of it, to keep when its row's lines are set again. */
 export function ownLook(c: Clip | undefined): Partial<TextLook> | undefined {
   const keys = ownKeys(c)
@@ -549,7 +563,7 @@ async function heal() {
   if (!snap || healing) return
   const scope = projectScope(snap.dir)
   const cv = canvasOf(snap)
-  const todo: { clip: Clip; centerY: number; sig: string }[] = []
+  const todo: { clip: Clip; centerY: number; sig: string; why: string }[] = []
   for (const info of captionTracks(snap)) {
     if (drawingRows.get(keyIn(scope.dir, info.track.id))) continue
     for (const clip of info.lines) {
@@ -564,10 +578,15 @@ async function heal() {
       const tried = healTries.get(clip.id + sig) ?? 0
       if (tried >= 2) continue
       healTries.set(clip.id + sig, tried + 1)
-      todo.push({ clip, centerY, sig })
+      todo.push({ clip, centerY, sig, why: !t.png ? 'none' : sigOfPng(t.png) ? 'other look' : 'old name' })
     }
   }
   if (!todo.length) return
+  // Kept in Studio's log (numbers and reasons only, never the words): when a caption shows another
+  // colour than it says, this tells when and why it was drawn again, and whether it was put right.
+  const whys: Record<string, number> = {}
+  for (const x of todo) whys[x.why] = (whys[x.why] ?? 0) + 1
+  window.studio.log?.('caption-redraw', { lines: todo.length, ...whys, selected: todo.some((x) => getState().selection.includes(x.clip.id)) })
   healing = true
   try {
     const drawings: { clipId: string; png: string; boxW: number; boxH: number }[] = []
