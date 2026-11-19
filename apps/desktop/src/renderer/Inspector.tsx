@@ -9,7 +9,7 @@ import { applyCaptionLook, brandOf, captionTracks, editCaptionLine, restyleCapti
 import { CaptionLinesTab } from './CaptionsPanel'
 import { StemsTab } from './StemsTab'
 import { DubTab } from './DubTab'
-import { previewCaptionLook } from './captions'
+import { captionLookOf, ownKeys, previewCaptionLook } from './captions'
 import { liveVersion, lookOf as liveLook, previewTextLook, subscribeLive } from './liveText'
 import { PresetStyles } from './PresetStyles'
 import { DEFAULT_TEXT } from './textPresets'
@@ -846,6 +846,8 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
   /** A change to the look: this clip, or with Apply to all, every caption line of its track or every text clip (one undo step). */
   const put = (patch: Partial<TextLook>) => {
     if (clip.caption && all) return applyCaptionLook(track.id, patch)
+    // This line: the line keeps what it's given here when all lines change later.
+    if (clip.caption) return updateText(clip.id, { ...patch, own: [...new Set([...(spec.own ?? []), ...Object.keys(patch)])] })
     if (toAll) {
       const gesture = textGestureForAll()
       for (const id of textClips()) void updateText(id, patch, gesture)
@@ -858,10 +860,19 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
    * at the height they're at; the project then keeps that look), text to the default text look.
    */
   const resetLook = () => {
-    if (clip.caption) return restyleCaptions(track.id, { style: 'Clean' })
+    if (clip.caption && !all) return lineLikeTheRest()
+    if (clip.caption) return restyleCaptions(track.id, { style: 'Clean', fresh: true })
     const { content: _c, preset: _p, ...look } = DEFAULT_TEXT
     return put({ ...look, size: Math.round(DEFAULT_TEXT.size * ((project?.width ?? 1080) / 1080)) })
   }
+  /** This line, Reset: a caption line given a look of its own takes the look of all lines again. */
+  const lineLikeTheRest = () => {
+    const keys = ownKeys(clip)
+    const base = captionLookOf(track.id) as unknown as Record<string, unknown> | undefined
+    if (!keys.length || !base) return
+    return updateText(clip.id, { ...Object.fromEntries(keys.map((k) => [k, base[k] ?? null])), own: null } as unknown as Partial<TextLook>)
+  }
+  const ownHere = clip.caption ? ownKeys(clip).length > 0 : false
   /** A transform change: this clip, or with Apply to all text every text clip, each to this value (as the look does). */
   const place = (values: Record<string, unknown>, label?: string) => setLook(toAll ? textClips() : [clip.id], values, label ?? (toAll ? 'Apply to all text' : undefined))
   // Typing: a text clip follows every key. A caption line shows each key in the player at once
@@ -935,7 +946,8 @@ function TextView({ clip, track }: { clip: Clip; track: Track }) {
             onBlur={() => draft != null && commit(draft)}
             onKeyDown={(e) => e.stopPropagation()}
           />
-          <Sec first title="Preset style" onReset={resetLook} resetLabel="Reset to default" />
+          {clip.caption && all && ownHere && <Note>This line keeps the look you gave it on its own. Reset it under This line to match the rest.</Note>}
+          <Sec first title="Preset style" onReset={resetLook} resetLabel={clip.caption && !all ? 'Same look as all lines' : 'Reset to default'} />
           <PresetStyles look={spec} onPick={put} />
           <Sec title="Text" onReset={() => put({ font: DEFAULT_TEXT.font, weight: DEFAULT_TEXT.weight, size: Math.round(DEFAULT_TEXT.size * ((project?.width ?? 1080) / 1080)), letterSpacing: 0, lineHeight: DEFAULT_TEXT.lineHeight, case: 'none', italic: false, underline: false, align: 'center', color: '#FFFFFF' })} />
           <SelectRow label="Font" value={spec.font} options={fonts.map((f) => [f, fontLabel(f)] as [string, string])} onChange={(f) => put({ font: f, weight: nearestWeight(f, spec.weight) })} />

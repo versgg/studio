@@ -177,6 +177,8 @@ export interface TextSpec {
   boxH?: number
   /** A caption line's words, each with its time from the line's start (see captions.ts). */
   words?: { w: string; s: Us; e: Us }[]
+  /** A caption line's look keys changed with This line: kept when All lines changes (see captions.ts). */
+  own?: string[]
 }
 
 export interface Label {

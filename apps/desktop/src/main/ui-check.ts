@@ -4476,6 +4476,55 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
     }
   }
 
+  // A caption line given a look of its own (This line) keeps it: a change to All lines after
+  // reaches the other lines and what the line wasn't given, and new words on another line
+  // (every line set again) leave it as it is. Reset on This line brings it back to all lines.
+  await step(
+    'Captions: a line styled on its own keeps its look when All lines changes and when another line’s words change',
+    `const before = (await __t.snap()).project.tracks.length
+     const style = { font: 'Metropolis', size: 60, weight: 600, color: '#FFFFFF', align: 'center', lineHeight: 1.2, letterSpacing: 0, case: 'none', stroke: null, background: null, shadow: null, preset: 'Clean · xx · 72' }
+     const r = await window.studio.engine.call('captions.set', { lines: [{ startUs: 0, endUs: 1000000, text: 'One line' }, { startUs: 1000000, endUs: 2000000, text: 'Two line' }, { startUs: 2000000, endUs: 3000000, text: 'Three line' }], style })
+     const lines = async () => { const t = (await __t.snap()).project.tracks.find((x) => x.id === r.trackId); return [...(t?.clips ?? [])].sort((a, b) => a.startUs - b.startUs) }
+     await __t.until(async () => (await __t.snap()).project.tracks.length > before && (await lines()).length === 3, 5000, 'the three lines')
+     const tab = (name) => __t.until(() => [...__t.qa('.insp-tabs button')].find((x) => x.textContent === name), 5000, 'the Inspector’s ' + name + ' tab')
+     const scope = (name) => __t.until(() => [...__t.qa('.insp-scope button')].find((x) => x.textContent === name), 3000, 'the ' + name + ' choice')
+     const caseTo = async (label) => (await __t.until(() => [...__t.qa('.pills[aria-label="Case"] button')].find((b) => b.textContent === label), 3000, 'the ' + label + ' case')).click()
+     // The second line, This line: dark.
+     __t.click(__t.clipEl(r.clipIds[1]))
+     ;(await tab('Text')).click()
+     ;(await scope('This line')).click()
+     ;(await __t.until(() => __t.q('.insp-swatches[aria-label="Colour"] button[aria-label="#111114"]'), 3000, 'the dark swatch')).click()
+     await __t.until(async () => (await lines())[1]?.text.color === '#111114', 8000, 'the second line dark')
+     // All lines: capitals. Every line gets them; the second keeps its colour, the others theirs.
+     ;(await scope('All lines')).click()
+     await caseTo('AA')
+     const upper = await __t.until(async () => { const l = await lines(); return l.length === 3 && l.every((c) => c.text.case === 'upper') && l }, 15000, 'every line in capitals')
+     if (upper[1].text.color !== '#111114') throw new Error('the line given its own colour lost it to All lines: ' + upper[1].text.color)
+     if (upper[0].text.color !== '#FFFFFF' || upper[2].text.color !== '#FFFFFF') throw new Error('the other lines took its colour: ' + upper.map((c) => c.text.color).join(' '))
+     // New words on the first line: every line is set again, the second as it was.
+     ;(await tab('Captions')).click()
+     await __t.until(() => __t.q('[data-line="' + upper[0].id + '"]'), 5000, 'the first line in the list')
+     __t.q('[data-line="' + upper[0].id + '"] .cap-text').click()
+     const ed = await __t.until(() => __t.q('[data-line="' + upper[0].id + '"] input.cap-edit'), 3000, 'the first line open for typing')
+     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(ed, 'First line')
+     ed.dispatchEvent(new Event('input', { bubbles: true }))
+     ed.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+     const typed = await __t.until(async () => { const l = await lines(); return l[0]?.text.content === 'First line' && l }, 15000, 'the new words on the first line')
+     if (typed[1].text.color !== '#111114' || typed[1].text.case !== 'upper') throw new Error('new words on another line changed its look: ' + typed[1].text.color + ' ' + typed[1].text.case)
+     if (!typed.every((c) => c.text.png)) throw new Error('a line is left undrawn')
+     // This line, Reset: the second line looks like all lines again, and follows them after.
+     __t.click(__t.clipEl(typed[1].id))
+     ;(await tab('Text')).click()
+     ;(await scope('This line')).click()
+     ;(await __t.until(() => __t.q('.insp-reset[aria-label="Same look as all lines"]'), 3000, 'the reset to the look of all lines')).click()
+     await __t.until(async () => (await lines())[1]?.text.color === '#FFFFFF', 8000, 'the second line back in the look of all lines')
+     ;(await scope('All lines')).click()
+     await caseTo('Aa')
+     const after = await __t.until(async () => { const l = await lines(); return l.length === 3 && l.every((c) => c.text.case === 'none' && c.text.color === '#FFFFFF') && l }, 15000, 'every line back to the same look')
+     await window.studio.engine.call('captions.set', { trackId: r.trackId, lines: [], style: {} })
+     return { ownKept: upper[1].text.color, afterWords: typed[1].text.color, others: upper[0].text.color, reset: after[1].text.color }`,
+  )
+
   // A file moved and renamed (by hand, or by another tool) is found again by its content once
   // the folder it's in now is added; its clip keeps playing it. A copy of the same file added
   // earlier (the first test clip) isn't taken instead.

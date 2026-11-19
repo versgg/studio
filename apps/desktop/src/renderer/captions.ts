@@ -118,6 +118,8 @@ export interface Cue extends LinePlace {
   endUs: Us
   text: string
   words?: CapWord[]
+  /** What the line was given on its own (see ownLook), drawn over the row's look. */
+  look?: Partial<TextLook>
 }
 
 /** Where a line sits on the picture when it's been moved, scaled or turned there. */
@@ -129,6 +131,41 @@ export interface LinePlace {
 }
 /** A line's place, to keep when its track's lines are set again (and to pass on to the lines made from it). */
 const placeOf = (c: Clip | undefined): LinePlace => (c ? { posX: c.posX ?? 0, posY: c.posY ?? 0, scale: c.scale ?? 100, rotation: c.rotation ?? 0 } : {})
+
+// A line's own look. Changed with This line (Inspector › Text), a line keeps the keys it was
+// changed in (`text.own`): a change to All lines reaches the rest of its look and every other
+// line, and setting a row's lines again (new words, a split, a join, a style) keeps them, where
+// every line used to be drawn again in the first line's look.
+
+/** Its words, drawing and style name are never part of a line's own look. */
+const NOT_LOOK = new Set(['content', 'png', 'boxW', 'boxH', 'words', 'preset', 'own'])
+/** The keys of the look a caption line was given on its own. */
+export const ownKeys = (c: Clip | undefined): string[] => (c?.text?.own ?? []).filter((k) => !NOT_LOOK.has(k))
+/** What a line was given on its own, with the list of it, to keep when its row's lines are set again. */
+export function ownLook(c: Clip | undefined): Partial<TextLook> | undefined {
+  const keys = ownKeys(c)
+  if (!c?.text || !keys.length) return undefined
+  const t = c.text as unknown as Record<string, unknown>
+  return { ...Object.fromEntries(keys.map((k) => [k, t[k] ?? null])), own: keys } as Partial<TextLook>
+}
+/** The own look of the line that's on at `t`, for the lines made again from it (words per caption, a translation). */
+const ownAt = (info: CaptionInfo, t: Us) => ownLook(info.lines.find((c) => c.startUs <= t && t < c.startUs + c.durationUs))
+const middle = (c: { startUs: Us; endUs: Us }) => (c.startUs + c.endUs) / 2
+/** `patch` without what a line has of its own. */
+const besideOwn = (patch: Partial<TextLook>, own: string[]) => (own.length ? (Object.fromEntries(Object.entries(patch).filter(([k]) => !own.includes(k))) as Partial<TextLook>) : patch)
+
+/** Shows `patch` on caption lines at once, except on what a line was given on its own. */
+function previewOnLines(lines: Clip[], patch: Partial<TextLook>): () => void {
+  const groups = new Map<string, { ids: string[]; patch: Partial<TextLook> }>()
+  for (const c of lines) {
+    const own = ownKeys(c)
+    const g = groups.get(own.join()) ?? { ids: [], patch: besideOwn(patch, own) }
+    g.ids.push(c.id)
+    groups.set(own.join(), g)
+  }
+  const dones = [...groups.values()].filter((g) => Object.keys(g.patch).length).map((g) => previewTextLook(g.ids, g.patch))
+  return () => dones.forEach((d) => d())
+}
 
 /** A pause this long closes a caption early (the transcript server's PAUSE). */
 const PAUSE_US = 600_000
@@ -317,19 +354,35 @@ function styleFor(style: string, lang: string, centerY: number, width: number): 
   return { ...s, preset: presetOf(style, lang, centerY) }
 }
 
-/** A captions track's look as its lines have it now: its style and every change made to it since. */
+/**
+ * A captions track's look as its lines have it now: its style and every change made to all
+ * lines since. What the first line has of its own comes from a line that has it as all do.
+ */
 function lookOf(info: CaptionInfo, width: number, centerY = info.centerY): TextLook {
   const t = info.lines[0]?.text
   if (!t) return styleFor(info.style, info.lang, centerY, width)
-  const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, ...look } = t
+  const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, own: _o, ...look } = t
+  const base = look as Record<string, unknown>
+  for (const k of ownKeys(info.lines[0])) {
+    const from = info.lines.find((c) => !ownKeys(c).includes(k))?.text ?? styleFor(info.style, info.lang, centerY, width)
+    base[k] = (from as unknown as Record<string, unknown>)[k]
+    if (base[k] === undefined) delete base[k]
+  }
   return { ...(look as TextLook), content: '', preset: presetOf(info.style, info.lang, centerY) }
+}
+
+/** A captions row's look, the one its lines have unless given their own (Reset on This line goes back to it). */
+export function captionLookOf(trackId: string): TextLook | undefined {
+  const snap = getState().snap
+  const info = captionTracks(snap).find((t) => t.track.id === trackId)
+  return info && lookOf(info, snap?.project.width ?? 1080)
 }
 
 type Drawable = Cue & { png?: string; boxW?: number; boxH?: number }
 
 /** A captions track's lines as they are, ready to draw again (`keep`: keep their drawings). */
 const cuesFrom = (info: CaptionInfo, keep: boolean): Drawable[] =>
-  info.lines.map((c) => ({ startUs: c.startUs, endUs: c.startUs + c.durationUs, text: c.text?.content ?? '', words: c.text?.words, ...placeOf(c), ...(keep ? { png: c.text?.png ?? undefined, boxW: c.text?.boxW, boxH: c.text?.boxH } : {}) }))
+  info.lines.map((c) => ({ startUs: c.startUs, endUs: c.startUs + c.durationUs, text: c.text?.content ?? '', words: c.text?.words, ...placeOf(c), look: ownLook(c), ...(keep ? { png: c.text?.png ?? undefined, boxW: c.text?.boxW, boxH: c.text?.boxH } : {}) }))
 
 /**
  * After the lines are set again (every line gets a new id), the line you were on stays the
@@ -383,8 +436,8 @@ async function drawLines(cues: Drawable[], style: TextLook, centerY: number, cv:
       out[i] = c
       return
     }
-    const d = await drawLine(style, c.text, centerY, cv)
-    out[i] = { startUs: c.startUs, endUs: c.endUs, text: c.text, ...d, words: c.words, posX: c.posX, posY: c.posY, scale: c.scale, rotation: c.rotation }
+    const d = await drawLine(c.look ? { ...style, ...c.look } : style, c.text, centerY, cv)
+    out[i] = { startUs: c.startUs, endUs: c.endUs, text: c.text, ...d, words: c.words, posX: c.posX, posY: c.posY, scale: c.scale, rotation: c.rotation, look: c.look }
     if (task && ++done % 4 === 0) patchTask(task, { stage: `Drawing line ${done} of ${cues.length}`, fraction: 0.7 + (0.25 * done) / cues.length })
   })
   return out
@@ -403,7 +456,8 @@ async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, c
   const run = (streams.get(row) ?? 0) + 1
   streams.set(row, run)
   const gesture = `restyle ${info.track.id} ${run} ${Date.now().toString(36)}`
-  const ready = cues.map((c) => drawings.get(drawKey(spec, c.text, centerY, cv)))
+  const full = (c: Drawable) => (c.look ? { ...spec, ...c.look } : spec)
+  const ready = cues.map((c) => drawings.get(drawKey(full(c), c.text, centerY, cv)))
   const lines = cues.map((c, i) => ({ ...c, ...(ready[i] ?? (keep ? {} : { png: undefined, boxW: undefined, boxH: undefined })) }))
   const sel = getState().selection[0]
   const at = Math.max(0, info.lines.findIndex((c) => c.id === sel))
@@ -428,7 +482,7 @@ async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, c
   try {
     await inTurn(3, todo, async (i) => {
       if (streams.get(row) !== run || !scope.live()) return
-      const d = await drawLine(spec, cues[i].text, centerY, cv)
+      const d = await drawLine(full(cues[i]), cues[i].text, centerY, cv)
       batch.push({ clipId: r.clipIds[i], ...d })
       done++
       // Sent in a few big batches: each one is a new snapshot of the whole project.
@@ -450,8 +504,8 @@ async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, c
   return r
 }
 
-async function setLines(scope: ProjectScope, trackId: string | undefined, lines: ({ startUs: Us; endUs: Us; text: string; png?: string; words?: CapWord[] } & LinePlace)[], style: TextLook, above?: string, gesture?: string) {
-  const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, ...shared } = style as TextLook & { words?: unknown }
+async function setLines(scope: ProjectScope, trackId: string | undefined, lines: ({ startUs: Us; endUs: Us; text: string; png?: string; words?: CapWord[]; look?: Partial<TextLook> } & LinePlace)[], style: TextLook, above?: string, gesture?: string) {
+  const { content: _c, png: _p, boxW: _w, boxH: _h, words: _ws, own: _o, ...shared } = style as TextLook & { words?: unknown }
   const r = await scope.call<{ trackId: string; clipIds: string[] }>('captions.set', { ...(trackId ? { trackId } : {}), ...(above ? { aboveTrackId: above } : {}), lines, style: shared, ...(gesture ? { gesture } : {}) })
   await rememberLook(scope, shared)
   return r
@@ -489,7 +543,7 @@ export const resplitCaptions = forProject(async (scope, trackId: string, perCapt
   const info = captionTracks(snap).find((t) => t.track.id === trackId)
   const words = info && wordsOfTrack(info, scope.dir)
   if (!snap || !info || !words?.length) return
-  const cues = cuesOf(words, perCaption).map((c) => ({ ...c, ...placeOf(info.lines[0]) }))
+  const cues = cuesOf(words, perCaption).map((c) => ({ ...c, ...placeOf(info.lines[0]), look: ownAt(info, middle(c)) }))
   // The line you were on: the new one that starts where it was, or holds that moment.
   const sel = info.lines.find((c) => c.id === getState().selection[0])
   const at = sel ? Math.max(0, cues.findIndex((c) => c.endUs > sel.startUs)) : -1
@@ -641,7 +695,7 @@ export async function placeCaptions(cues: Cue[], o: { lang: string; style: strin
   const centerY = same?.lines.length ? same.centerY : (kept?.centerY ?? o.centerY)
   const style = same?.lines.length ? lookOf(same, cv.width) : (kept?.look ?? styleFor(o.style, o.lang, o.centerY, cv.width))
   // Made again, the lines stay where the old ones were moved to.
-  const lines = await drawLines(same?.lines.length ? cues.map((c) => ({ ...c, ...placeOf(same.lines[0]) })) : cues, style, centerY, cv, task)
+  const lines = await drawLines(same?.lines.length ? cues.map((c) => ({ ...c, ...placeOf(same.lines[0]), look: ownAt(same, middle(c)) })) : cues, style, centerY, cv, task)
   const r = await setLines(scope, same?.track.id, lines, style)
   if (!r) throw new Error('The engine didn’t take the captions.')
   return r.trackId
@@ -657,7 +711,7 @@ export async function setCaptionLines(trackId: string, cues: Cue[], lang: string
   if (!snap || !info) throw new Error('A captions track is gone.')
   const cv = canvasOf(snap)
   const look = { ...lookOf(info, cv.width), preset: presetOf(info.style, lang, info.centerY) }
-  const lines = await drawLines(cues.map((c) => (c.posX == null ? { ...c, ...placeOf(info.lines[0]) } : c)), look, info.centerY, cv)
+  const lines = await drawLines(cues.map((c) => ({ ...(c.posX == null ? { ...c, ...placeOf(info.lines[0]) } : c), look: c.look ?? ownAt(info, middle(c)) })), look, info.centerY, cv)
   return setLines(scope, trackId, lines, look)
 }
 
@@ -680,7 +734,7 @@ export async function recaption(lang: string, spans: { fromUs: Us; toUs: Us; wor
     const first = rows.flatMap((r) => r.lines.filter((c) => within(c, s)).map((c) => ({ c, r }))).sort((a, b) => a.c.startUs - b.c.startUs)[0]
     if (!first) continue
     const id = first.r.track.id
-    added.set(id, [...(added.get(id) ?? []), ...cuesOf(s.words, wordsPerCaptionOf(first.r)).map((c) => ({ ...c, ...placeOf(first.c) }))])
+    added.set(id, [...(added.get(id) ?? []), ...cuesOf(s.words, wordsPerCaptionOf(first.r)).map((c) => ({ ...c, ...placeOf(first.c), look: ownLook(first.c) }))])
   }
   for (const r of rows) {
     const add = added.get(r.track.id) ?? []
@@ -705,7 +759,7 @@ export function wordsPerCaptionOf(info: CaptionInfo) {
  * height, or split again into `perCaption` words (from the times the lines keep). Any other
  * change made to the look stays, unless a style is picked.
  */
-export const restyleCaptions = forProject(async (scope, trackId: string, o: { style?: string; centerY?: number; perCaption?: number }) => {
+export const restyleCaptions = forProject(async (scope, trackId: string, o: { style?: string; centerY?: number; perCaption?: number; fresh?: boolean }) => {
   // A style or a height is the language's, every row of it; words per caption is this row's.
   const done = o.perCaption == null ? previewCaptionLook(trackId, o) : () => {}
   try {
@@ -717,7 +771,9 @@ export const restyleCaptions = forProject(async (scope, trackId: string, o: { st
       if (!info.lines.length) continue
       const centerY = o.centerY ?? info.centerY
       const words = o.perCaption != null ? wordsOfTrack(info, scope.dir) : null
-      const cues: Drawable[] = words ? cuesOf(words, o.perCaption!).map((c) => ({ ...c, ...placeOf(info.lines[0]) })) : cuesFrom(info, true)
+      const made: Drawable[] = words ? cuesOf(words, o.perCaption!).map((c) => ({ ...c, ...placeOf(info.lines[0]), look: ownAt(info, middle(c)) })) : cuesFrom(info, true)
+      // Reset to default (`fresh`): the lines given a look of their own lose it too.
+      const cues = o.fresh ? made.map(({ look: _l, ...c }) => c) : made
       const spec = o.style ? styleFor(o.style, info.lang, centerY, cv.width) : lookOf(info, cv.width, centerY)
       // Set at once; each line keeps its drawing (the same words) until its new one comes.
       await streamLines(scope, cv, info, cues, spec, centerY, !words)
@@ -736,10 +792,7 @@ export function previewCaptionLook(trackId: string, o: { style?: string; centerY
   const dones = captionGroup(snap, trackId).map((info) => {
     const centerY = o.centerY ?? info.centerY
     const { content: _c, ...look } = o.style ? styleFor(o.style, info.lang, centerY, snap?.project.width ?? 1080) : { content: '', preset: presetOf(info.style, info.lang, centerY) }
-    return previewTextLook(
-      info.lines.map((c) => c.id),
-      look,
-    )
+    return previewOnLines(info.lines, look)
   })
   return () => dones.forEach((d) => d())
 }
@@ -758,7 +811,7 @@ export function applyCaptionLook(trackId: string, patch: Partial<TextLook>): Pro
   const q = lookQueue.get(key) ?? { patch: {}, timer: 0, dones: [], waiting: [], scope }
   q.patch = { ...q.patch, ...patch }
   lookQueue.set(key, q)
-  q.dones.push(previewTextLook(groupLines(getState().snap, trackId).map((l) => l.clip.id), patch))
+  q.dones.push(previewOnLines(groupLines(getState().snap, trackId).map((l) => l.clip), patch))
   window.clearTimeout(q.timer)
   return new Promise((resolve) => {
     q.waiting.push(resolve)
@@ -885,7 +938,7 @@ export const addCaptionLineAfter = forProject(async (scope, trackId: string, cli
   if (room >= MIN_ROOM_US) {
     const cues = cuesFrom(info, true)
     if (typed && typed !== cues[i].text) cues[i] = { ...cues[i], text: typed, words: retimed(cues[i].words, typed), png: undefined }
-    cues.splice(i + 1, 0, { startUs: start, endUs: start + Math.min(room, NEW_LINE_US), text: '', ...placeOf(info.lines[i]) })
+    cues.splice(i + 1, 0, { startUs: start, endUs: start + Math.min(room, NEW_LINE_US), text: '', ...placeOf(info.lines[i]), look: ownLook(info.lines[i]) })
     const r = await redraw(scope, cv, info, cues, lookOf(info, cv.width), info.centerY, -1, i + 1)
     return r?.clipIds[i + 1]
   }
@@ -903,12 +956,12 @@ export const addCaptionLineAfter = forProject(async (scope, trackId: string, cli
   if (other) {
     const cues = cuesFrom(other, true)
     const at = cues.filter((c) => c.startUs < start).length
-    cues.splice(at, 0, { startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]) })
+    cues.splice(at, 0, { startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]), look: ownLook(info.lines[i]) })
     const r = await redraw(scope, cv, other, cues, lookOf(other, cv.width), other.centerY, -1, at)
     return r?.clipIds[at]
   }
   const look = lookOf(info, cv.width)
-  const lines = await drawLines([{ startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]) }], look, info.centerY, cv)
+  const lines = await drawLines([{ startUs: start, endUs: end, text: '', ...placeOf(info.lines[i]), look: ownLook(info.lines[i]) }], look, info.centerY, cv)
   holdSelection(3000)
   const r = await setLines(scope, undefined, lines, look, trackId)
   if (r?.clipIds[0]) setState({ selection: [r.clipIds[0]] })
@@ -945,12 +998,12 @@ export const splitCaptionLine = forProject(async (scope, trackId: string, clipId
   let second: Cue
   if (ws.length > n) {
     const next = start + ws[n].s
-    first = { startUs: start, endUs: next, text: a, words: ws.slice(0, n), ...placeOf(c) }
-    second = { startUs: next, endUs: end, text: b, words: ws.slice(n).map((x) => ({ ...x, s: x.s - ws[n].s, e: x.e - ws[n].s })), ...placeOf(c) }
+    first = { startUs: start, endUs: next, text: a, words: ws.slice(0, n), ...placeOf(c), look: ownLook(c) }
+    second = { startUs: next, endUs: end, text: b, words: ws.slice(n).map((x) => ({ ...x, s: x.s - ws[n].s, e: x.e - ws[n].s })), ...placeOf(c), look: ownLook(c) }
   } else {
     const cut = Math.round(start + ((end - start) * a.length) / (a.length + b.length))
-    first = { startUs: start, endUs: cut, text: a, ...placeOf(c) }
-    second = { startUs: cut, endUs: end, text: b, ...placeOf(c) }
+    first = { startUs: start, endUs: cut, text: a, ...placeOf(c), look: ownLook(c) }
+    second = { startUs: cut, endUs: end, text: b, ...placeOf(c), look: ownLook(c) }
   }
   const cues = cuesFrom(info, true)
   cues.splice(i, 1, first, second)
@@ -971,6 +1024,7 @@ export const joinCaptionLine = forProject(async (scope, trackId: string, clipId:
   const cw = retimed(cur.text?.words, text.trim())
   const joined: Cue = {
     ...placeOf(prev),
+    look: ownLook(prev),
     startUs: prev.startUs,
     endUs: cur.startUs + cur.durationUs,
     text: `${(prev.text?.content ?? '').trim()} ${text.trim()}`.trim(),
@@ -999,6 +1053,7 @@ export const joinNextCaptionLine = forProject(async (scope, trackId: string, cli
   const nw = next.text?.words
   const joined: Cue = {
     ...placeOf(cur),
+    look: ownLook(cur),
     startUs: cur.startUs,
     endUs: next.startUs + next.durationUs,
     text: `${mine} ${(next.text?.content ?? '').trim()}`.trim(),

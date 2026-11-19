@@ -31,6 +31,10 @@ pub struct CaptionLine {
     pub scale: Option<f32>,
     #[serde(default)]
     pub rotation: Option<f32>,
+    /// What the line was given on its own (This line in Inspector › Text), over the shared
+    /// style, with `own` listing those keys: kept when every line's look changes.
+    #[serde(default)]
+    pub look: Option<TextSpec>,
 }
 
 /// A caption line's drawing, sent after its line (`captions.draw`).
@@ -204,6 +208,12 @@ impl Project {
             let end = line.end_us.max(start + MIN_CLIP);
             let mut c = Clip::new(self.make_id("c"), String::new(), start, 0, end - start);
             let mut text = style.clone();
+            text.remove("own");
+            for (k, v) in line.look.unwrap_or_default() {
+                if !matches!(k.as_str(), "content" | "png" | "boxW" | "boxH" | "words" | "preset") {
+                    text.insert(k, v);
+                }
+            }
             text.insert("content".into(), Value::String(line.text));
             if let Some(png) = line.png {
                 text.insert("png".into(), Value::String(png));
@@ -567,6 +577,22 @@ mod tests {
         assert_eq!(p.clip(&ids[0]).unwrap().text.as_ref().unwrap()["png"].as_str(), Some("later.png"));
         p.set_captions(Some(&track), None, vec![], style).unwrap();
         assert!(p.track(&track).is_none(), "no lines, no track");
+    }
+
+    #[test]
+    fn a_caption_line_keeps_the_look_it_was_given_on_its_own() {
+        let mut p = project();
+        let mut style = text("");
+        style.insert("color".into(), serde_json::json!("#FFFFFF"));
+        style.insert("case".into(), serde_json::json!("upper"));
+        let own: TextSpec = serde_json::from_value(serde_json::json!({ "color": "#111114", "stroke": null, "own": ["color", "stroke"], "content": "not this", "png": "not.png" })).unwrap();
+        let line = |a: Us, b: Us, s: &str| CaptionLine { start_us: a, end_us: b, text: s.into(), png: Some(format!("{s}.png")), ..Default::default() };
+        let (_, ids) = p.set_captions(None, None, vec![line(0, SECOND, "one"), CaptionLine { look: Some(own), ..line(SECOND, 2 * SECOND, "two") }], style).unwrap();
+        let t = |i: usize| p.clip(&ids[i]).unwrap().text.clone().unwrap();
+        assert_eq!((t(0)["color"].as_str(), t(0).get("own")), (Some("#FFFFFF"), None));
+        let two = t(1);
+        assert_eq!((two["color"].as_str(), two["case"].as_str(), &two["stroke"], &two["own"]), (Some("#111114"), Some("upper"), &serde_json::Value::Null, &serde_json::json!(["color", "stroke"])), "its own colour, the shared case");
+        assert_eq!((two["content"].as_str(), two["png"].as_str()), (Some("two"), Some("two.png")), "the line's own words and drawing");
     }
 
     #[test]
