@@ -663,7 +663,10 @@ export async function respeak(project: string, edits: Record<string, string>): P
       const room = (next ? next.atUs - line.atUs : durationUs - line.atUs) / 1e6 - 0.04
       const tempo = Math.min(1.12, Math.max(1, cut.dur / Math.max(0.1, room)))
       const file = await retime(cut.file, tempo, path.join(dir, `line-${safe(id)}-${tag}-fit.wav`))
-      Object.assign(line, { file, dur: cut.dur / tempo, tempo, text: words, words: cut.words.map((w) => ({ text: w.text, start: w.start / tempo, end: w.end / tempo })) })
+      const made = { file, dur: cut.dur / tempo, tempo, text: words, words: cut.words.map((w) => ({ text: w.text, start: w.start / tempo, end: w.end / tempo })) }
+      // Every take kept, the first its own: a clip Ctrl+Z put an earlier one back on is still known.
+      const takes = line.takes ?? [{ file: line.file, dur: line.dur, tempo: line.tempo, text: line.text, words: line.words }]
+      Object.assign(line, made, { takes: [...takes, made] })
       out.push({ ...line })
     } finally {
       if (made && !c?.keep) await removeClone(el, made).catch(() => {})
@@ -671,6 +674,39 @@ export async function respeak(project: string, edits: Record<string, string>): P
   }
   fs.writeFileSync(vf, JSON.stringify(voice, null, 1))
   return out
+}
+
+/**
+ * The words of the sound files a translation or a dub said in this project, as they were written
+ * (the review's words, a Change words said), each with its time in its file: captions made from
+ * those files use them instead of hearing them again (Whisper misheard the brand names the review
+ * had put right). Keyed by the paths asked about.
+ */
+export function knownWords(project: string, paths: string[]): Record<string, { lang: string; words: { text: string; start: number; end: number }[] }> {
+  const files = new Map<string, { lang: string; words: { text: string; start: number; end: number }[] }>()
+  const put = (file: string, lang: string, words: { text: string; start: number; end: number }[] | undefined) => words?.length && files.set(key(file), { lang, words })
+  try {
+    const dir = path.join(project, 'translation')
+    const job = readJson<TrJob>(path.join(dir, 'job.json'))
+    for (const l of readJson<{ lines: TrLine[] }>(path.join(dir, 'voice.json')).lines) {
+      for (const t of l.takes ?? []) put(t.file, job.lang, t.words)
+      put(l.file, job.lang, l.words)
+    }
+  } catch {}
+  const dubs = path.join(project, 'dubs')
+  if (fs.existsSync(dubs))
+    for (const d of fs.readdirSync(dubs)) {
+      try {
+        const job = readJson<{ lang: string }>(path.join(dubs, d, 'job.json'))
+        const voice = readJson<{ lines: (TrLine & { own?: boolean; takes?: { file: string; words: TrLine['words'] }[] })[] }>(path.join(dubs, d, 'voice.json'))
+        for (const l of voice.lines) {
+          if (l.own) continue
+          put(l.file, job.lang, l.words)
+          for (const t of l.takes ?? []) put(t.file, job.lang, t.words)
+        }
+      } catch {}
+    }
+  return Object.fromEntries(paths.filter((p) => files.has(key(p))).map((p) => [p, files.get(key(p))!]))
 }
 
 /** The jobs a project has: those translating it (it's the source) and its own (it's a copy). */

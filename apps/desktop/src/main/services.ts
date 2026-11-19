@@ -211,6 +211,8 @@ export function registerServices() {
       return failure(e)
     }
   })
+  // Captions from sound a translation or a dub said: its words as written, not heard again.
+  ipcMain.handle('captions:known', (_e, project: string, paths: string[]) => tried(() => translate.knownWords(project, paths)))
   // What the copy's sentences say now, and what each said in the language it was translated from.
   ipcMain.handle('translate:spoken', (_e, project: string) =>
     tried(() => {
@@ -218,8 +220,10 @@ export function registerServices() {
       const read = <T>(f: string): T | null => (fs.existsSync(path.join(dir, f)) ? (JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as T) : null)
       const job = read<{ lang: string; from: string }>('job.json')
       const items = read<{ items: { id: string; text: string }[] }>('items.json')?.items ?? []
-      const lines = read<{ lines: { id: string; file: string; text: string; dur: number }[] }>('voice.json')?.lines ?? []
-      return { lang: job?.lang ?? '', from: job?.from ?? '', lines: lines.map((l) => ({ id: l.id, file: l.file, text: l.text, dur: l.dur, original: items.find((i) => i.id === l.id)?.text ?? '' })) }
+      const lines = read<{ lines: { id: string; file: string; text: string; dur: number; takes?: { file: string; text: string; dur: number }[] }[] }>('voice.json')?.lines ?? []
+      // Each take a sentence has had, by its file (a clip may play an earlier one after Ctrl+Z).
+      const all = lines.flatMap((l) => [{ ...l }, ...(l.takes ?? []).filter((t) => t.file !== l.file).map((t) => ({ ...l, ...t }))])
+      return { lang: job?.lang ?? '', from: job?.from ?? '', lines: all.map((l) => ({ id: l.id, file: l.file, text: l.text, dur: l.dur, original: items.find((i) => i.id === l.id)?.text ?? '' })) }
     }),
   )
   ipcMain.handle('translate:draft', (_e, id: string, value: translate.TrDraft | null) => tried(() => translate.saveDraft(id, value)))

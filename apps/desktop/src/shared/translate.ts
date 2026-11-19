@@ -90,7 +90,17 @@ export type TrJob = {
 }
 
 /** A finished sentence as it plays in the copy, with its words' times for captions. */
-export type TrLine = { id: string; file: string; atUs: number; dur: number; tempo: number; text: string; words: { text: string; start: number; end: number }[] }
+export type TrLine = {
+  id: string
+  file: string
+  atUs: number
+  dur: number
+  tempo: number
+  text: string
+  words: { text: string; start: number; end: number }[]
+  /** Every take it has had (Change words said), the first its own: a clip Ctrl+Z put an earlier one back on is still known by its words. */
+  takes?: { file: string; dur: number; tempo: number; text: string; words: { text: string; start: number; end: number }[] }[]
+}
 
 export const trRunning = (j: TrJob) => j.state === 'copying' || j.state === 'reading' || j.state === 'review' || j.state === 'voicing'
 

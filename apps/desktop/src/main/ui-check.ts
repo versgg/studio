@@ -3881,6 +3881,48 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
            await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
          }`,
       )
+    // Captions made again in the copy from its new voice (after cuts, as the user does): the
+    // translated sentences keep the words they were said with (the review's), not heard again;
+    // the stand-in server would hear "Order yours today at corvel." in anything.
+    if (copy && process.env.STUDIO_UI_CHECK_TRANSCRIPT_STANDIN === '1')
+      await step(
+        'Translations: captions made again in the copy from its new voice have the words it said (the review’s), not words heard again',
+        `const S = window.__studio
+         const copy = ${JSON.stringify(copy)}
+         const back = (await __t.snap()).dir
+         await S.openProjectAt(copy)
+         await __t.until(async () => (await __t.snap()).dir === copy, 8000, 'the Norwegian copy')
+         try {
+           const s = await __t.snap()
+           const said = (c) => s.project.media.find((m) => m.id === c.mediaId)?.path ?? ''
+           const voice = s.project.tracks.find((t) => t.kind === 'audio' && t.clips.some((c) => /[\\\\/]translation[\\\\/]line-[^\\\\/]*\\.wav$/.test(said(c))))
+           if (!voice) throw new Error('no track the translation’s voice is on')
+           const lines = (await window.studio.services.translateSpoken(copy)).lines
+           const before = s.project.tracks.filter((t) => t.role === 'captions').map((t) => t.id)
+           ${cat('Captions')}
+           const from = await __t.until(() => __t.q('select[aria-label="Made from"]'), 3000, 'the Made from list')
+           Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(from, voice.id)
+           from.dispatchEvent(new Event('change', { bubbles: true }))
+           await __t.sleep(150)
+           ;(await __t.until(() => [...__t.qa('.lib-add')].find((b) => /Make( the .+)? captions/.test(b.textContent)), 3000, 'Make captions')).click()
+           const caps = await __t.until(async () => { const x = await __t.snap(); const t = x.project.tracks.find((t) => t.role === 'captions' && t.clips.length && (!before.includes(t.id) || t.clips.some((c) => !s.project.tracks.flatMap((q) => q.clips).some((o) => o.id === c.id)))); return t && t.clips.length && t }, 30000, 'the captions made')
+           const text = [...caps.clips].sort((a, b) => a.startUs - b.startUs).map((c) => c.text.content).join(' ')
+           await window.studio.engine.call('edit.undo', {})
+           const norm = (x) => x.toLowerCase().replace(/[^\\p{L}\\p{N}]+/gu, ' ').trim()
+           const spoken = lines.filter((l) => voice.clips.some((c) => said(c) === l.file)).map((l) => l.text)
+           if (!spoken.length) throw new Error('no sentence the translation said is on its track (its clips play ' + voice.clips.map((c) => said(c).split(/[\\\\/]/).pop()).join(', ') + ')')
+           const others = voice.clips.some((c) => !/[\\/]translation[\\/]line-/.test(said(c)))
+           if (!others && /corvel/i.test(text)) throw new Error('the captions were heard again: ' + text)
+           const missing = spoken.filter((l) => !norm(text).includes(norm(l).split(' ').slice(0, 3).join(' ')))
+           if (missing.length) throw new Error('sentences the voice says aren’t in the captions: ' + JSON.stringify(missing) + ' — captions: ' + text)
+           return { sentences: spoken.length, captions: text.slice(0, 140) }
+         } finally {
+           // The steps after this one work in the Translations tab.
+           ${cat('Translations')}
+           await S.openProjectAt(back)
+           await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+         }`,
+      )
     if (landed?.ok && elevenTest.live() !== keptOne) {
       Object.assign(landed, { ok: false, detail: `${elevenTest.live()} clone(s) left in the account, not ${keptOne}` })
       console.log(`[ui-check] FAIL ${landed.step}: ${elevenTest.live()} clone(s) left in the account, not ${keptOne}`)

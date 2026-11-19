@@ -688,8 +688,30 @@ export async function generateCaptions(o: { sourceTrackId: string; language: str
   try {
     const script = o.script?.trim() || (await scriptOfTrack(o.sourceTrackId, snap))
     const parts = clips.map((c) => ({ path: mediaById(snap, c.mediaId)!.path, startUs: c.inUs, durationUs: Math.round(c.durationUs * (c.speed ?? 1)) }))
-    const r = await window.studio.services.transcribeParts({ taskId: task, parts, language: o.language || undefined, script: script || undefined })
-    if (isErr(r)) throw new Error(r.error)
+    // Sentences a translation or a dub said: their words as written (the review's, a Change
+    // words said), not heard again; Whisper misheard names the review had put right. Only the
+    // rest goes to the transcript server, if anything does.
+    const knownR = await window.studio.services.captionsKnown(scope.dir, [...new Set(parts.map((p) => p.path))])
+    const known = isErr(knownR) ? {} : knownR
+    const toHear = parts.map((_, i) => i).filter((i) => !known[parts[i].path])
+    let r: { words: { part: number; word: string; start: number; end: number }[]; language: string; changes: { part: number; heard: string; script: string; note: string; at: number }[]; summary: string | null; unchecked: string | null } = { words: [], language: '', changes: [], summary: null, unchecked: null }
+    if (toHear.length) {
+      const heardR = await window.studio.services.transcribeParts({ taskId: task, parts: toHear.map((i) => parts[i]), language: o.language || undefined, script: script || undefined })
+      if (isErr(heardR)) throw new Error(heardR.error)
+      r = { ...heardR, words: heardR.words.map((w) => ({ ...w, part: toHear[w.part] })), changes: heardR.changes.map((c) => ({ ...c, part: toHear[c.part] })) }
+    }
+    const said = parts.map((_, i) => i).filter((i) => known[parts[i].path])
+    for (const i of said) {
+      // Seconds into the file, to seconds into the stretch the clip plays (a word cut out is left out).
+      const from = parts[i].startUs / 1e6
+      const to = from + parts[i].durationUs / 1e6
+      for (const w of known[parts[i].path].words) {
+        const mid = (w.start + w.end) / 2
+        if (mid < from || mid >= to) continue
+        r.words.push({ part: i, word: w.text, start: Math.max(0, w.start - from), end: Math.min(to, w.end) - from })
+      }
+    }
+    if (said.length && !r.language) r.language = known[parts[said[0]].path].lang
     // Seconds into a clip's own sound, to the timeline (a faster clip's sound passes sooner).
     const onTimeline = (part: number, s: number) => clips[part].startUs + Math.round((s * 1e6) / (clips[part].speed ?? 1))
     const words: Word[] = []
@@ -701,6 +723,7 @@ export async function generateCaptions(o: { sourceTrackId: string; language: str
       words.push({ text: w.word, start, end: Math.min(onTimeline(w.part, w.end), c.startUs + c.durationUs) })
     }
     if (!words.length) throw new Error('No speech was heard in that sound.')
+    words.sort((a, b) => a.start - b.start)
     const lang = o.language || langCode(r.language) || ''
     const cues = cuesOf(words, o.perCaption)
     // The script check can fail on its own (the server's AI out of credits): the words stay as heard.
@@ -710,7 +733,8 @@ export async function generateCaptions(o: { sourceTrackId: string; language: str
     patchTask(task, { stage: 'Drawing the lines', fraction: 0.7 })
     const trackId = await placeWaiting(scope, made, task)
     endTask(task)
-    toast(`${cues.length} caption lines in ${langName(lang)}.${unchecked ? ` ${unchecked}` : script && r.summary ? ` ${r.summary.replace(/\.$/, '')}.` : ''}`)
+    const asWritten = said.length ? ` The ${said.length === parts.length ? '' : 'translated or dubbed '}sentences have the words they were said with, not heard again.` : ''
+    toast(`${cues.length} caption lines in ${langName(lang)}.${unchecked ? ` ${unchecked}` : script && r.summary ? ` ${r.summary.replace(/\.$/, '')}.` : ''}${asWritten}`)
     return trackId
   } catch (e) {
     if (projectChanged(e)) {

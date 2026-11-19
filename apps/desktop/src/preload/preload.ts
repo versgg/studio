@@ -133,6 +133,7 @@ const api: StudioApi = {
     translateResult: (id) => ipcRenderer.invoke('translate:result', id),
     translateRespeak: (project, edits) => ipcRenderer.invoke('translate:respeak', project, edits),
     translateSpoken: (project) => ipcRenderer.invoke('translate:spoken', project),
+    captionsKnown: (project, paths) => ipcRenderer.invoke('captions:known', project, paths),
     translateDraft: (id, value) => ipcRenderer.invoke('translate:draft', id, value),
     translateApplied: (id) => ipcRenderer.invoke('translate:applied', id),
     translateFailed: (id, reason) => ipcRenderer.invoke('translate:failed', id, reason),
