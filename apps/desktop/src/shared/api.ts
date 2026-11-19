@@ -5,6 +5,7 @@ import type { DubChange } from './dub-retry'
 import type { StemsJob } from './stems'
 import type { TrItem, TrJob, TrLine, TrStems, TrText, TrVoice, TrVoiceChoice } from './translate'
 import type { CcDraft, CcProject } from './capcut'
+import type { VcRun } from './voice-change'
 export type { Stem, StemsJob } from './stems'
 
 /** A link looked up for Media › Download (main/download.ts `Probe`). */
@@ -245,7 +246,8 @@ export interface StudioApi {
     elevenVoices(search?: string): Promise<Voice[] | ServiceError>
     elevenLibrary(search: string): Promise<Voice[] | ServiceError>
     elevenSpeak(o: { voice: Voice; text: string; modelId: string; stability: number; similarity: number; speed?: number; languageCode?: string; out: string }): Promise<{ out: string; voiceId: string } | ServiceError>
-    elevenChangeVoice(o: { voiceId: string; input: string; out: string; removeNoise: boolean }): Promise<{ out: string } | ServiceError>
+    /** Change voice: one stretch of a recording made again in `voice` (main/voice-change.ts); progress comes as `task:progress` for `taskId`. */
+    changeVoice(o: { taskId: string; project: string; run: VcRun; voice: Voice; removeNoise: boolean; out: string }): Promise<{ out: string; how: 'changer' | 'said'; language: string; voiceId: string; pieces: number; long: number } | ServiceError>
     elevenClone(o: { name: string; files: string[]; removeNoise: boolean }): Promise<{ voiceId: string } | ServiceError>
     /** Voice Design: three voices from a description (credits for the preview text), then the one picked kept in the account. */
     elevenDesign(o: { description: string; text?: string; model: string }): Promise<DesignRound | ServiceError>

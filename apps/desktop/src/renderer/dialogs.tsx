@@ -3,7 +3,7 @@ import { FORMATS } from './format'
 import { Icon } from './icons'
 import type { VmakeAccount } from '../shared/api'
 import { vmakeCheck, vmakeHasToken, vmakeKnown, vmakeTokenSet } from './vmakeAccount'
-import { CloneDialogBody, DesignDialogBody, VoicePickerDialog } from './AudioPanel'
+import { ChangeVoiceDialog, CloneDialogBody, DesignDialogBody, VoicePickerDialog } from './AudioPanel'
 import { DownloadDialogBody } from './DownloadDialog'
 import { ExportProjectsDialog } from './ExportProjectsDialog'
 import { ExportDialog } from './ExportDialog'
@@ -31,7 +31,7 @@ function Modal({ title, onClose, children, wide }: { title: string; onClose: () 
   )
 }
 
-const close = () => setState({ dialog: null, exportClips: null })
+const close = () => setState({ dialog: null, exportClips: null, voiceTarget: null })
 
 export function Dialogs() {
   const dialog = useStore((s) => s.dialog)
@@ -55,6 +55,12 @@ export function Dialogs() {
     return (
       <Modal title="Choose a voice" onClose={close} wide>
         <VoicePickerDialog close={close} />
+      </Modal>
+    )
+  if (dialog === 'changeVoice')
+    return (
+      <Modal title="Change voice" onClose={close} wide>
+        <ChangeVoiceDialog close={close} />
       </Modal>
     )
   if (dialog === 'clone')

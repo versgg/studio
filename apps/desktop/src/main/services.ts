@@ -21,6 +21,8 @@ import * as stems from './stems'
 import * as translate from './translate'
 import * as download from './download'
 import { accountVoices, readVoice } from './voice-read'
+import { changeVoice } from './voice-change'
+import type { VcRun } from '../shared/voice-change'
 import { forgetKept, keep, kept } from './eleven-cache'
 import type { ElevenAccount, ElevenModel } from '../shared/api'
 import * as capcut from './capcut'
@@ -282,13 +284,16 @@ export function registerServices() {
       return { out: o.out, voiceId: id }
     }),
   )
-  ipcMain.handle('eleven:changeVoice', (_e, o: { voiceId: string; input: string; out: string; removeNoise: boolean }) =>
-    eleven(async (el) => {
-      if (!o.out.toLowerCase().endsWith('.mp3')) throw new Error('The result must be an .mp3 file.')
-      await el.changeVoice(o)
-      return { out: o.out }
-    }),
-  )
+  // Change voice: a stretch of a recording in another voice (voice-change.ts), with its progress.
+  ipcMain.handle('voice:change', async (e, o: { taskId: string; project: string; run: VcRun; voice: Voice; removeNoise: boolean; out: string }) => {
+    if (!o.out.toLowerCase().endsWith('.mp3')) return { error: 'The result must be an .mp3 file.' }
+    const send = (stage: string, fraction: number) => !e.sender.isDestroyed() && e.sender.send('task:progress', { taskId: o.taskId, stage, fraction })
+    try {
+      return await changeVoice(o, send)
+    } catch (err) {
+      return failure(err)
+    }
+  })
   ipcMain.handle('eleven:clone', (_e, o: { name: string; files: string[]; removeNoise: boolean }) => eleven(async (el) => ({ voiceId: await el.clone(o) })))
   // Design a voice from a description: a round of three previews, then the one picked kept.
   ipcMain.handle('eleven:design', (_e, o: { description: string; text?: string; model: string }) => (ELEVEN_FAKE ? fakeDesign(o) : eleven((el) => el.design(o))))

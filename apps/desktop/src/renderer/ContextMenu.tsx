@@ -4,7 +4,6 @@ import { cancelDub, dubbedLines, openDub, rerollClips, retryDub } from './dub'
 import { askDirector } from './director'
 import { keysFor, keysLabel } from './keymap'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { changeVoice } from './audio'
 import { setUi as setAudioUi } from './audioState'
 import {
   breakCompound,
@@ -21,6 +20,7 @@ import {
   isCompound,
   makeCompound,
   mediaById,
+  openChangeVoice,
   openVmake,
   paste,
   pasteAttributes,
@@ -83,6 +83,13 @@ export function clipMenu(): MenuEntry[] {
   const soundClip = sel.map((id) => findClip(s.snap, id)).find((f) => f && f.track.kind === 'audio' && !f.track.main)
   // A video's own sound, on any layer (it was the main track only).
   const soundHere = one?.track.kind === 'video' && media?.kind === 'video' && media.hasAudio
+  // Clips that speak, for Change voice…: sound clips, and video clips whose own sound plays.
+  const speaking = sel.filter((id) => {
+    const f = findClip(s.snap, id)
+    const m = f && mediaById(s.snap, f.clip.mediaId)
+    if (!f || !m || m.missing || f.clip.busy) return false
+    return f.track.kind === 'audio' ? m.kind === 'audio' || m.hasAudio : m.kind === 'video' && m.hasAudio && !f.clip.detached
+  })
   // Sentences a voice dub spoke (each its own sound clip): Reroll voice says them again.
   const dubbed = dubbedLines(s.snap, sel).reduce((n, d) => n + d.lineIds.length, 0)
   // Text is being removed from it: nothing else until that's done.
@@ -109,9 +116,7 @@ export function clipMenu(): MenuEntry[] {
     { label: 'Create compound clip', keys: keysFor('compound'), run: makeCompound, disabled: sel.length < 2 },
     ...(one?.track.main && media?.kind === 'video' ? [{ label: 'Remove text with Vmake…', run: () => openVmake({ mediaId: media.id, clipId: one.clip.id }) }] : []),
     ...(one?.track.main && media?.kind === 'video' ? [{ label: 'Dub…', run: () => openDub({ mediaId: media.id, clipId: one.clip.id }) }] : []),
-    ...(one && (media?.kind === 'audio' || (media?.hasAudio && !one.clip.detached))
-      ? [{ label: s.voice ? `Change voice to ${s.voice.name}` : 'Change voice (choose a voice in Audio first)', run: () => s.voice && changeVoice({ mediaId: media!.id, clipId: one.clip.id }, s.voice), disabled: !s.voice || s.voice.category === 'library' }]
-      : []),
+    ...(speaking.length ? [{ label: 'Change voice…', run: () => openChangeVoice({ clipIds: speaking }) }] : []),
     ...(dubbed ? [{ label: dubbed === 1 ? 'Reroll voice' : `Reroll voice (${dubbed} sentences)`, run: () => void rerollClips(sel) }] : []),
     ...(sel.some(isCompound) ? [{ label: 'Break compound clip', keys: keysFor('breakCompound'), run: breakCompound }] : []),
     'sep',
@@ -150,9 +155,7 @@ export function libraryMenu(): MenuEntry[] {
     'sep',
     { label: picked.length > 1 ? `Remove ${picked.length} from the library` : 'Remove from the library', keys: keysFor('del'), run: () => removeFromLibrary(picked.map((m) => m.id)) },
     ...(picked.length === 1 && picked[0].kind === 'video' && !picked[0].missing ? [{ label: 'Remove text with Vmake…', run: () => openVmake({ mediaId: picked[0].id }) }] : []),
-    ...(picked.length === 1 && (picked[0].kind === 'audio' || picked[0].hasAudio) && !picked[0].missing
-      ? [{ label: s.voice ? `Change voice to ${s.voice.name}` : 'Change voice (choose a voice in Audio first)', run: () => s.voice && changeVoice({ mediaId: picked[0].id }, s.voice), disabled: !s.voice || s.voice.category === 'library' }]
-      : []),
+    ...(addable.some((m) => m.kind === 'audio' || m.hasAudio) ? [{ label: 'Change voice…', run: () => openChangeVoice({ mediaIds: addable.filter((m) => m.kind === 'audio' || m.hasAudio).map((m) => m.id) }) }] : []),
     ...(picked.length === 1 ? [{ label: window.studio.platform === 'darwin' ? 'Show in Finder' : window.studio.platform === 'win32' ? 'Show in Explorer' : 'Show in Files', run: () => window.studio.app.showItem(picked[0].path) }] : []),
   ]
 }

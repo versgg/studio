@@ -37,6 +37,9 @@
 
 /* Voice picker */
 .voice-picker { gap: 10px; }
+.change-voice-head { display: flex; flex-direction: column; gap: 2px; }
+.change-voice-what { margin: 0; font-size: 12px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.change-voice-head .hint { margin: 0; line-height: 17px; }
 .voice-groups { max-height: 56vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 .voice-group h4 { margin: 0 0 4px; font-size: 11px; font-weight: 600; color: var(--text-2); text-transform: none; }
 .voice-item { display: flex; align-items: center; gap: 4px; border-radius: var(--radius-control); }

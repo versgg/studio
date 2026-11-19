@@ -1488,6 +1488,22 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
             engine.ensure_proxy(&media);
             Ok(r)
         }
+        // Clips moved onto new files at their own in-points, one undo step (Change voice).
+        "clip.swapMedia" => {
+            let label = params.get("label").and_then(Value::as_str).unwrap_or("Replace clip media").to_string();
+            let mut swaps = vec![];
+            for o in params.get("swaps").and_then(Value::as_array).ok_or_else(|| RpcError::invalid_params("swaps"))? {
+                let (Some(clip), Some(media)) = (o.get("clipId").and_then(Value::as_str), o.get("mediaId").and_then(Value::as_str)) else {
+                    return Err(RpcError::invalid_params("each swap needs clipId and mediaId"));
+                };
+                swaps.push((clip.to_string(), media.to_string(), o.get("inUs").and_then(Value::as_i64).unwrap_or(0)));
+            }
+            let r = engine.edit(&label, |p| p.swap_media(&swaps))?;
+            for (_, m, _) in &swaps {
+                engine.ensure_proxy(m);
+            }
+            Ok(r)
+        }
         // A clip outside work is making a new file for (Vmake text removal): nothing may change
         // it until `clip.release` (or `clip.replaceMedia` with the job) ends it. Not undo steps.
         "clip.busy" | "clip.release" => {

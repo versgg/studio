@@ -37,6 +37,9 @@ const voice = join(work, 'voiceover.wav')
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=6', '-y', voice])
 // A voiceover to cut into pieces (its script and voice are written beside it by the check).
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=330:duration=9', '-y', join(work, 'cut-voiceover.wav')])
+// Change voice: a Swedish voiceover to cut into pieces, and a Norwegian one (the stand-in hears by name).
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=250:duration=6.5', '-y', join(work, 'change-voiceover.wav')])
+execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=280:duration=6.5', '-y', join(work, 'norsk voiceover.wav')])
 // Two sounds for the waveform step: each the first file of a project of its own (the same media id in both).
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=300:duration=4', '-y', join(work, 'tone-first.wav')])
 execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=900:duration=6', '-af', "volume='if(lt(mod(t,1),0.5),1,0.1)':eval=frame", '-y', join(work, 'tone-second.wav')])

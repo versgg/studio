@@ -240,7 +240,8 @@ function fakeWords(file: string) {
   if (!/voiceover|speaks/i.test(name)) return { language: 'sv', words: [] }
   const said = /speaks/i.test(name) ? FAKE_SPEAKS : FAKE_SAID
   const words = said.split(' ').map((text, i) => ({ text, start: 0.4 + i * 0.4 + (i > 3 ? 0.6 : 0), end: 0.7 + i * 0.4 + (i > 3 ? 0.6 : 0) }))
-  return { language: 'sv', words }
+  // A file named "norsk" speaks Norwegian (the voice changer's other way, in tests).
+  return { language: /norsk/i.test(name) ? 'no' : 'sv', words }
 }
 
 /** What a clip that speaks says, in a voice the stand-in account doesn't have. */

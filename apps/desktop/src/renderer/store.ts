@@ -246,7 +246,7 @@ export interface Toast {
   text: string
 }
 
-export type Dialog = null | 'export' | 'exportProjects' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director'
+export type Dialog = null | 'export' | 'exportProjects' | 'new' | 'shortcuts' | 'about' | 'crop' | 'vmake' | 'voices' | 'clone' | 'saveAs' | 'versions' | 'saveLayout' | 'workspaces' | 'start' | 'whatsNew' | 'report' | 'prefs' | 'mcp' | 'design' | 'download' | 'director' | 'changeVoice'
 
 /** Where the library is looking: everything, loose imports, or a linked folder's id. */
 export type LibraryScope = 'all' | 'loose' | string
@@ -320,6 +320,8 @@ export interface State {
   tasks: Task[]
   /** What the text-removal dialog is for: a clip on the timeline, or a library item. */
   vmakeTarget: { mediaId: string; clipId?: string } | null
+  /** What Change voice… is for: sound clips on the timeline, or files in the library. */
+  voiceTarget: { clipIds: string[] } | { mediaIds: string[] } | null
   /** What Send to Director sends: a sound track's clips (only these when several were selected; null for all of them). */
   directorTarget: { trackId: string; clipIds: string[] | null } | null
   /** The open project's text removals, by job id (a busy clip's `busy`). */
@@ -403,6 +405,7 @@ let state: State = {
   unreadable: { dir: '', ids: {} },
   tasks: [],
   vmakeTarget: null,
+  voiceTarget: null,
   directorTarget: null,
   vmakeJobs: {},
   dubJobs: {},
@@ -1015,7 +1018,7 @@ export function startStore() {
     if (now && !sameFolder(now, openDir)) {
       const from = openDir
       openDir = now
-      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, directorTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
+      if (from) setState({ libraryPicked: [], source: null, dialog: null, vmakeTarget: null, voiceTarget: null, directorTarget: null, exportClips: null, cropClip: null, tasks: state.tasks.filter((t) => t.kind === 'vmake' || t.kind === 'stems') })
       for (const f of switchHooks) {
         try {
           f(from, now)
@@ -1723,6 +1726,11 @@ export function freshName(stem: string, ext: string) {
 
 export function openVmake(target: { mediaId: string; clipId?: string }) {
   setState({ dialog: 'vmake', vmakeTarget: target })
+}
+
+/** Change voice…: the voice list, for sound clips or library files (audio.ts `changeVoice`). */
+export function openChangeVoice(target: { clipIds: string[] } | { mediaIds: string[] }) {
+  setState({ dialog: 'changeVoice', voiceTarget: target, menu: null })
 }
 
 // Text removal with Vmake, on the user's own Vmake account. The main process runs each job

@@ -3,6 +3,7 @@
 import { useSyncExternalStore } from 'react'
 import type { Voice } from '../shared/api'
 import { basename } from './format'
+import { MOST_SECONDS, runsOf, type VcClip } from '../shared/voice-change'
 import { alreadyRunning, bringInFor, endTask, findClip, freshName, getState, mediaById, patchTask, projectChanged, projectScope, setState, startTask, toast, togglePlay } from './store'
 
 /** The voice list's sections, in order: the user's own clones first. */
@@ -188,39 +189,108 @@ export async function generateVoiceover(o: { voice: Voice; text: string; modelId
   refreshCredits()
 }
 
-/** The voice changer: a recording (or the part a clip uses) spoken again in `voice`. */
-export async function changeVoice(target: { mediaId: string; clipId?: string }, voice: Voice, removeNoise = true) {
-  const media = mediaById(getState().snap, target.mediaId)
-  if (!media) return
-  if (voice.category === 'library') return toast('Use a voice from your account for the voice changer (generate one voiceover with it first to add it).', 'error')
-  const clip = target.clipId ? findClip(getState().snap, target.clipId)?.clip : undefined
-  const length = clip?.durationUs ?? media.durationUs
-  if (length > 5 * 60_000_000) return toast('The voice changer takes up to 5 minutes at a time. Split the clip first.', 'error')
-  const stem = media.name.replace(/\.[^.]+$/, '')
-  if (alreadyRunning('voice-changer', target.clipId ?? target.mediaId)) return
-  const id = startTask(`Voice changer: ${voice.name}`, 'voice-changer', target.clipId ?? target.mediaId)
+/**
+ * Change voice (right-click › Change voice…): the picked sound clips, or library files, spoken in
+ * `voice`, whatever their language (main/voice-change.ts). Clips cut from one recording are made
+ * again as one stretch, so the new voice runs on across the cuts, and each clip keeps its place,
+ * length and settings in the new file (`clip.swapMedia`, one undo step). A video clip's own sound
+ * is extracted to a sound clip first; the picture keeps playing, silent.
+ */
+export async function changeVoice(target: { clipIds: string[] } | { mediaIds: string[] }, voice: Voice, removeNoise = true) {
   const scope = projectScope()
+  const snap = getState().snap
+  if (!snap) return
+  const key = 'clipIds' in target ? target.clipIds.join(',') : target.mediaIds.join(',')
+  if (alreadyRunning('voice-changer', key)) return
+  const id = startTask(`Change voice: ${voice.name}`, 'voice-changer', key)
+  const failed: string[] = []
   try {
-    let input = media.path
-    if (clip || media.kind !== 'audio') {
-      patchTask(id, { stage: 'Cutting out the sound', fraction: 0.05 })
-      const r = await scope.engine('media.extractRange', { mediaId: media.id, inUs: clip?.inUs ?? 0, durationUs: length, out: scope.path('voiceovers', `${stem}-${id}-part.m4a`) })
-      input = r.out
+    // What's changed, as stretches of files (seconds into each file).
+    const clips: VcClip[] = []
+    if ('clipIds' in target) {
+      let ids = target.clipIds
+      // A video clip's own sound goes to a sound clip of its own first, linked to the picture.
+      const videos = ids.filter((c) => {
+        const f = findClip(snap, c)
+        return f?.track.kind === 'video' && mediaById(snap, f.clip.mediaId)?.hasAudio && !f.clip.detached
+      })
+      if (videos.length) {
+        patchTask(id, { stage: 'Taking the sound out of the video', fraction: 0.02 })
+        const made = await scope.engine<{ clipIds: string[] }>('clip.extractAudio', { clipIds: videos })
+        ids = [...ids.filter((c) => !videos.includes(c)), ...(made?.clipIds ?? [])]
+      }
+      const now = videos.length ? await scope.latest() : snap
+      for (const c of ids) {
+        const f = findClip(now, c)
+        const m = f && mediaById(now, f.clip.mediaId)
+        if (!f || !m || f.track.kind !== 'audio') continue
+        if (m.missing) failed.push(`${m.name} is missing`)
+        else clips.push({ id: c, file: m.path, inS: f.clip.inUs / 1e6, endS: (f.clip.inUs + f.clip.durationUs * (f.clip.speed ?? 1)) / 1e6 })
+      }
+    } else {
+      for (const mid of target.mediaIds) {
+        const m = mediaById(snap, mid)
+        if (m && !m.missing) clips.push({ id: '', file: m.path, inS: 0, endS: m.durationUs / 1e6 })
+      }
     }
-    patchTask(id, { stage: 'ElevenLabs is changing the voice', fraction: 0.3, waiting: true })
-    const out = scope.path('voiceovers', freshName(`${stem} as ${voice.name}`, '.mp3'))
-    const r = await window.studio.services.elevenChangeVoice({ voiceId: voice.id, input, out, removeNoise })
-    if (isError(r)) throw new Error(r.error)
-    patchTask(id, { stage: 'Adding it', fraction: 0.9 })
+    const runs = runsOf(clips)
+    const tooLong = runs.filter((r) => r.endS - r.inS > MOST_SECONDS + 10)
+    if (tooLong.length) failed.push(`${tooLong.length === 1 ? 'One part is' : `${tooLong.length} parts are`} longer than 5 minutes; split ${tooLong.length === 1 ? 'it' : 'them'} first`)
+    const todo = runs.filter((r) => !tooLong.includes(r))
+    if (!todo.length) throw new Error(failed[0] ?? 'Pick a sound clip first.')
+    const swaps: { clipId: string; mediaId: string; inUs: number }[] = []
+    const said = new Set<string>()
+    let long = 0
+    let speaks = voice
+    for (const [n, run] of todo.entries()) {
+      const name = basename(run.file).replace(/\.[^.]+$/, '')
+      patchTask(id, { stage: todo.length > 1 ? `${name} (${n + 1} of ${todo.length})` : name, fraction: n / todo.length })
+      const out = scope.path('voiceovers', freshName(`${name} as ${voice.name}`, '.mp3'))
+      const r = await window.studio.services.changeVoice({ taskId: id, project: scope.dir, run, voice: speaks, removeNoise, out })
+      if (isError(r)) {
+        failed.push(r.error)
+        if (r.auth) break
+        continue
+      }
+      // A Voice Library voice is in the account now; the next stretch uses it as such.
+      if (speaks.category === 'library' && r.voiceId !== speaks.id) speaks = { ...speaks, id: r.voiceId, category: 'professional', ownerId: undefined }
+      if (r.how === 'said') said.add(r.language)
+      long += r.long
+      const media = await bringInFor(scope, r.out, null, `"${basename(r.out)}"`)
+      if (!media) continue
+      // Where each clip reads the stretch now (trimmed meanwhile: its in-point as it is now).
+      const live = await scope.latest()
+      for (const c of run.clips) {
+        const clip = c.id && findClip(live, c.id)?.clip
+        if (!clip) continue
+        const inUs = clip.inUs - Math.round(run.inS * 1e6)
+        if (inUs >= 0 && clip.inUs + clip.durationUs * (clip.speed ?? 1) <= Math.round(run.endS * 1e6) + 50_000) swaps.push({ clipId: c.id, mediaId: media, inUs })
+      }
+    }
+    if (speaks !== voice) {
+      chooseVoice(speaks)
+      loadEleven()
+    }
+    // Refused (a clip locked or busy meanwhile): said as it is, not as done; the new files stay in the library.
+    if (swaps.length) await scope.engine('clip.swapMedia', { swaps, label: 'Change voice' })
     refreshCredits()
-    // Another project open by now: the new voice waits for this one, in its library.
-    const newId = await bringInFor(scope, r.out, null, `"${basename(r.out)}"`)
-    if (!newId) return endTask(id)
-    if (clip && findClip(await scope.latest(), clip.id)) await scope.call('clip.replaceMedia', { clipId: clip.id, mediaId: newId, label: 'Change voice' })
+    if (!swaps.length && failed.length) return endTask(id, failed.join('. '))
     endTask(id)
-    toast(clip ? `The clip now speaks as ${voice.name} (Ctrl+Z goes back).` : `"${basename(r.out)}" is in the library.`)
+    const how = said.size ? ` ${[...said].map(langName).join(' and ')} was said again in the new voice, at the same moments${long ? ` (${long} sentence${long === 1 ? '' : 's'} a little faster to fit)` : ''}.` : ''
+    const not = failed.length ? ` Not changed: ${failed.join('. ')}.` : ''
+    if (swaps.length) toast(`${swaps.length === 1 ? 'The clip now speaks' : `${swaps.length} clips now speak`} as ${voice.name} (Ctrl+Z goes back).${how}${not}`)
+    else if (!('clipIds' in target)) toast(`The new voice is in the library, in Voiceovers.${how}${not}`)
   } catch (e) {
     endTask(id, projectChanged(e) ? undefined : (e as Error).message)
+  }
+}
+
+/** A language's name for a note ("no" → Norwegian). */
+const langName = (code: string) => {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(code) ?? code
+  } catch {
+    return code
   }
 }
 

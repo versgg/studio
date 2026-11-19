@@ -11,6 +11,7 @@ import { vmakeTest } from './vmake-jobs'
 import { elevenTest, removeClone } from './dub-voice'
 import { wavInfo } from './director'
 import { MIN_WINDOW } from '../shared/window'
+import { ffmpeg } from './ffmpeg'
 
 /** A spoken sentence changed in the Translations review: a market's own price, far too long for its moment. */
 const PRICED = 'Nå koster den bare 199 kr, og den holder hele vinteren, så du slipper å kjøpe en ny hver eneste måned, igjen og igjen og igjen.'
@@ -4474,6 +4475,112 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
       results.push({ step: sendDirector, ok: false, detail: (e as Error).message })
       console.log(`[ui-check] FAIL ${sendDirector}: ${(e as Error).message}`)
     }
+  }
+
+  // Change voice (right-click on sound clips): a Swedish voiceover cut into pieces goes to the
+  // voice changer as one stretch and every piece keeps its place in the new file; a Norwegian
+  // one (a language the voice changer doesn't know) is said again in the new voice instead. On a
+  // stand-in ElevenLabs (STUDIO_ELEVEN_URL) and the stand-in hearing and speech.
+  const changeFiles = [path.join(path.dirname(exportDir), 'change-voiceover.wav'), path.join(path.dirname(exportDir), 'norsk voiceover.wav')]
+  if (changeFiles.every((f) => fs.existsSync(f))) {
+    const changed: string[] = []
+    const reply = await ffmpeg(['-f', 'lavfi', '-i', 'sine=frequency=200:duration=6.4', '-c:a', 'libmp3lame', '-b:a', '128k', '-f', 'mp3', 'pipe:1'])
+    const stand = http.createServer((req, res) => {
+      const url = req.url ?? ''
+      const json = (o: unknown) => (res.writeHead(200, { 'content-type': 'application/json' }), res.end(JSON.stringify(o)))
+      if (url.startsWith('/v1/voice-changer/')) {
+        changed.push(decodeURIComponent(url.split('/')[3].split('?')[0]))
+        req.resume()
+        req.on('end', () => (res.writeHead(200, { 'content-type': 'audio/mpeg' }), res.end(reply)))
+        return
+      }
+      if (url.startsWith('/v1/models')) return json([{ model_id: 'eleven_v4', name: 'Eleven v4', can_do_text_to_speech: true, maximum_text_length_per_request: 5000, languages: [] }])
+      if (url.startsWith('/v2/voices')) return json({ voices: [{ voice_id: 'erik-1', name: 'Erik', category: 'cloned', labels: {} }, { voice_id: 'anna-1', name: 'Anna', category: 'generated', labels: {} }], has_more: false })
+      if (url.startsWith('/v1/user/subscription')) return json({ tier: 'creator', character_count: 10, character_limit: 100000, can_use_instant_voice_cloning: true, next_character_count_reset_unix: null })
+      if (url.startsWith('/v1/history')) return json({ history: [], has_more: false })
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ detail: { message: 'not in the stand-in' } }))
+    })
+    await new Promise<void>((r) => stand.listen(0, '127.0.0.1', () => r()))
+    process.env.STUDIO_ELEVEN_URL = `http://127.0.0.1:${(stand.address() as import('node:net').AddressInfo).port}`
+    const pick = `async (clipIds, voice) => {
+       const dev = window.__studioDev
+       dev.store.setState({ selection: clipIds, focus: 'timeline' })
+       await __t.sleep(100)
+       const el = await __t.until(() => __t.clipEl(clipIds[0]), 5000, 'the clip')
+       const r = __t.rect(el)
+       el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 10, clientY: r.top + 10 }))
+       const item = await __t.until(() => __t.qa('.context-menu button').find((b) => b.textContent.includes('Change voice')), 3000, 'Change voice… in the menu')
+       item.click()
+       const what = await __t.until(() => __t.q('.change-voice-what')?.textContent, 3000, 'the dialog')
+       const btn = await __t.until(() => __t.qa('.voice-pick').find((b) => b.querySelector('.voice-name')?.textContent === (voice ?? 'Erik')), 15000, 'the voice list')
+       if (voice) btn.click()
+       return what
+     }`
+    await step(
+      'Change voice: right-click on two cut pieces opens the voice list with what changes',
+      `const S = window.__studio
+       const pick = ${pick}
+       const back = (await __t.snap()).dir
+       await S.newProject('Change voice', '9:16')
+       await __t.until(async () => (await __t.snap()).dir !== back, 5000, 'its own project')
+       await window.studio.services.setKey('elevenlabs', 'ui-check stand-in')
+       const imp = await window.studio.engine.call('media.import', { paths: ${JSON.stringify(changeFiles)} })
+       const [sv, no] = imp.imported
+       const a = await window.studio.engine.call('timeline.insert', { mediaId: sv, atUs: 0, newTrack: true })
+       await window.studio.engine.call('timeline.split', { atUs: 2000000, clipIds: [a.clipId] })
+       let s = await __t.snap()
+       const second = s.project.tracks.find((t) => t.id === a.trackId).clips.find((c) => c.startUs === 2000000)
+       await window.studio.engine.call('timeline.split', { atUs: 4000000, clipIds: [second.id] })
+       s = await __t.snap()
+       const third = s.project.tracks.find((t) => t.id === a.trackId).clips.find((c) => c.startUs === 4000000)
+       await window.studio.engine.call('timeline.delete', { clipIds: [second.id] })
+       window.__vc = { back, sv, no, a, third: third.id }
+       return await pick([a.clipId, third.id], null)`,
+    )
+    await shot('change-voice')
+    await step(
+      'Change voice: picking a voice changes the pieces, and a Norwegian clip is said again',
+      `const S = window.__studio
+       const pick = ${pick}
+       const { back, sv, no, a } = window.__vc
+       const what = __t.q('.change-voice-what').textContent
+       ;(await __t.until(() => __t.qa('.voice-pick').find((b) => b.querySelector('.voice-name')?.textContent === 'Erik'), 15000, 'Erik')).click()
+       let s = await __t.until(async () => { const x = await __t.snap(); const cs = x.project.tracks.find((t) => t.id === a.trackId).clips; return cs.every((c) => c.mediaId !== sv) && x }, 30000, 'both pieces in the new voice')
+       const pieces = s.project.tracks.find((t) => t.id === a.trackId).clips.sort((x, y) => x.startUs - y.startUs)
+       const media = s.project.media.find((m) => m.id === pieces[0].mediaId)
+       if (pieces.length !== 2 || pieces[0].mediaId !== pieces[1].mediaId) throw new Error('the pieces: ' + JSON.stringify(pieces.map((c) => [c.mediaId, c.startUs, c.inUs, c.durationUs])))
+       if (pieces[0].startUs !== 0 || pieces[0].inUs !== 0 || pieces[0].durationUs !== 2000000) throw new Error('the first piece: ' + JSON.stringify(pieces[0]))
+       if (pieces[1].startUs !== 4000000 || pieces[1].inUs !== 4000000 || pieces[1].durationUs !== 2500000) throw new Error('the last piece: ' + JSON.stringify(pieces[1]))
+       if (!/ as Erik\\.mp3$/.test(media.path) || Math.abs(media.durationUs - 6600000) > 60000) throw new Error('the new file: ' + media.path + ' ' + media.durationUs)
+       const toast1 = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /2 clips now speak as Erik/.test(t)), 3000, 'the note')
+       // One Ctrl+Z puts both pieces back.
+       await window.studio.engine.call('edit.undo', {})
+       const undone = (await __t.snap()).project.tracks.find((t) => t.id === a.trackId).clips
+       if (!undone.every((c) => c.mediaId === sv)) throw new Error('one undo didn’t bring both back')
+       await window.studio.engine.call('edit.redo', {})
+
+       // Norwegian: not the voice changer, the words said again in the new voice.
+       const b = await window.studio.engine.call('timeline.insert', { mediaId: no, atUs: 0, newTrack: true })
+       await pick([b.clipId], 'Anna')
+       s = await __t.until(async () => { const x = await __t.snap(); const c = x.project.tracks.flatMap((t) => t.clips).find((c) => c.id === b.clipId); return c && c.mediaId !== no && x }, 60000, 'the Norwegian clip in the new voice').catch((e) => {
+         throw new Error(e.message + '; notes: ' + JSON.stringify(__t.qa('.toast').map((t) => t.textContent)) + '; tasks: ' + JSON.stringify(S.getState().tasks.map((t) => [t.label, t.stage, t.state, t.error])))
+       })
+       const nb = s.project.tracks.flatMap((t) => t.clips).find((c) => c.id === b.clipId)
+       const nm = s.project.media.find((m) => m.id === nb.mediaId)
+       const toast2 = await __t.until(() => __t.qa('.toast').map((t) => t.textContent).find((t) => /now speaks as Anna/.test(t)), 3000, 'the note')
+       if (!/Norwegian was said again/.test(toast2)) throw new Error('the note: ' + toast2)
+       if (nb.inUs !== 0 || Math.abs(nm.durationUs - 6600000) > 60000) throw new Error('the Norwegian clip: ' + JSON.stringify(nb) + ' ' + nm.durationUs)
+       await window.studio.services.clearKey('elevenlabs')
+       await S.openProjectAt(back)
+       await __t.until(async () => (await __t.snap()).dir === back, 8000, 'the test project again')
+       return { what, swedish: 'voice changer, one stretch', pieces: pieces.map((c) => [c.startUs / 1e6, c.inUs / 1e6, c.durationUs / 1e6]), norwegian: toast2 }`,
+    )
+    if (JSON.stringify(changed) !== JSON.stringify(['erik-1'])) console.log(`[ui-check] FAIL Change voice: the voice changer was asked ${JSON.stringify(changed)}, not once for erik-1`)
+    else console.log('[ui-check] ok   Change voice: the voice changer was asked once, for the Swedish stretch only')
+    delete process.env.STUDIO_ELEVEN_URL
+    stand.closeAllConnections()
+    stand.close()
   }
 
   // A caption line given a look of its own (This line) keeps it: a change to All lines after

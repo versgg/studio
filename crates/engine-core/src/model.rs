@@ -2012,6 +2012,35 @@ impl Project {
         Ok(())
     }
 
+    /// Several clips each moved onto another file at their own in-point, as one edit: the part a
+    /// stretch of clips plays, made again in one file (a voice changed), so every cut piece keeps
+    /// its place, its length (as far as the new file reaches) and its other settings.
+    pub fn swap_media(&mut self, swaps: &[(String, String, Us)]) -> R<()> {
+        let ids: Vec<String> = swaps.iter().map(|s| s.0.clone()).collect();
+        self.check_unlocked(&ids)?;
+        for (clip, media, _) in swaps {
+            if self.find_clip(clip).is_none() {
+                return err(format!("no clip {clip}"));
+            }
+            if self.media(media).is_none() {
+                return err(format!("no media {media}"));
+            }
+        }
+        let before = self.main_starts();
+        for (clip, media, in_us) in swaps {
+            let len = self.media(media).map_or(0, |m| m.duration_us);
+            let (ti, ci) = self.find_clip(clip).unwrap();
+            let c = &mut self.tracks[ti].clips[ci];
+            c.media_id = media.clone();
+            c.in_us = (*in_us).clamp(0, (len - MIN_CLIP).max(0));
+            let left = ((len - c.in_us) as f64 / c.speed) as Us;
+            c.duration_us = c.duration_us.min(left).max(MIN_CLIP);
+        }
+        self.normalize();
+        self.follow_links(&before);
+        Ok(())
+    }
+
     /// Turns the main track magnet on (closing every gap) or off.
     pub fn set_magnet(&mut self, on: bool) {
         let before = self.main_starts();
@@ -3408,6 +3437,24 @@ mod tests {
         assert!(p.split(SECOND, &[]).is_err());
         p.set_clip(&a, ClipChange { brightness: Some(20.0), ..Default::default() }).unwrap();
         assert_eq!(p.clip(&a).unwrap().brightness, 20.0, "the look isn't an edit of the track");
+    }
+
+    #[test]
+    fn cut_pieces_move_onto_a_new_file_at_their_own_places() {
+        let mut p = project();
+        let a = p.insert("vo", 0).unwrap();
+        let b = p.split(3 * SECOND, std::slice::from_ref(&a)).unwrap()[0].clone();
+        let c = p.split(6 * SECOND, std::slice::from_ref(&b)).unwrap()[0].clone();
+        p.delete(std::slice::from_ref(&b)).unwrap();
+        p.set_clip(&c, ClipChange { volume: Some(0.5), ..Default::default() }).unwrap();
+        // The new file is the stretch 0–9.9 s of the old one (a changed voice, a little short).
+        p.media.push(media("vo2", MediaKind::Audio, 9.9));
+        p.swap_media(&[(a.clone(), "vo2".into(), 0), (c.clone(), "vo2".into(), 6 * SECOND)]).unwrap();
+        let (ca, cc) = (p.clip(&a).unwrap(), p.clip(&c).unwrap());
+        assert_eq!((ca.media_id.as_str(), ca.start_us, ca.in_us, ca.duration_us), ("vo2", 0, 0, 3 * SECOND));
+        // The last piece keeps its place and settings, cut to where the new file ends.
+        assert_eq!((cc.media_id.as_str(), cc.start_us, cc.in_us, cc.duration_us, cc.volume), ("vo2", 6 * SECOND, 6 * SECOND, 3_900_000, 0.5));
+        assert!(p.swap_media(&[(a.clone(), "nope".into(), 0)]).is_err());
     }
 
     #[test]

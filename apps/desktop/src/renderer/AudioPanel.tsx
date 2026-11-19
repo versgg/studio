@@ -3,9 +3,9 @@
 // your voice and ElevenLabs voiceovers) and From video (pulling a clip's sound onto its own
 // track). Plus the voice picker and the voice-clone dialogs.
 
-import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import type { DesignRound, Voice } from '../shared/api'
-import { chooseVoice, cloneVoice, designVoices, forgetElevenKey, generateVoiceover, keepDesignedVoice, loadEleven, saveElevenKey, startRecording, useKeyCheck, VOICE_GROUPS, type Recorder } from './audio'
+import { changeVoice, chooseVoice, cloneVoice, designVoices, forgetElevenKey, generateVoiceover, keepDesignedVoice, loadEleven, saveElevenKey, startRecording, useKeyCheck, VOICE_GROUPS, type Recorder } from './audio'
 import { Chips, Pills, Select, SelectButton, Stepper, Toggle } from './controls'
 import { DIcon, LIB_ICONS } from './design-icons'
 import { Icon } from './icons'
@@ -573,7 +573,7 @@ function FromVideoTab() {
 }
 
 /** All the account's voices, by kind (clones first), searchable; search also looks in the public Voice Library. */
-export function VoicePickerDialog({ close }: { close: () => void }) {
+export function VoicePickerDialog({ close, onPick, head }: { close: () => void; onPick?: (v: Voice) => void; head?: ReactNode }) {
   const eleven = useStore((s) => s.eleven)
   const chosen = useStore((s) => s.voice)
   const [query, setQuery] = useState('')
@@ -600,11 +600,13 @@ export function VoicePickerDialog({ close }: { close: () => void }) {
   const all = [...groups, ...(other.length ? ([['Other', other]] as const) : [])].filter(([, list]) => list.length)
 
   const pick = (v: Voice) => {
-    chooseVoice(v)
+    if (onPick) onPick(v)
+    else chooseVoice(v)
     close()
   }
   return (
     <div className="modal-body voice-picker">
+      {head}
       <label className="lib-search">
         <DIcon d={LIB_ICONS.search} size={13} />
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search voices: name, accent, ‘Swedish’, ‘deep’, ‘narration’…" spellCheck={false} autoFocus />
@@ -633,6 +635,45 @@ export function VoicePickerDialog({ close }: { close: () => void }) {
       </div>
     </div>
   )
+}
+
+/**
+ * Change voice… (right-click on sound clips or library files): what changes and how, over the
+ * voice list; picking a voice starts it (audio.ts `changeVoice`).
+ */
+export function ChangeVoiceDialog({ close }: { close: () => void }) {
+  const eleven = useStore((s) => s.eleven)
+  const target = useStore((s) => s.voiceTarget)
+  const snap = useStore((s) => s.snap)
+  // Checked again on opening: a key saved meanwhile (or forgotten) shows as it is now.
+  useEffect(() => {
+    if (!eleven.hasKey || !eleven.voices) loadEleven()
+  }, [])
+  if (!target) return null
+  let what = ''
+  if ('clipIds' in target) {
+    const clips = target.clipIds.map((id) => snap?.project.tracks.flatMap((t) => t.clips).find((c) => c.id === id)).filter((c) => !!c)
+    const names = [...new Set(clips.map((c) => mediaById(snap, c.mediaId)?.name.replace(/\.[^.]+$/, '')).filter(Boolean))]
+    const length = clips.reduce((a, c) => a + c.durationUs, 0)
+    what = `${clips.length === 1 ? '1 clip' : `${clips.length} clips`} · ${mss(length)} · ${names.length === 1 ? names[0] : `${names.length} recordings`}`
+  } else {
+    const files = target.mediaIds.map((id) => mediaById(snap, id)).filter((m) => !!m)
+    what = files.length === 1 ? `${files[0].name.replace(/\.[^.]+$/, '')} · ${mss(files[0].durationUs)}` : `${files.length} files`
+  }
+  const head = (
+    <div className="change-voice-head">
+      <p className="change-voice-what">{what}</p>
+      <p className="hint">Pick the voice it should speak in. Swedish, Danish, Finnish and 26 other languages keep the way they were said. Any other language, like Norwegian, is said again in the new voice at the same moments.</p>
+    </div>
+  )
+  if (eleven.hasKey === false || !eleven.voices)
+    return (
+      <div className="modal-body voice-picker">
+        {head}
+        {eleven.hasKey === false ? <ElevenKey /> : <p className="hint">{eleven.error ?? 'Loading your voices…'}</p>}
+      </div>
+    )
+  return <VoicePickerDialog close={close} head={head} onPick={(v) => void changeVoice(target, v)} />
 }
 
 /** An instant voice clone from recordings in the library, with the owner's consent. */
