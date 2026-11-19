@@ -1556,6 +1556,29 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      const pad = parseFloat(__t.q('.ap-lanes').style.paddingTop)
      return { rulerLeft: Math.round(ruler.left), lanesLeft: Math.round(lanes.left), padTop: pad }`,
   )
+  // Only sound on the Audio page (the user: "Only audio in audio"): no row for the video, a
+  // captions track, or a picture (sticker) track.
+  await step(
+    'Audio page: only sound tracks have rows, not the video, captions or stickers',
+    `const cap = await window.studio.engine.call('captions.set', { lines: [{ startUs: 0, endUs: 1000000, text: 'Not sound' }], style: { font: 'Metropolis', size: 60, weight: 600, color: '#FFFFFF', align: 'center', lineHeight: 1.2, letterSpacing: 0, case: 'none', stroke: null, background: null, shadow: null, preset: 'Clean · xx · 72' } })
+     const s0 = await __t.snap()
+     const pic = s0.project.media.find((m) => m.kind === 'image' || m.kind === 'video')
+     const over = pic ? await window.studio.engine.call('timeline.insertNewTrack', { mediaId: pic.id, atUs: 0 }) : null
+     ;[...__t.qa('.page-switch button')].find((b) => b.textContent === 'Edit').click()
+     await __t.sleep(200)
+     ;[...__t.qa('.page-switch button')].find((b) => b.textContent === 'Audio').click()
+     await __t.until(() => __t.q('.ap-lanes'), 3000, 'the Audio page')
+     await __t.sleep(300)
+     const s = await __t.snap()
+     const sound = s.project.tracks.filter((t) => t.kind === 'audio').length
+     // Every row but the Script labels row is a track.
+     const names = __t.qa('.ap-head-name').map((n) => n.textContent).filter((n) => n !== 'Script labels')
+     const heads = names.length
+     await window.studio.engine.call('captions.set', { trackId: cap.trackId, lines: [], style: {} })
+     if (over?.clipId) await window.studio.engine.call('timeline.delete', { clipIds: [over.clipId] })
+     if (heads !== sound) throw new Error(heads + ' rows for ' + sound + ' sound tracks: ' + names.join(' | '))
+     return { soundTracks: sound, rows: names }`,
+  )
   await step(
     'Audio page: zooming in reaches single samples',
     `;[...__t.qa('.page-switch button')].find((b) => b.textContent === 'Audio').click()
@@ -3843,7 +3866,9 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, 'Nå sier hun noe helt nytt.')
            box.dispatchEvent(new Event('input', { bubbles: true }))
            ;(await __t.until(() => [...__t.qa('.pd-btn.primary')].find((b) => b.textContent === 'Say it' && !b.disabled), 3000, 'Say it')).click()
-           const after = await __t.until(async () => { const x = await __t.snap(); const c = x.project.tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id); const m = c && x.project.media.find((m) => m.id === c.mediaId); return m && /-w[0-9a-z]+-fit\\.wav$/.test(m.path) && { c, m } }, 30000, 'the sentence said again')
+           const after = await __t.until(async () => { const x = await __t.snap(); const c = x.project.tracks.flatMap((t) => t.clips).find((c) => c.id === clip.id); const m = c && x.project.media.find((m) => m.id === c.mediaId); return m && /-w[0-9a-z]+(-fit)?\\.wav$/.test(m.path) && { c, m } }, 30000, 'the sentence said again').catch((e) => {
+             throw new Error(e.message + ' (its file ' + said(clip).split(/[\\\\/]/).pop() + '); tasks: ' + JSON.stringify(window.__studio.getState().tasks.map((t) => [t.label, t.stage, t.state, t.error])) + '; notes: ' + JSON.stringify(__t.qa('.toast').map((x) => x.textContent)))
+           })
            const line = (await window.studio.services.translateSpoken(copy)).lines.find((l) => l.file === after.m.path)
            if (line?.text !== 'Nå sier hun noe helt nytt.') throw new Error('the translation keeps: ' + JSON.stringify(line))
            if (after.c.startUs !== clip.startUs) throw new Error('it moved: ' + clip.startUs + ' → ' + after.c.startUs)

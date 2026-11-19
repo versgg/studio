@@ -231,19 +231,16 @@ export interface Row {
 export function rowsOf(snap: Snapshot | null): Row[] {
   const p = snap?.project
   if (!p) return []
-  const audio = p.tracks.filter((t) => !t.main)
+  // Sound tracks only: no video, captions or stickers (the user, 2026-11-19: "Only audio in
+  // audio"). A video's own sound comes here through right-click › Edit in Audio, which puts it
+  // on a sound track of its own first.
+  const audio = p.tracks.filter((t) => t.kind === 'audio')
   const voice = audio.filter((t) => roleOf(t, snap) === 'voice')
   const music = audio.filter((t) => roleOf(t, snap) === 'music')
   const rows: Row[] = [...voice, ...music].map((t) => {
     const role = roleOf(t, snap)
     return { key: t.id, kind: 'audio', track: t, role, name: trackName(t, snap), h: Math.round((role === 'voice' ? 214 : 130) * ui.scale), full: true }
   })
-  const main = p.tracks.find((t) => t.main)
-  if (main) {
-    const sound = main.clips.some((c) => mediaById(snap, c.mediaId)?.hasAudio && !c.detached)
-    const full = !main.mute && sound
-    rows.push({ key: main.id, kind: 'main', track: main, role: 'clip', name: trackName(main, snap), h: full ? 130 : 64, full })
-  }
   rows.push({ key: 'labels', kind: 'labels', role: 'labels', name: 'Script labels', h: 40, full: false })
   return rows
 }
