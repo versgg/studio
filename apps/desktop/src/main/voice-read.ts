@@ -27,6 +27,7 @@ import { getSecret } from './secrets'
 import { overOtherSound } from '../shared/voice-mix'
 import { sentencesOf } from '../shared/speech-timing'
 import { historyLines, voicesBySentence } from '../shared/voice-match'
+import { fillHoles } from '../shared/caption-holes'
 
 export type VoiceHow = 'studio' | 'history' | 'name' | 'picked'
 
@@ -48,7 +49,7 @@ export interface VoiceRead {
   note?: string
   /** The voice is over music or other sound (measured outside its words). */
   mixed?: boolean
-  /** How it was read: 2 keeps each word's time and hears a short file's one or two words; 3 finds each sentence's voice. */
+  /** How it was read: 2 keeps each word's time and hears a short file's one or two words; 3 finds each sentence's voice; 4 hears again what Whisper skipped. */
   v?: number
 }
 
@@ -80,8 +81,9 @@ export function knownVoice(project: string, file: string): VoiceRead | null {
   if (!r) return null
   // Heard as nothing before v2, which took a short file's one or two words for no speech: heard again once.
   if (!r.v && !r.sentences.length) return null
-  // Read before each sentence's voice was looked for: read again once (its words are kept, see readVoice).
-  return (r.v ?? 1) < 3 && r.sentences.length ? null : r
+  // Read before stretches Whisper skipped were heard again (or each sentence's voice looked for):
+  // read again once; its words are kept and only what's missing is heard (see readVoice).
+  return (r.v ?? 1) < 4 && r.sentences.length ? null : r
 }
 
 function keep(project: string, r: VoiceRead) {
@@ -101,11 +103,20 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
   if (!job) {
     job = (async () => {
       if (!fs.existsSync(file)) throw new Error(`${path.basename(file)} is missing.`)
-      // Read before (v2): its words as they were heard, only the voices looked for again.
+      // Read before (v2, v3): its words as they were heard, with any stretch Whisper skipped heard
+      // now (only those stretches are sent), and the voices looked for again.
       const old = keptRead(project, file)
-      if (old?.v === 2 && old.sentences.length) {
-        const sentences = old.sentences.map(({ voice: _v, ...s }) => s)
-        const r: VoiceRead = { ...old, sentences, v: 3 }
+      if ((old?.v === 2 || old?.v === 3) && old.sentences.length) {
+        let sentences = old.sentences.map(({ voice: _v, ...s }) => s)
+        const words = sentences.flatMap((s) => s.words ?? [])
+        if (!FAKE && words.length) {
+          const filled = await fillHoles(await pcmOf(file), words, async (again) => (await hearPcm(Buffer.from(again))).words)
+          if (filled.words.length > words.length) {
+            const length = await lengthOf(file)
+            sentences = sentencesOf(filled.words, length > 0 && length <= SHORT_FILE ? 1 : 3).map((x) => ({ ...x, words: filled.words.filter((w) => w.start >= x.start - 0.001 && w.end <= x.end + 0.001) }))
+          }
+        }
+        const r: VoiceRead = { ...old, sentences, v: 4 }
         // An earlier Studio's "keep its own sound" stays as it was.
         if (old.note !== 'kept') Object.assign(r, { voice: null, note: undefined }, await findVoice(file, sentences.map((s) => s.text).join(' '), sentences))
         keep(project, r)
@@ -115,7 +126,7 @@ export function readVoice(project: string, file: string): Promise<VoiceRead> {
       const length = await lengthOf(file)
       const short = length > 0 && length <= SHORT_FILE
       const sentences = sentencesOf(words.words, short ? 1 : 3).map((x) => ({ ...x, words: words.words.filter((w) => w.start >= x.start - 0.001 && w.end <= x.end + 0.001) }))
-      const r: VoiceRead = { file, sentences, language: words.language, voice: null, v: 3 }
+      const r: VoiceRead = { file, sentences, language: words.language, voice: null, v: 4 }
       if (sentences.length) Object.assign(r, await findVoice(file, sentences.map((s) => s.text).join(' '), sentences), { mixed: await overMusic(file, words.words) })
       keep(project, r)
       return r
@@ -145,9 +156,25 @@ async function overMusic(file: string, words: { start: number; end: number }[]):
   }
 }
 
-/** The file's words through the transcript server (its sound as 16 kHz mono FLAC). */
+/** A file's sound as 16 kHz mono 16-bit samples. */
+const pcmOf = (file: string) => ffmpeg(['-i', file, '-vn', '-ac', '1', '-ar', '16000', '-f', 's16le', 'pipe:1'])
+
+/**
+ * The file's words through the transcript server, with any stretch with sound it gave no words
+ * for heard again on its own (Whisper jumps ahead now and then: a clip's 6–30 s had none;
+ * shared/caption-holes.ts).
+ */
 async function heard(file: string): Promise<{ language: string; words: { text: string; start: number; end: number }[] }> {
-  const audio = await ffmpeg(['-i', file, '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'flac', '-f', 'flac', 'pipe:1'])
+  const pcm = await pcmOf(file)
+  const first = await hearPcm(pcm)
+  if (!first.words.length) return first
+  const filled = await fillHoles(pcm, first.words, async (again) => (await hearPcm(Buffer.from(again))).words)
+  return { language: first.language, words: filled.words }
+}
+
+/** 16 kHz mono samples through the transcript server, as FLAC. */
+async function hearPcm(pcm: Buffer): Promise<{ language: string; words: { text: string; start: number; end: number }[] }> {
+  const audio = await ffmpeg(['-f', 's16le', '-ar', '16000', '-ac', '1', '-i', 'pipe:0', '-c:a', 'flac', '-f', 'flac', 'pipe:1'], { stdin: pcm })
   let r: Awaited<ReturnType<typeof transcribe>>
   try {
     r = await transcribe({ audio, fileName: 'voiceover.flac' })

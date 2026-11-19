@@ -11,7 +11,7 @@ import path from 'node:path'
 import { aboutVoices, beginPackage, directorUrl, discardPackage, finishPackage, inboxDir, isPartial, sendFile, type TimeLabel, type VoiceClip } from './director'
 import { clearSecret, dropRetiredSecrets, getSecret, hasSecret, setSecret, type SecretName } from './secrets'
 import { stageText, transcribe } from './transcript'
-import { holesOf, levelsOf, mergeWords } from '../shared/caption-holes'
+import { fillHoles } from '../shared/caption-holes'
 import { ElevenError, ElevenLabs, type Voice } from './elevenlabs'
 import { elevenPermissionName } from '../shared/eleven-permissions'
 import { ffmpeg } from './ffmpeg'
@@ -356,40 +356,14 @@ export function registerServices() {
       const r = await transcribe({ audio, fileName: 'captions.flac', language: o.language, script: o.script, progress: (stage, f, queue) => send(stageText(stage, queue), 0.1 + 0.55 * f), signal: stop.signal })
       // Stretches with sound the server gave no words for (Whisper jumps ahead now and then,
       // shared/caption-holes.ts): heard again on their own, once, and their words put in place.
-      let heard = r.words
-      const whole = Buffer.concat(pcm)
-      const holes = holesOf(levelsOf(whole), heard)
-      if (holes.length) {
-        send(`Listening again to ${holes.length === 1 ? 'a part' : `${holes.length} parts`} it skipped`, 0.68)
-        const bits: Buffer[] = []
-        const at: { from: number; into: number }[] = []
-        let len = 0
-        for (const h of holes) {
-          const a = Math.max(0, h.start - 0.2)
-          const b = Math.min(whole.length / (rate * 2), h.end + 0.2)
-          if (bits.length) {
-            bits.push(gap)
-            len += gap.length
-          }
-          at.push({ from: a, into: len / (rate * 2) })
-          const piece = whole.subarray(Math.floor(a * rate) * 2, Math.floor(b * rate) * 2)
-          bits.push(piece)
-          len += piece.length
-        }
-        try {
-          const again = await transcribe({ audio: await ffmpeg(['-f', 's16le', '-ar', String(rate), '-ac', '1', '-i', 'pipe:0', '-c:a', 'flac', '-f', 'flac', 'pipe:1'], { stdin: Buffer.concat(bits) }), fileName: 'captions-again.flac', language: o.language, progress: (stage, f, queue) => send(stageText(stage, queue), 0.68 + 0.2 * f), signal: stop.signal })
-          const back = again.words.map((w) => {
-            let k = 0
-            while (k + 1 < at.length && at[k + 1].into <= w.start + 0.05) k++
-            const d = at[k].from - at[k].into
-            return { ...w, start: w.start + d, end: w.end + d }
-          })
-          heard = mergeWords(heard, back)
-        } catch (e) {
-          // Nothing more heard (music, or the server busy): the words from the first time stand.
-          if (stop.signal.aborted) throw e
-        }
-      }
+      const filled = await fillHoles(Buffer.concat(pcm), r.words, async (again) => {
+        if (stop.signal.aborted) throw new Error('Cancelled.')
+        send('Listening again to the parts it skipped', 0.68)
+        const flac = await ffmpeg(['-f', 's16le', '-ar', String(rate), '-ac', '1', '-i', 'pipe:0', '-c:a', 'flac', '-f', 'flac', 'pipe:1'], { stdin: Buffer.from(again) })
+        return (await transcribe({ audio: flac, fileName: 'captions-again.flac', language: o.language, progress: (stage, f, queue) => send(stageText(stage, queue), 0.68 + 0.2 * f), signal: stop.signal })).words
+      })
+      if (stop.signal.aborted) throw new Error('Cancelled.')
+      const heard = filled.words
       // The stretch a time falls in; a word in a gap belongs to the stretch before it.
       const partOf = (t: number) => {
         let k = 0

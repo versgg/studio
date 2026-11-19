@@ -50,6 +50,53 @@ export function holesOf(levels: Float32Array, words: { start: number; end: numbe
     .map(([start, end]) => ({ start, end }))
 }
 
+/**
+ * Every hole in `pcm` (16 kHz mono 16-bit) heard again as one recording, its pieces joined by
+ * 0.8 s of silence (`hear` sends it; its words are in seconds into what it was given), and the
+ * words put back at their times in the whole and merged in. A second hearing that fails or hears
+ * nothing leaves the words as they were.
+ */
+export async function fillHoles<W extends { start: number; end: number }>(pcm: Uint8Array, words: W[], hear: (pcm: Uint8Array) => Promise<W[]>, rate = 16000): Promise<{ words: W[]; holes: number }> {
+  const holes = holesOf(levelsOf(pcm, rate), words)
+  if (!holes.length) return { words, holes: 0 }
+  const total = pcm.byteLength / 2 / rate
+  const gap = new Uint8Array(Math.round(rate * 0.8) * 2)
+  const bits: Uint8Array[] = []
+  const at: { from: number; into: number }[] = []
+  let len = 0
+  for (const h of holes) {
+    const a = Math.max(0, h.start - 0.2)
+    const b = Math.min(total, h.end + 0.2)
+    if (bits.length) {
+      bits.push(gap)
+      len += gap.length
+    }
+    at.push({ from: a, into: len / (rate * 2) })
+    const piece = pcm.subarray(Math.floor(a * rate) * 2, Math.floor(b * rate) * 2)
+    bits.push(piece)
+    len += piece.length
+  }
+  const joined = new Uint8Array(len)
+  let o = 0
+  for (const b of bits) {
+    joined.set(b, o)
+    o += b.length
+  }
+  let again: W[]
+  try {
+    again = await hear(joined)
+  } catch {
+    return { words, holes: holes.length }
+  }
+  const back = again.map((w) => {
+    let k = 0
+    while (k + 1 < at.length && at[k + 1].into <= w.start + 0.05) k++
+    const d = at[k].from - at[k].into
+    return { ...w, start: w.start + d, end: w.end + d }
+  })
+  return { words: mergeWords(words, back), holes: holes.length }
+}
+
 /** The words heard again in the holes, at their times in the whole: those over a word already there are left out. */
 export function mergeWords<W extends { start: number; end: number }>(first: W[], again: W[]): W[] {
   const over = (w: W) => first.some((f) => w.start < f.end - 0.05 && w.end > f.start + 0.05)
