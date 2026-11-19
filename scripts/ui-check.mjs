@@ -71,6 +71,8 @@ if (speechOk) {
 let standIn = null
 if (process.env.STUDIO_UI_CHECK_ONLINE === '0' && !process.env.STUDIO_TRANSCRIPT_URL) {
   execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=520:duration=4', '-y', join(work, 'scripted-voiceover.wav')])
+  // A voice 12 s long, of which the stand-in (like Whisper skipping ahead) hears only the first 2 s.
+  execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'sine=frequency=480:duration=12', '-y', join(work, 'skipped-voiceover.wav')])
   const heard = [['Order', 0.2], ['yours', 0.6], ['today', 1], ['at', 1.4], ['corvel.', 1.6]].map(([word, start]) => ({ word, start, end: start + 0.35 }))
   // `POST /api/standin-slow?ms=n`: the next job works for n ms before it's done (a test that
   // opens another project while captions are being made).

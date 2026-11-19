@@ -249,6 +249,34 @@ export function projectFile(...parts: string[]) {
 let counter = 0
 /** A fresh name for a drawn PNG: `<stem>-<n>.png`, never reused (undo needs the old ones). */
 const pngName = (stem: string) => `${stem}-${Date.now().toString(36)}${(++counter).toString(36)}.png`
+
+/** Object keys sorted and hex colours in capitals, so a look reads the same whoever kept it (the engine sorts keys). */
+function canon(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canon)
+  if (v && typeof v === 'object') return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])]))
+  return typeof v === 'string' && /^#[0-9a-f]{3,8}$/i.test(v) ? v.toUpperCase() : (v ?? null)
+}
+
+/**
+ * What a caption line's drawing shows, as a short code in its file name (cap-<code>-….png):
+ * the words and every part of the look that changes the picture, in a frame of this size at
+ * this height. A line whose drawing's code isn't its look's is drawn again (captions.ts).
+ */
+export function captionSig(spec: TextLook, width: number, height: number, centerY: number): string {
+  const key = JSON.stringify(canon([1, width, height, Math.round(centerY * 1000), spec.content ?? '', spec.font, spec.size, spec.weight, spec.color, spec.align ?? 'center', spec.lineHeight, spec.letterSpacing ?? 0, spec.case ?? 'none', !!spec.italic, !!spec.underline, spec.stroke, spec.background, spec.shadow]))
+  // Two FNV-1a passes (different seeds): 64 bits, so two looks never share a code.
+  let a = 0x811c9dc5
+  let b = 0x01000193 ^ key.length
+  for (let i = 0; i < key.length; i++) {
+    const c = key.charCodeAt(i)
+    a = Math.imul(a ^ c, 0x01000193) >>> 0
+    b = Math.imul(b ^ c, 0x5bd1e995) >>> 0
+  }
+  return a.toString(36).padStart(7, '0') + b.toString(36).padStart(7, '0')
+}
+
+/** The code in a caption drawing's file name (null: drawn before drawings were named by their look). */
+export const sigOfPng = (png: string | undefined) => /[\\/]cap-([0-9a-z]{14})-[^\\/]*\.png$/.exec(png ?? '')?.[1] ?? null
 export const freshPng = (folder: 'text' | 'masks' | 'stickers', stem: string) => projectFile(folder, pngName(stem))
 
 /** Writes drawn PNG bytes through the main process; throws with its message on failure. */
@@ -267,7 +295,10 @@ export async function renderTextClip(spec: TextLook, stem: string, place?: numbe
   const p = getState().snap?.project
   const w = at?.width ?? p?.width ?? 1080
   const o = typeof place === 'number' ? { centerY: place, maxWidth: w * 0.94 } : (place ?? {})
-  const d = await drawText(spec, w, at?.height ?? p?.height ?? 1920, o)
-  const png = await savePng(at ? [at.dir, 'text', pngName(stem)].join(at.dir.includes('\\') ? '\\' : '/') : freshPng('text', stem), d.png)
+  const h = at?.height ?? p?.height ?? 1920
+  const d = await drawText(spec, w, h, o)
+  // A caption line's drawing is named by its look, as captions.ts names the ones it draws.
+  const name = o.centerY != null ? `cap-${captionSig(spec, w, h, o.centerY)}` : stem
+  const png = await savePng(at ? [at.dir, 'text', pngName(name)].join(at.dir.includes('\\') ? '\\' : '/') : freshPng('text', name), d.png)
   return { ...spec, png, boxW: d.boxW, boxH: d.boxH }
 }

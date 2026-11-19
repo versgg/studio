@@ -2603,6 +2603,43 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
        await window.studio.engine.call('timeline.delete', { clipIds: track.clips.map((c) => c.id) })
        return { captions: all, note }`,
     )
+    // Whisper jumping ahead (a clip's middle 24 s got no captions): the stand-in hears its few
+    // words at the start of any sound, so in a 12 s voice the rest is a stretch with sound and no
+    // words, which is sent again on its own and gets its words.
+    const skipped = path.join(path.dirname(exportDir), 'skipped-voiceover.wav')
+    if (fs.existsSync(skipped))
+      await step(
+        'Captions: a stretch with sound the server gave no words for is heard again on its own, and its captions come in their place',
+        `const r = await window.studio.engine.call('media.import', { paths: [${JSON.stringify(skipped)}] })
+         const mediaId = r.imported[0]
+         await window.studio.engine.call('timeline.insertNewTrack', { mediaId, atUs: 0 })
+         const s = await __t.until(async () => { const x = await __t.snap(); return x.project.tracks.some((t) => t.clips.some((c) => c.mediaId === mediaId)) && x }, 5000, 'the voiceover track')
+         const track = s.project.tracks.find((t) => t.clips.some((c) => c.mediaId === mediaId))
+         const before = (await __t.snap()).project.tracks.filter((t) => t.role === 'captions').map((t) => t.id)
+         let lines = []
+         // Taken off the timeline whatever happens: a voiceover left there is translated by later steps.
+         try {
+           ${cat('Captions')}
+           const from = await __t.until(() => __t.q('select[aria-label="Made from"]'), 3000, 'the Made from list')
+           from.value = track.id
+           from.dispatchEvent(new Event('change', { bubbles: true }))
+           const lang = __t.q('select[aria-label="Language"]')
+           lang.value = 'en'
+           lang.dispatchEvent(new Event('change', { bubbles: true }))
+           await __t.sleep(100)
+           ;(await __t.until(() => [...__t.qa('.lib-add')].find((b) => /Make captions/.test(b.textContent)), 3000, 'Make captions')).click()
+           const caps = await __t.until(async () => (await __t.snap()).project.tracks.find((t) => t.role === 'captions' && !before.includes(t.id) && t.clips.length), 30000, 'the captions track')
+           lines = [...caps.clips].sort((a, b) => a.startUs - b.startUs).map((c) => [c.startUs / 1e6, c.text.content])
+         } finally {
+           const now = (await __t.snap()).project.tracks
+           for (const t of now.filter((t) => t.role === 'captions' && !before.includes(t.id))) await window.studio.engine.call('captions.set', { trackId: t.id, lines: [], style: {} })
+           await window.studio.engine.call('timeline.delete', { clipIds: now.flatMap((t) => t.clips).filter((c) => c.mediaId === mediaId).map((c) => c.id) })
+         }
+         const later = lines.filter(([t]) => t >= 2.2)
+         if (!later.length) throw new Error('nothing after the first 2 s: ' + JSON.stringify(lines))
+         if (lines.map(([t]) => t).some((t, i, a) => i && t < a[i - 1])) throw new Error('out of order: ' + JSON.stringify(lines))
+         return { lines }`,
+      )
     // Another project opened while captions are being made: they never land there (ids start
     // again in every project), and they go on in their own project when it's opened again.
     await fetch(`${process.env.STUDIO_TRANSCRIPT_URL}/standin-slow?ms=5000`, { method: 'POST' }).catch(() => {})
@@ -4630,6 +4667,96 @@ export async function runUiCheck(win: BrowserWindow, out: string, clips: string[
      const after = await __t.until(async () => { const l = await lines(); return l.length === 3 && l.every((c) => c.text.case === 'none' && c.text.color === '#FFFFFF') && l }, 15000, 'every line back to the same look')
      await window.studio.engine.call('captions.set', { trackId: r.trackId, lines: [], style: {} })
      return { ownKept: upper[1].text.color, afterWords: typed[1].text.color, others: upper[0].text.color, reset: after[1].text.color }`,
+  )
+
+  // What the player shows of a caption line is its drawing (a PNG); the Inspector shows its look.
+  // Two quick changes to All lines (the second stopping the first one's drawings) and an Undo
+  // brought back the first change half drawn: lines whose look said one colour and whose drawing
+  // showed another (a project had every line's look pink and every drawing white). Checked by the
+  // drawings' own pixels: every line's drawing is its look's colour, also for a line given its own
+  // colour with This line after All lines changes again.
+  await step(
+    'Captions: every line’s drawing shows its look, after two quick changes to All lines and an Undo, and with This line',
+    `const before = (await __t.snap()).project.tracks.length
+     const style = { font: 'Metropolis', size: 60, weight: 600, color: '#FFFFFF', align: 'center', lineHeight: 1.2, letterSpacing: 0, case: 'none', stroke: null, background: null, shadow: null, preset: 'Clean · xx · 72' }
+     const n = 48
+     const r = await window.studio.engine.call('captions.set', { lines: Array.from({ length: n }, (_, i) => ({ startUs: i * 500000, endUs: (i + 1) * 500000, text: 'Line number ' + (i + 1) })), style })
+     const lines = async () => { const t = (await __t.snap()).project.tracks.find((x) => x.id === r.trackId); return [...(t?.clips ?? [])].sort((a, b) => a.startUs - b.startUs) }
+     await __t.until(async () => (await lines()).length === n, 5000, 'the lines')
+     // The colour a drawing shows most (its letters), as #RGB in 16 steps.
+     const q = (hex) => '#' + [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) >> 4).toString(16)).join('').toUpperCase()
+     const seen = new Map()
+     const colourOf = async (png) => {
+       if (!png) return 'no drawing'
+       if (seen.has(png)) return seen.get(png)
+       let img
+       try {
+         img = await createImageBitmap(await (await fetch('studio-file://cache/' + encodeURIComponent(png))).blob())
+       } catch (e) {
+         return 'unreadable ' + png.split('/').pop() + ' (' + e.message + ')'
+       }
+       const c = document.createElement('canvas')
+       c.width = img.width
+       c.height = img.height
+       const g = c.getContext('2d')
+       g.drawImage(img, 0, 0)
+       const d = g.getImageData(0, 0, c.width, c.height).data
+       const count = new Map()
+       for (let i = 0; i < d.length; i += 4) {
+         if (d[i + 3] < 250) continue
+         const k = '#' + [d[i], d[i + 1], d[i + 2]].map((v) => (v >> 4).toString(16)).join('').toUpperCase()
+         count.set(k, (count.get(k) ?? 0) + 1)
+       }
+       const top = [...count].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'none'
+       seen.set(png, top)
+       return top
+     }
+     const wrong = async () => {
+       const out = []
+       for (const c of await lines()) {
+         const shows = await colourOf(c.text.png)
+         if (shows !== q(c.text.color)) out.push(c.text.content + ': look ' + c.text.color + ', drawing ' + shows)
+       }
+       return out
+     }
+     const tab = (name) => __t.until(() => [...__t.qa('.insp-tabs button')].find((x) => x.textContent === name), 5000, 'the Inspector’s ' + name + ' tab')
+     const scope = (name) => __t.until(() => [...__t.qa('.insp-scope button')].find((x) => x.textContent === name), 3000, 'the ' + name + ' choice')
+     const swatch = (hex) => __t.until(() => __t.q('.insp-swatches[aria-label="Colour"] button[aria-label="' + hex + '"]'), 3000, 'the ' + hex + ' swatch')
+     const all = async (hex) => (await __t.until(async () => { const l = await lines(); return l.length === n && l.every((c) => c.text.color === hex) && l }, 15000, 'every line ' + hex))
+     __t.click(__t.clipEl(r.clipIds[0]))
+     ;(await tab('Text')).click()
+     ;(await scope('All lines')).click()
+     // Drawn dark first, as captions are once made.
+     ;(await swatch('#111114')).click()
+     await all('#111114')
+     await __t.until(async () => !(await wrong()).length, 20000, 'every line drawn dark')
+     // Yellow, and blue as soon as every line's look is yellow (its drawings still coming).
+     ;(await swatch('#E8C050')).click()
+     await all('#E8C050')
+     ;(await swatch('#3B57F0')).click()
+     await all('#3B57F0')
+     await window.studio.engine.call('edit.undo', {})
+     await all('#E8C050')
+     await __t.sleep(2500)
+     const afterUndo = await wrong()
+     if (afterUndo.length) throw new Error(afterUndo.length + ' of ' + n + ' lines show another colour than their look after the Undo, e.g. ' + afterUndo.slice(0, 3).join('; '))
+     // This line: one line blue; All lines white after; that line stays blue, in its drawing too.
+     const ls = await lines()
+     __t.click(__t.clipEl(ls[4].id))
+     ;(await scope('This line')).click()
+     ;(await swatch('#3B57F0')).click()
+     await __t.until(async () => (await lines())[4].text.color === '#3B57F0', 8000, 'the fifth line blue')
+     window.__studioDev.store.setState({ selection: [] })
+     await __t.sleep(300)
+     __t.click(__t.clipEl(ls[0].id))
+     ;(await scope('All lines')).click()
+     ;(await swatch('#FFFFFF')).click()
+     await __t.until(async () => { const l = await lines(); return l.every((c, i) => c.text.color === (i === 4 ? '#3B57F0' : '#FFFFFF')) && l }, 15000, 'every line white but the fifth')
+     await __t.sleep(2500)
+     const afterOwn = await wrong()
+     if (afterOwn.length) throw new Error('after This line and All lines: ' + afterOwn.slice(0, 3).join('; '))
+     await window.studio.engine.call('captions.set', { trackId: r.trackId, lines: [], style: {} })
+     return { lines: n, afterUndo: 'every drawing its look', fifth: q('#3B57F0') }`,
   )
 
   // A file moved and renamed (by hand, or by another tool) is found again by its content once

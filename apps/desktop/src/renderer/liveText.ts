@@ -118,6 +118,9 @@ export function lookOf(clip: Clip): TextLook {
   return (a || e ? { ...clip.text, ...a, ...e } : clip.text) as TextLook
 }
 
+/** A clip whose look is being changed in the Inspector (its drawing is still coming). */
+export const beingEdited = (clipId: string) => edits.has(clipId)
+
 /** updateText's changes to a clip while they're being saved; null once the snapshot has them. */
 export function setEditLook(clipId: string, look: Partial<TextLook> | null) {
   if (look) edits.set(clipId, look)

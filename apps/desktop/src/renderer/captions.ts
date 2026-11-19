@@ -12,10 +12,10 @@
 
 import { roleOf, trackName } from './audioState'
 import { CAPTION_STYLES, scaleSpec } from './textPresets'
-import { previewTextLook } from './liveText'
-import { drawText, savePng, type TextLook } from './textRender'
+import { beingEdited, previewTextLook } from './liveText'
+import { captionSig, drawText, savePng, sigOfPng, type TextLook } from './textRender'
 import { basename } from './format'
-import { alreadyRunning, call, endTask, getState, holdSelection, mediaById, onProjectSwitch, patchTask, projectChanged, projectScope, setState, startTask, toast, type Clip, type ProjectScope, type Snapshot, type Track, type Us } from './store'
+import { alreadyRunning, call, endTask, getState, holdSelection, mediaById, onProjectSwitch, patchTask, projectChanged, projectScope, setState, startTask, subscribeStore, toast, type Clip, type ProjectScope, type Snapshot, type Track, type Us } from './store'
 
 /** The languages the transcript server takes (it can also detect them). */
 export const LANGS: { code: string; name: string; iso3: string[] }[] = [
@@ -411,7 +411,9 @@ async function drawLine(look: TextLook, text: string, centerY: number, cv: Canva
   const kept = drawings.get(key)
   if (kept) return kept
   const d = await drawText({ ...look, content: text }, cv.width, cv.height, { centerY, maxWidth: cv.width * 0.94 })
-  const png = await savePng(fileIn(cv.dir, 'text', `cap-${Date.now().toString(36)}${(++drawCount).toString(36)}.png`), d.png)
+  // Named by what it shows, so a line whose look and drawing part ways is found (`heal`).
+  const sig = captionSig({ ...look, content: text }, cv.width, cv.height, centerY)
+  const png = await savePng(fileIn(cv.dir, 'text', `cap-${sig}-${Date.now().toString(36)}${(++drawCount).toString(36)}.png`), d.png)
   const made = { png, boxW: d.boxW, boxH: d.boxH }
   drawings.set(key, made)
   return made
@@ -455,6 +457,19 @@ async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, c
   const row = keyIn(scope.dir, info.track.id)
   const run = (streams.get(row) ?? 0) + 1
   streams.set(row, run)
+  drawingRows.set(row, (drawingRows.get(row) ?? 0) + 1)
+  try {
+    return await streamRun(scope, cv, info, cues, spec, centerY, keep, row, run)
+  } finally {
+    drawingRows.set(row, (drawingRows.get(row) ?? 1) - 1)
+    healSoon()
+  }
+}
+
+/** Rows (by project and track) with drawings still coming: their lines' looks are ahead of their drawings. */
+const drawingRows = new Map<string, number>()
+
+async function streamRun(scope: ProjectScope, cv: Canvas, info: CaptionInfo, cues: Drawable[], spec: TextLook, centerY: number, keep: boolean, row: string, run: number) {
   const gesture = `restyle ${info.track.id} ${run} ${Date.now().toString(36)}`
   const full = (c: Drawable) => (c.look ? { ...spec, ...c.look } : spec)
   const ready = cues.map((c) => drawings.get(drawKey(full(c), c.text, centerY, cv)))
@@ -502,6 +517,70 @@ async function streamLines(scope: ProjectScope, cv: Canvas, info: CaptionInfo, c
     else toast(`Couldn’t draw the captions: ${(e as Error).message}`, 'error')
   }
   return r
+}
+
+/**
+ * Every caption line's drawing shows its look: one that doesn't (by the code in its name) is
+ * drawn again and swapped in quietly, with no undo step. An Undo could bring back a change to
+ * All lines whose drawings had been stopped by the next change, and nothing drew them after:
+ * a project's lines all said pink in the Inspector while the player showed them white
+ * (2026-11-19). Lines drawn before drawings were named by their look are drawn once; lines
+ * with no drawing (set over MCP) get one. Rows still drawing and lines being changed in the
+ * Inspector are left until they're done.
+ */
+let healTimer = 0
+let healing = false
+let healSeen = ''
+const healTries = new Map<string, number>()
+function healSoon() {
+  window.clearTimeout(healTimer)
+  healTimer = window.setTimeout(() => void heal(), 400)
+}
+subscribeStore(() => {
+  const s = getState().snap
+  const k = s ? `${s.dir}#${s.revision}` : ''
+  if (k === healSeen) return
+  healSeen = k
+  healSoon()
+})
+
+async function heal() {
+  const snap = getState().snap
+  if (!snap || healing) return
+  const scope = projectScope(snap.dir)
+  const cv = canvasOf(snap)
+  const todo: { clip: Clip; centerY: number; sig: string }[] = []
+  for (const info of captionTracks(snap)) {
+    if (drawingRows.get(keyIn(scope.dir, info.track.id))) continue
+    for (const clip of info.lines) {
+      const t = clip.text
+      // Drawn elsewhere (Text in the Inspector before drawings were named, a CapCut import): as it is.
+      if (!t?.content?.trim() || (t.png && !/[\\/]cap-[^\\/]*\.png$/.test(t.png)) || beingEdited(clip.id)) continue
+      // The row's height, as every drawing of its lines is made (drawLines, streamLines).
+      const centerY = info.centerY
+      const sig = captionSig(t as TextLook, cv.width, cv.height, centerY)
+      if (sigOfPng(t.png) === sig) continue
+      // Never over and over: a line whose new drawing still doesn't match is left after two tries.
+      const tried = healTries.get(clip.id + sig) ?? 0
+      if (tried >= 2) continue
+      healTries.set(clip.id + sig, tried + 1)
+      todo.push({ clip, centerY, sig })
+    }
+  }
+  if (!todo.length) return
+  healing = true
+  try {
+    const drawings: { clipId: string; png: string; boxW: number; boxH: number }[] = []
+    await inTurn(3, todo, async ({ clip, centerY }) => {
+      const { content, ...look } = clip.text as TextLook
+      drawings.push({ clipId: clip.id, ...(await drawLine(look as TextLook, content, centerY, cv)) })
+    })
+    if (scope.live()) await scope.engine('captions.draw', { drawings, quiet: true })
+  } catch (e) {
+    if (!projectChanged(e)) console.warn('Captions: redrawing lines whose drawing didn’t match their look failed:', (e as Error).message)
+  } finally {
+    healing = false
+  }
 }
 
 async function setLines(scope: ProjectScope, trackId: string | undefined, lines: ({ startUs: Us; endUs: Us; text: string; png?: string; words?: CapWord[]; look?: Partial<TextLook> } & LinePlace)[], style: TextLook, above?: string, gesture?: string) {

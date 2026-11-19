@@ -1205,7 +1205,22 @@ pub fn dispatch(engine: &Engine, method: &str, params: Value) -> Result<Value, R
         }
         "captions.draw" => {
             let drawings: Vec<CaptionDrawing> = field(&params, "drawings")?.unwrap_or_default();
-            engine.edit_merging("Captions", gesture(&params).as_deref(), |p| Ok(p.set_caption_drawings(&drawings)))
+            // `quiet`: a line's drawing made again to match its look (after an Undo brought back a
+            // change whose drawings never came): not an edit, no undo step.
+            if params.get("quiet").and_then(Value::as_bool) == Some(true) {
+                let drawn = {
+                    let mut g = engine.doc.lock().unwrap();
+                    let d = g.as_mut().ok_or_else(no_project)?;
+                    let mut n = 0;
+                    d.quiet_update(|p| n = p.set_caption_drawings(&drawings));
+                    d.flush();
+                    n
+                };
+                engine.changed();
+                Ok(json!({ "drawn": drawn }))
+            } else {
+                engine.edit_merging("Captions", gesture(&params).as_deref(), |p| Ok(p.set_caption_drawings(&drawings)))
+            }
         }
         "audio.crossfade" => {
             let ids = strings(&params, "clipIds");
